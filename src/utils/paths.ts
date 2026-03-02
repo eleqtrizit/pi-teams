@@ -35,3 +35,19 @@ export function inboxPath(teamName: string, agentName: string) {
 export function configPath(teamName: string) {
   return path.join(teamDir(teamName), "config.json");
 }
+
+export function lastMessagePath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastMessage`);
+}
+
+export function lastAwokenPath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.awoken`);
+}
+
+export function lastReminderPath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastReminder`);
+}
+
+export function firstActivationPath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.firstActivation`);
+}

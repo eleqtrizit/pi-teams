@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { appendMessage, readInbox, sendPlainMessage, broadcastMessage } from "./messaging";
+import { appendMessage, ensureReminderMessage, readInbox, sendPlainMessage, broadcastMessage } from "./messaging";
 import * as paths from "./paths";
 
 // Mock the paths to use a temporary directory
@@ -20,6 +20,15 @@ describe("Messaging Utilities", () => {
     vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
     vi.spyOn(paths, "configPath").mockImplementation((teamName) => {
       return path.join(testDir, "config.json");
+    });
+    vi.spyOn(paths, "lastMessagePath").mockImplementation((teamName, agentName) => {
+      return path.join(testDir, `${agentName}.lastMessage`);
+    });
+    vi.spyOn(paths, "lastAwokenPath").mockImplementation((teamName, agentName) => {
+      return path.join(testDir, `${agentName}.awoken`);
+    });
+    vi.spyOn(paths, "lastReminderPath").mockImplementation((teamName, agentName) => {
+      return path.join(testDir, `${agentName}.lastReminder`);
     });
   });
 
@@ -68,6 +77,47 @@ describe("Messaging Utilities", () => {
     const all = await readInbox("test-team", "receiver", false, false);
     expect(all.length).toBe(2);
     expect(all.every(m => m.read)).toBe(true);
+  });
+
+  it("should inject a reminder after instructions are read and no response sent", async () => {
+    await sendPlainMessage("test-team", "team-lead", "worker", "check plan.md", "instruction");
+    await readInbox("test-team", "worker", true, true);
+
+    const reminderAdded = await ensureReminderMessage("test-team", "worker");
+    expect(reminderAdded).toBe(true);
+
+    const polled = await readInbox("test-team", "worker", true, false);
+    expect(polled.length).toBe(1);
+    expect(polled[0].from).toBe("system");
+    expect(polled[0].text).toContain("You report to the team-lead");
+  });
+
+  it("should not inject a reminder while team-lead instructions are still unread", async () => {
+    await sendPlainMessage("test-team", "team-lead", "worker", "check plan.md", "instruction");
+
+    const reminderAdded = await ensureReminderMessage("test-team", "worker");
+    expect(reminderAdded).toBe(false);
+
+    const polled = await readInbox("test-team", "worker", true, false);
+    expect(polled.length).toBe(1);
+    expect(polled[0].from).toBe("team-lead");
+  });
+
+  it("should NOT inject a reminder after the agent has responded to instructions", async () => {
+    await sendPlainMessage("test-team", "team-lead", "worker", "check plan.md", "instruction");
+    await readInbox("test-team", "worker", true, true);
+    await sendPlainMessage("test-team", "worker", "team-lead", "here is my report", "report");
+
+    const reminderAdded = await ensureReminderMessage("test-team", "worker");
+    expect(reminderAdded).toBe(false);
+  });
+
+  it("should not duplicate reminders for the same instruction cycle", async () => {
+    await sendPlainMessage("test-team", "team-lead", "worker", "check plan.md", "instruction");
+    await readInbox("test-team", "worker", true, true);
+
+    expect(await ensureReminderMessage("test-team", "worker")).toBe(true);
+    expect(await ensureReminderMessage("test-team", "worker")).toBe(false);
   });
 
   it("should broadcast message to all members except the sender", async () => {

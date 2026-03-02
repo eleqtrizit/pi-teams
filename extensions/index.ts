@@ -6,9 +6,9 @@ import * as path from 'node:path';
 import { Iterm2Adapter } from '../src/adapters/iterm2-adapter';
 import { getTerminalAdapter } from '../src/adapters/terminal-registry';
 import * as messaging from '../src/utils/messaging';
+import { updateLastAwokenTime } from '../src/utils/messaging';
 import { Member } from '../src/utils/models';
 import * as paths from '../src/utils/paths';
-import * as tasks from '../src/utils/tasks';
 import * as teams from '../src/utils/teams';
 
 // Cache for available models
@@ -266,31 +266,95 @@ export default function (pi: ExtensionAPI) {
                 setTimeout(setIt, 5000);
             }
 
-            setTimeout(() => {
-                pi.sendUserMessage(
-                    `I am starting my work as '${agentName}' on team '${teamName}'. Checking my inbox for instructions...`
-                );
+            // On first spawn, purge ALL stale state from any previous session and
+            // stamp the firstActivationFile immediately (before messages can arrive).
+            // Previously this cleanup ran at turn_start, which created a race: a message
+            // sent between session_start and the first turn_start would be deleted when
+            // the first turn fired and wiped the inbox.
+            if (teamName) {
+                const firstActivationFile = paths.firstActivationPath(teamName, agentName);
+                if (!fs.existsSync(firstActivationFile)) {
+                    const inboxFile = paths.inboxPath(teamName, agentName);
+                    const lastMessageFile = paths.lastMessagePath(teamName, agentName);
+                    const lastAwokenFile = paths.lastAwokenPath(teamName, agentName);
+                    const lastReminderFile = paths.lastReminderPath(teamName, agentName);
+                    if (fs.existsSync(inboxFile)) fs.unlinkSync(inboxFile);
+                    if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+                    if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
+                    if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
+                    fs.writeFileSync(firstActivationFile, Date.now().toString());
+                }
+            }
+
+            setInterval(async () => {
+                if (!ctx.isIdle() || !teamName) {
+                    return;
+                }
+
+                await messaging.ensureReminderMessage(teamName, agentName);
+                const unread = await messaging.readInbox(teamName, agentName, true, false);
+                if (unread.length > 0) {
+                    pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox.`);
+                }
             }, 1000);
+        } else if (teamName) {
+            ctx.ui.setStatus('pi-teams', `Lead @ ${teamName}`);
 
             setInterval(async () => {
                 if (ctx.isIdle() && teamName) {
                     const unread = await messaging.readInbox(teamName, agentName, true, false);
                     if (unread.length > 0) {
-                        pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox. Reading them now...`);
+                        pi.sendUserMessage(
+                            `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`
+                        );
                     }
                 }
-            }, 30000);
-        } else if (teamName) {
-            ctx.ui.setStatus('pi-teams', `Lead @ ${teamName}`);
+            }, 1000);
         }
     });
 
+    function setActiveStatus(active: boolean) {
+        if (!teamName) return;
+        const activeFile = path.join(paths.teamDir(teamName), `${agentName}.active`);
+        if (active) {
+            const wasInactive = !fs.existsSync(activeFile);
+            fs.writeFileSync(activeFile, Date.now().toString());
+            // Track when agent wakes up (goes from inactive to active)
+            if (wasInactive) {
+                // Returning from idle - set awoken time to trigger reminder logic.
+                // First-spawn cleanup is done in session_start before any messages arrive.
+                updateLastAwokenTime(teamName, agentName);
+            }
+        } else {
+            if (fs.existsSync(activeFile)) {
+                fs.unlinkSync(activeFile);
+            }
+        }
+    }
+
+    function isAgentActive(team: string, agent: string): boolean {
+        const activeFile = path.join(paths.teamDir(team), `${agent}.active`);
+        if (!fs.existsSync(activeFile)) return false;
+        try {
+            const timestamp = parseInt(fs.readFileSync(activeFile, 'utf-8').trim());
+            const age = Date.now() - timestamp;
+            return age < 5 * 60 * 1000; // Consider stale if older than 5 minutes
+        } catch {
+            return false;
+        }
+    }
+
     pi.on('turn_start', async (_event, ctx) => {
+        setActiveStatus(true);
         if (isTeammate) {
             const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
             if ((ctx.ui as any).setTitle) (ctx.ui as any).setTitle(fullTitle);
             if (terminal) terminal.setTitle(fullTitle);
         }
+    });
+
+    pi.on('turn_end', async (_event, ctx) => {
+        setActiveStatus(false);
     });
 
     let firstTurn = true;
@@ -318,7 +382,7 @@ export default function (pi: ExtensionAPI) {
             return {
                 systemPrompt:
                     event.systemPrompt +
-                    `\n\nYou are teammate '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}\nStart by calling read_inbox(team_name="${teamName}") to get your initial instructions.`
+                    `\n\nYou are teammate '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}\nWait for instructions via your inbox. You will be notified when new messages arrive.`
             };
         }
     });
@@ -368,6 +432,8 @@ export default function (pi: ExtensionAPI) {
                 params.default_model,
                 params.separate_windows
             );
+            // Set PI_TEAM_NAME for the lead so message polling loop activates
+            process.env.PI_TEAM_NAME = params.team_name;
             return {
                 content: [{ type: 'text', text: `Team ${params.team_name} created.` }],
                 details: { config }
@@ -422,11 +488,9 @@ export default function (pi: ExtensionAPI) {
         parameters: Type.Object({
             team_name: Type.String(),
             name: Type.String(),
-            prompt: Type.String(),
             cwd: Type.String(),
-            model: Type.String(),
+            model: Type.Optional(Type.String()),
             thinking: Type.Optional(StringEnum(['off', 'minimal', 'low', 'medium', 'high'])),
-            plan_mode_required: Type.Optional(Type.Boolean({ default: false })),
             separate_window: Type.Optional(Type.Boolean({ default: false }))
         }),
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
@@ -442,12 +506,20 @@ export default function (pi: ExtensionAPI) {
             }
 
             const teamConfig = await teams.readConfig(safeTeamName);
-            const chosenModel = params.model?.trim();
+            let chosenModel = params.model?.trim();
+
+            // If model is not provided or contains "default" (case-insensitive), use the team-leader's model from context
+            if (!chosenModel || /default/i.test(chosenModel)) {
+                const defaultModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                if (defaultModel) {
+                    chosenModel = defaultModel;
+                }
+            }
 
             if (!chosenModel) {
                 throw new Error(
-                    'spawn_teammate requires an explicit model. ' +
-                        'Use resolve_model(model_name="...") and pass the returned provider/model value.'
+                    'spawn_teammate requires a model. ' +
+                        'Either provide one explicitly or ensure the team-leader has a model configured.'
                 );
             }
 
@@ -487,14 +559,11 @@ export default function (pi: ExtensionAPI) {
                 tmuxPaneId: '',
                 cwd: params.cwd,
                 subscriptions: [],
-                prompt: params.prompt,
                 color: 'blue',
-                thinking: params.thinking,
-                planModeRequired: params.plan_mode_required
+                thinking: params.thinking
             };
 
             await teams.addMember(safeTeamName, member);
-            await messaging.sendPlainMessage(safeTeamName, 'team-lead', safeName, params.prompt, 'Initial prompt');
 
             const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
             let piCmd = piBinary;
@@ -634,7 +703,8 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
         name: 'broadcast_message',
         label: 'Broadcast Message',
-        description: 'Broadcast a message to all team members except the sender.',
+        description:
+            'Broadcast a message to all team members.  Do not use this just to respond to the team-lead.  Use send_message instead.',
         parameters: Type.Object({
             team_name: Type.String(),
             content: Type.String(),
@@ -670,104 +740,6 @@ export default function (pi: ExtensionAPI) {
     });
 
     pi.registerTool({
-        name: 'task_create',
-        label: 'Create Task',
-        description: 'Create a new team task.',
-        parameters: Type.Object({
-            team_name: Type.String(),
-            subject: Type.String(),
-            description: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const task = await tasks.createTask(params.team_name, params.subject, params.description);
-            return {
-                content: [{ type: 'text', text: `Task ${task.id} created.` }],
-                details: { task }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'task_submit_plan',
-        label: 'Submit Plan',
-        description: "Submit a plan for a task, updating its status to 'planning'.",
-        parameters: Type.Object({
-            team_name: Type.String(),
-            task_id: Type.String(),
-            plan: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const updated = await tasks.submitPlan(params.team_name, params.task_id, params.plan);
-            return {
-                content: [{ type: 'text', text: `Plan submitted for task ${params.task_id}.` }],
-                details: { task: updated }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'task_evaluate_plan',
-        label: 'Evaluate Plan',
-        description: 'Evaluate a submitted plan for a task.',
-        parameters: Type.Object({
-            team_name: Type.String(),
-            task_id: Type.String(),
-            action: StringEnum(['approve', 'reject']),
-            feedback: Type.Optional(Type.String({ description: 'Required for rejection' }))
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const updated = await tasks.evaluatePlan(
-                params.team_name,
-                params.task_id,
-                params.action as any,
-                params.feedback
-            );
-            return {
-                content: [{ type: 'text', text: `Plan for task ${params.task_id} has been ${params.action}d.` }],
-                details: { task: updated }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'task_list',
-        label: 'List Tasks',
-        description: 'List all tasks for a team.',
-        parameters: Type.Object({
-            team_name: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const taskList = await tasks.listTasks(params.team_name);
-            return {
-                content: [{ type: 'text', text: JSON.stringify(taskList, null, 2) }],
-                details: { tasks: taskList }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'task_update',
-        label: 'Update Task',
-        description: "Update a task's status or owner.",
-        parameters: Type.Object({
-            team_name: Type.String(),
-            task_id: Type.String(),
-            status: Type.Optional(StringEnum(['pending', 'planning', 'in_progress', 'completed', 'deleted'])),
-            owner: Type.Optional(Type.String())
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const updated = await tasks.updateTask(params.team_name, params.task_id, {
-                status: params.status as any,
-                owner: params.owner
-            });
-            return {
-                content: [{ type: 'text', text: `Task ${params.task_id} updated.` }],
-                details: { task: updated }
-            };
-        }
-    });
-
-    pi.registerTool({
         name: 'team_shutdown',
         label: 'Shutdown Team',
         description: 'Shutdown the entire team and close all panes/windows.',
@@ -782,8 +754,6 @@ export default function (pi: ExtensionAPI) {
                     await killTeammate(teamName, member);
                 }
                 const dir = paths.teamDir(teamName);
-                const tasksDir = paths.taskDir(teamName);
-                if (fs.existsSync(tasksDir)) fs.rmSync(tasksDir, { recursive: true });
                 if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
                 return { content: [{ type: 'text', text: `Team ${teamName} shut down.` }], details: {} };
             } catch (e) {
@@ -793,46 +763,39 @@ export default function (pi: ExtensionAPI) {
     });
 
     pi.registerTool({
-        name: 'task_read',
-        label: 'Read Task',
-        description: 'Read details of a specific task.',
+        name: 'list_teammates',
+        label: 'List Teammates',
+        description: 'List all teammates in a team with their status.',
         parameters: Type.Object({
-            team_name: Type.String(),
-            task_id: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const task = await tasks.readTask(params.team_name, params.task_id);
-            return {
-                content: [{ type: 'text', text: JSON.stringify(task, null, 2) }],
-                details: { task }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'check_teammate',
-        label: 'Check Teammate',
-        description: "Check a single teammate's status.",
-        parameters: Type.Object({
-            team_name: Type.String(),
-            agent_name: Type.String()
+            team_name: Type.String()
         }),
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
             const config = await teams.readConfig(params.team_name);
-            const member = config.members.find((m) => m.name === params.agent_name);
-            if (!member) throw new Error(`Teammate ${params.agent_name} not found`);
-
-            let alive = false;
-            if (member.windowId && terminal) {
-                alive = terminal.isWindowAlive(member.windowId);
-            } else if (member.tmuxPaneId && terminal) {
-                alive = terminal.isAlive(member.tmuxPaneId);
-            }
-
-            const unreadCount = (await messaging.readInbox(params.team_name, params.agent_name, true, false)).length;
+            const teammates = await Promise.all(
+                config.members.map(async (m) => {
+                    let alive = false;
+                    if (m.name === 'team-lead' && !isTeammate) {
+                        alive = true;
+                    } else if (m.windowId && terminal) {
+                        alive = terminal.isWindowAlive(m.windowId);
+                    } else if (m.tmuxPaneId && terminal) {
+                        alive = terminal.isAlive(m.tmuxPaneId);
+                    }
+                    const unreadCount = (await messaging.readInbox(params.team_name, m.name, true, false)).length;
+                    const active = isAgentActive(params.team_name, m.name);
+                    return {
+                        name: m.name,
+                        agentType: m.agentType,
+                        model: m.model,
+                        alive,
+                        active,
+                        unreadCount
+                    };
+                })
+            );
             return {
-                content: [{ type: 'text', text: JSON.stringify({ alive, unreadCount }, null, 2) }],
-                details: { alive, unreadCount }
+                content: [{ type: 'text', text: JSON.stringify(teammates, null, 2) }],
+                details: { teammates }
             };
         }
     });

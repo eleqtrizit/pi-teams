@@ -17,10 +17,14 @@ export function createTeam(
   separateWindows?: boolean
 ): TeamConfig {
   const dir = teamDir(name);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // Always wipe the team directory so no state files (inboxes, awoken markers,
+  // reminder timestamps, PIDs, etc.) leak from a previous run of the same team.
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
 
   const tasksDir = taskDir(name);
-  if (!fs.existsSync(tasksDir)) fs.mkdirSync(tasksDir, { recursive: true });
+  if (fs.existsSync(tasksDir)) fs.rmSync(tasksDir, { recursive: true, force: true });
+  fs.mkdirSync(tasksDir, { recursive: true });
 
   const leadMember: Member = {
     agentId: leadAgentId,

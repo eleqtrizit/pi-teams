@@ -183,3 +183,8 @@ export async function resetOwnerTasks(teamName: string, agentName: string) {
     }
   });
 }
+
+export async function listTasksForAgent(teamName: string, agentName: string): Promise<TaskFile[]> {
+  const allTasks = await listTasks(teamName);
+  return allTasks.filter(t => t.owner === agentName && t.status !== "completed" && t.status !== "deleted");
+}
