@@ -240,7 +240,7 @@ export function getTopModelMatches(
 export default function (pi: ExtensionAPI) {
     const isTeammate = !!process.env.PI_AGENT_NAME;
     const agentName = process.env.PI_AGENT_NAME || 'team-lead';
-    const teamName = process.env.PI_TEAM_NAME;
+    let teamName = process.env.PI_TEAM_NAME;
 
     const terminal = getTerminalAdapter();
 
@@ -297,17 +297,18 @@ export default function (pi: ExtensionAPI) {
                     pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox.`);
                 }
             }, 1000);
-        } else if (teamName) {
-            ctx.ui.setStatus('pi-teams', `Lead @ ${teamName}`);
+        } else {
+            if (teamName) {
+                ctx.ui.setStatus('pi-teams', `Lead @ ${teamName}`);
+            }
 
             setInterval(async () => {
-                if (ctx.isIdle() && teamName) {
-                    const unread = await messaging.readInbox(teamName, agentName, true, false);
-                    if (unread.length > 0) {
-                        pi.sendUserMessage(
-                            `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`
-                        );
-                    }
+                if (!ctx.isIdle() || !teamName) return;
+                const unread = await messaging.readInbox(teamName, agentName, true, false);
+                if (unread.length > 0) {
+                    pi.sendUserMessage(
+                        `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`
+                    );
                 }
             }, 1000);
         }
@@ -432,7 +433,7 @@ export default function (pi: ExtensionAPI) {
                 params.default_model,
                 params.separate_windows
             );
-            // Set PI_TEAM_NAME for the lead so message polling loop activates
+            teamName = params.team_name;
             process.env.PI_TEAM_NAME = params.team_name;
             return {
                 content: [{ type: 'text', text: `Team ${params.team_name} created.` }],
