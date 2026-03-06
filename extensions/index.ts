@@ -17,6 +17,14 @@ let modelsCacheTime = 0;
 const MODELS_CACHE_TTL = 60000; // 1 minute
 
 /**
+ * Clear the available models cache. Useful for testing.
+ */
+export function clearModelsCache(): void {
+    availableModelsCache = null;
+    modelsCacheTime = 0;
+}
+
+/**
  * Minimal model-registry interface used by this extension.
  */
 interface ModelRegistryLike {
@@ -82,15 +90,34 @@ function getProviderPriority(provider: string): number {
  * Find the best matching provider for a given model name.
  * Returns the full provider/model string or null if not found.
  */
-function resolveModelWithProvider(modelName: string, modelRegistry: ModelRegistryLike): string | null {
-    // If already has provider prefix, return as-is
-    if (modelName.includes('/')) {
-        return modelName;
-    }
-
+export function resolveModelWithProvider(modelName: string, modelRegistry: ModelRegistryLike): string | null {
     const availableModels = getAvailableModels(modelRegistry);
     if (availableModels.length === 0) {
         return null;
+    }
+
+    // If already has provider prefix, verify it exists in registry; otherwise resolve by model-id
+    if (modelName.includes('/')) {
+        const [providerPart, modelPart] = modelName.split('/', 2);
+        const provider = providerPart.toLowerCase();
+        const modelId = modelPart.toLowerCase();
+        const exists = availableModels.some(
+            (m) => m.provider.toLowerCase() === provider && m.model.toLowerCase() === modelId
+        );
+        if (exists) {
+            return modelName;
+        }
+        // Not an exact match — try resolving model-id scoped to the named provider first,
+        // then fall back to all providers.
+        const providerModels = availableModels.filter((m) => m.provider.toLowerCase() === provider);
+        if (providerModels.length > 0) {
+            const scopedRegistry: ModelRegistryLike = { getAvailable: () => providerModels.map((m) => ({ provider: m.provider, id: m.model })) };
+            const scopedResult = resolveModelWithProvider(modelPart, scopedRegistry);
+            if (scopedResult) {
+                return scopedResult;
+            }
+        }
+        return resolveModelWithProvider(modelPart, modelRegistry);
     }
 
     const lowerModelName = modelName.toLowerCase();
@@ -127,7 +154,9 @@ function resolveModelWithProvider(modelName: string, modelRegistry: ModelRegistr
         return `${partialMatches[0].provider}/${partialMatches[0].model}`;
     }
 
-    return null;
+    // Fall back to composite-aware token matching via getTopModelMatches
+    const topMatches = getTopModelMatches(modelName, modelRegistry, 1);
+    return topMatches.length > 0 ? topMatches[0].model : null;
 }
 
 /**
@@ -174,16 +203,153 @@ function tokenizeForSearch(value: string): string[] {
         .filter((token) => token.length > 0);
 }
 
+const STOP_WORDS = new Set(['on', 'the', 'with', 'for', 'by', 'in', 'at', 'to', 'a', 'an', 'of', 'and', 'or']);
+
 /**
- * Count query tokens found in candidate text.
+ * Collapse a string to lowercase alphanumeric only (no spaces or separators).
+ *
+ * :param value: The string to collapse
+ * :return: Collapsed lowercase alphanumeric string
  */
-function countMatchingTokens(queryTokens: string[], candidate: string): number {
-    const normalizedCandidate = normalizeForSearch(candidate);
-    return queryTokens.reduce((count, token) => count + (normalizedCandidate.includes(token) ? 1 : 0), 0);
+function collapse(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /**
- * Find top model matches by token relevance and Levenshtein distance.
+ * Tokenize a user query, filtering out stop words.
+ *
+ * :param value: The raw user query
+ * :return: Array of meaningful query tokens (lowercase, alphanumeric only)
+ */
+function tokenizeQuery(value: string): string[] {
+    return value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim()
+        .split(' ')
+        .filter((t) => t.length > 0 && !STOP_WORDS.has(t));
+}
+
+/**
+ * Check if a query token appears as a substring in a collapsed candidate string.
+ * Pure substring matching — no splitting or fuzzy logic.
+ *
+ * :param token: A single query token (e.g., "qwen3", "35b", "bighank")
+ * :param collapsed: The collapsed candidate string
+ * :return: true if the token is a substring of the collapsed string
+ */
+function tokenFoundIn(token: string, collapsed: string): boolean {
+    return collapsed.includes(token);
+}
+
+/**
+ * Split a token on letter/number boundaries.
+ * E.g., "qwen35b" → ["qwen", "35", "b"], "bighank" → ["bighank"]
+ *
+ * :param token: The token to split
+ * :return: Array of sub-parts (or the original token if no split points)
+ */
+function splitToken(token: string): string[] {
+    return token
+        .replace(/([a-z])([0-9])/g, '$1 $2')
+        .replace(/([0-9])([a-z])/g, '$1 $2')
+        .split(' ')
+        .filter((p) => p.length > 0);
+}
+
+/**
+ * Score how well a query token matches a collapsed candidate.
+ *
+ * Returns a score reflecting match quality. For composite tokens
+ * (like "qwen35b"), this sums the lengths of all contiguous
+ * sub-segments that are found as direct substrings. This rewards
+ * candidates where more of the token's sub-parts are adjacent.
+ *
+ * :param token: A single query token
+ * :param collapsed: The collapsed candidate string
+ * :return: Match strength score, or 0 for no match
+ */
+function tokenMatchStrength(token: string, collapsed: string): number {
+    if (collapsed.includes(token)) return token.length * 2;
+
+    const parts = splitToken(token);
+    if (parts.length <= 1) return 0;
+
+    // Check all parts exist (composite match)
+    if (!parts.every((part) => collapsed.includes(part))) return 0;
+
+    // Sum lengths of all contiguous sub-segments found as direct substrings.
+    // For "qwen35b" → ["qwen","35","b"]:
+    //   sub-segments: "qwen"(4), "qwen35"(6), "qwen35b"(7), "35"(2), "35b"(3), "b"(1)
+    //   Against "...qwen35coder35bnothinking": "qwen"✓, "qwen35"✓, "35"✓, "35b"✓, "b"✓ = 4+6+2+3+1 = 16
+    //   Against "...qwen35coder122b": "qwen"✓, "qwen35"✓, "35"✓, "b"✓ = 4+6+2+1 = 13
+    let score = 0;
+    for (let i = 0; i < parts.length; i++) {
+        let segment = '';
+        for (let j = i; j < parts.length; j++) {
+            segment += parts[j];
+            if (collapsed.includes(segment)) {
+                score += segment.length;
+            }
+        }
+    }
+
+    return score;
+}
+
+/**
+ * Count how many query tokens match a collapsed candidate string.
+ *
+ * :param queryTokens: The tokenized user query
+ * :param collapsed: The collapsed candidate string (lowercase alphanumeric)
+ * :return: Number of query tokens that match (direct or composite)
+ */
+function countMatches(queryTokens: string[], collapsed: string): number {
+    return queryTokens.filter((t) => tokenMatchStrength(t, collapsed) > 0).length;
+}
+
+/**
+ * Count how many query tokens exactly match a word-boundary segment of the
+ * model's base name (last slash-delimited component of the model ID).
+ * Using only the base name avoids false positives from provider-namespace
+ * prefixes in model IDs like "qwen/qwen3-coder-480b".
+ * E.g., for base "qwen3coder-35b", segments are ["qwen3coder", "35b"]; token
+ * "35b" is an exact segment match while "qwen35" is not.
+ *
+ * :param queryTokens: The tokenized user query
+ * :param modelId: The raw model identifier (not collapsed)
+ * :return: Number of query tokens that exactly match a model segment
+ */
+function countExactSegmentMatches(queryTokens: string[], modelId: string): number {
+    const baseName = modelId.includes('/') ? modelId.split('/').pop()! : modelId;
+    const segments = new Set(baseName.toLowerCase().split(/[-_.\s]+/).map((s) => s.replace(/[^a-z0-9]/g, '')));
+    return queryTokens.filter((t) => segments.has(t)).length;
+}
+
+/**
+ * Sum of match strengths for all query tokens. Higher = better quality
+ * matches (direct substring worth 2, composite split worth 1).
+ *
+ * :param queryTokens: The tokenized user query
+ * :param collapsed: The collapsed candidate string
+ * :return: Total match strength score
+ */
+function matchQuality(queryTokens: string[], collapsed: string): number {
+    return queryTokens.reduce((sum, t) => sum + tokenMatchStrength(t, collapsed), 0);
+}
+
+/**
+ * Find top model matches by substring relevance and Levenshtein distance.
+ *
+ * Matching is done by collapsing "provider/model" into a single lowercase
+ * alphanumeric string and checking whether each query token appears as a
+ * substring. Tokens that are composites like "35b" or "qwen3" are also
+ * split on letter/number boundaries so their parts can match individually.
+ *
+ * :param modelName: The user's free-form query string
+ * :param modelRegistry: Registry providing available models
+ * :param limit: Maximum number of results to return
+ * :return: Array of { model, distance } sorted by relevance
  */
 export function getTopModelMatches(
     modelName: string,
@@ -191,45 +357,37 @@ export function getTopModelMatches(
     limit = 5
 ): Array<{ model: string; distance: number }> {
     const query = modelName.trim().toLowerCase();
+    const queryTokens = tokenizeQuery(query);
     const normalizedQuery = normalizeForSearch(query);
-    const queryTokens = tokenizeForSearch(query);
     const available = getAvailableModels(modelRegistry);
 
     return available
         .map((m) => {
-            const modelOnly = m.model.toLowerCase();
-            const fullModel = `${m.provider}/${m.model}`.toLowerCase();
-            const normalizedModelOnly = normalizeForSearch(modelOnly);
-            const normalizedFullModel = normalizeForSearch(fullModel);
+            const fullId = `${m.provider}/${m.model}`;
+            const collapsedFull = collapse(fullId);
+            const collapsedModel = collapse(m.model);
+
+            const matchCount = countMatches(queryTokens, collapsedFull);
+            const quality = matchQuality(queryTokens, collapsedFull);
+            const exactSegmentMatches = countExactSegmentMatches(queryTokens, m.model);
             const distance = Math.min(
-                levenshteinDistance(query, modelOnly),
-                levenshteinDistance(query, fullModel),
-                levenshteinDistance(normalizedQuery, normalizedModelOnly),
-                levenshteinDistance(normalizedQuery, normalizedFullModel)
+                levenshteinDistance(query, m.model.toLowerCase()),
+                levenshteinDistance(query, fullId.toLowerCase()),
+                levenshteinDistance(normalizedQuery, normalizeForSearch(m.model)),
+                levenshteinDistance(normalizedQuery, normalizeForSearch(fullId))
             );
-            const tokenMatches = Math.max(
-                countMatchingTokens(queryTokens, modelOnly),
-                countMatchingTokens(queryTokens, fullModel)
-            );
-            const containsFullQuery =
-                normalizedModelOnly.includes(normalizedQuery) || normalizedFullModel.includes(normalizedQuery);
-            const missingTokenPenalty = Math.max(0, queryTokens.length - tokenMatches);
-            const score = missingTokenPenalty * 1000 + (containsFullQuery ? 0 : 100) + distance;
+            const containsFullQuery = collapsedFull.includes(collapse(query)) || collapsedModel.includes(collapse(query));
             const providerPriority = getProviderPriority(m.provider);
-            return {
-                model: `${m.provider}/${m.model}`,
-                distance,
-                tokenMatches,
-                containsFullQuery,
-                score,
-                providerPriority
-            };
+
+            return { model: fullId, matchCount, exactSegmentMatches, quality, distance, containsFullQuery, providerPriority };
         })
         .sort(
             (a, b) =>
-                b.tokenMatches - a.tokenMatches ||
+                b.matchCount - a.matchCount ||
+                b.exactSegmentMatches - a.exactSegmentMatches ||
+                b.quality - a.quality ||
                 Number(b.containsFullQuery) - Number(a.containsFullQuery) ||
-                a.score - b.score ||
+                a.distance - b.distance ||
                 a.providerPriority - b.providerPriority ||
                 a.model.localeCompare(b.model)
         )
@@ -291,7 +449,6 @@ export default function (pi: ExtensionAPI) {
                     return;
                 }
 
-                await messaging.ensureReminderMessage(teamName, agentName);
                 const unread = await messaging.readInbox(teamName, agentName, true, false);
                 if (unread.length > 0) {
                     pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox.`);
@@ -316,7 +473,11 @@ export default function (pi: ExtensionAPI) {
 
     function setActiveStatus(active: boolean) {
         if (!teamName) return;
-        const activeFile = path.join(paths.teamDir(teamName), `${agentName}.active`);
+        const teamDirectory = paths.teamDir(teamName);
+        if (!fs.existsSync(teamDirectory)) {
+            fs.mkdirSync(teamDirectory, { recursive: true });
+        }
+        const activeFile = path.join(teamDirectory, `${agentName}.active`);
         if (active) {
             const wasInactive = !fs.existsSync(activeFile);
             fs.writeFileSync(activeFile, Date.now().toString());
@@ -356,6 +517,9 @@ export default function (pi: ExtensionAPI) {
 
     pi.on('turn_end', async (_event, ctx) => {
         setActiveStatus(false);
+        if (isTeammate && teamName) {
+            await messaging.ensureReminderMessage(teamName, agentName);
+        }
     });
 
     let firstTurn = true;
@@ -412,290 +576,319 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Tools
-    pi.registerTool({
-        name: 'team_create',
-        label: 'Create Team',
-        description: 'Create a new agent team.',
-        parameters: Type.Object({
-            team_name: Type.String(),
-            description: Type.Optional(Type.String()),
-            default_model: Type.Optional(Type.String()),
-            separate_windows: Type.Optional(
-                Type.Boolean({ default: false, description: 'Open teammates in separate OS windows instead of panes' })
-            )
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const config = teams.createTeam(
-                params.team_name,
-                'local-session',
-                'lead-agent',
-                params.description,
-                params.default_model,
-                params.separate_windows
-            );
-            teamName = params.team_name;
-            process.env.PI_TEAM_NAME = params.team_name;
-            return {
-                content: [{ type: 'text', text: `Team ${params.team_name} created.` }],
-                details: { config }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'resolve_model',
-        label: 'Resolve Model',
-        description:
-            'Use this tool to find the correct provider/model name to use in spawn_teammate.  Use DEFAULT MODEL if no good match is found.',
-        parameters: Type.Object({
-            model_name: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const requested = params.model_name.trim();
-            if (!requested) {
-                throw new Error('model_name must not be empty.');
+    if (!isTeammate) {
+        pi.registerTool({
+            name: 'team_create',
+            label: 'Create Team',
+            description: 'Create a new agent team.',
+            parameters: Type.Object({
+                team_name: Type.String(),
+                description: Type.Optional(Type.String()),
+                default_model: Type.Optional(Type.String()),
+                separate_windows: Type.Optional(
+                    Type.Boolean({ default: false, description: 'Open teammates in separate OS windows instead of panes' })
+                )
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const config = teams.createTeam(
+                    params.team_name,
+                    'local-session',
+                    'lead-agent',
+                    params.description,
+                    params.default_model,
+                    params.separate_windows
+                );
+                teamName = params.team_name;
+                process.env.PI_TEAM_NAME = params.team_name;
+                return {
+                    content: [{ type: 'text', text: `Team ${params.team_name} created.` }],
+                    details: { config }
+                };
             }
+        });
+    }
 
-            const topMatches = getTopModelMatches(requested, ctx.modelRegistry, 5);
-            const defaultModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
-            const resolved = resolveModelWithProvider(requested, ctx.modelRegistry);
-            if (!resolved) {
-                const matchesText = topMatches.map((m) => m.model).join(', ');
-                const outputText = defaultModel
-                    ? `DEFAULT MODEL: ${defaultModel}, Best matches: ${matchesText}`
-                    : matchesText;
+    if (!isTeammate) {
+        pi.registerTool({
+            name: 'resolve_model',
+            label: 'Resolve Model',
+            description:
+                'Use this tool to find the correct provider/model name to use in spawn_teammate.  Use DEFAULT MODEL if no good match is found.',
+            parameters: Type.Object({
+                model_name: Type.String()
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const requested = params.model_name.trim();
+                if (!requested) {
+                    throw new Error('model_name must not be empty.');
+                }
+
+                const topMatches = getTopModelMatches(requested, ctx.modelRegistry, 5);
+                const defaultModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                const resolved = resolveModelWithProvider(requested, ctx.modelRegistry);
+                if (!resolved) {
+                    const matchesText = topMatches.map((m) => m.model).join(', ');
+                    const outputText = defaultModel
+                        ? `DEFAULT MODEL: ${defaultModel}, Best matches: ${matchesText}`
+                        : matchesText;
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: outputText
+                            }
+                        ],
+                        details: { requested, resolved_model: null, top_matches: topMatches, default_model: defaultModel }
+                    };
+                }
+
+                return {
+                    content: [{ type: 'text', text: resolved }],
+                    details: { requested, resolved_model: resolved, top_matches: topMatches, default_model: defaultModel }
+                };
+            }
+        });
+    }
+
+    if (!isTeammate) {
+        pi.registerTool({
+            name: 'spawn_teammate',
+            label: 'Spawn Teammate',
+            description: 'Spawn a new teammate in a terminal pane or separate window.',
+            parameters: Type.Object({
+                team_name: Type.String(),
+                name: Type.String(),
+                cwd: Type.String(),
+                model: Type.Optional(Type.String()),
+                thinking: Type.Optional(StringEnum(['off', 'minimal', 'low', 'medium', 'high'])),
+                separate_window: Type.Optional(Type.Boolean({ default: false }))
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const safeName = paths.sanitizeName(params.name);
+                const safeTeamName = paths.sanitizeName(params.team_name);
+
+                if (!teams.teamExists(safeTeamName)) {
+                    throw new Error(`Team ${params.team_name} does not exist`);
+                }
+
+                if (!terminal) {
+                    throw new Error('No terminal adapter detected.');
+                }
+
+                const teamConfig = await teams.readConfig(safeTeamName);
+                let chosenModel = params.model?.trim();
+
+                // If model is not provided or contains "default" (case-insensitive), use the team-leader's model from context
+                if (!chosenModel || /default/i.test(chosenModel)) {
+                    const defaultModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                    if (defaultModel) {
+                        chosenModel = defaultModel;
+                    }
+                }
+
+                if (!chosenModel) {
+                    throw new Error(
+                        'spawn_teammate requires a model. ' +
+                            'Either provide one explicitly or ensure the team-leader has a model configured.'
+                    );
+                }
+
+                // Spawn tool only accepts fully-qualified provider/model values.
+                // Use resolve_model first to resolve aliases like "haiku".
+                if (!chosenModel.includes('/')) {
+                    throw new Error(
+                        `Model '${chosenModel}' is not fully qualified. ` +
+                            `Use resolve_model(model_name="${chosenModel}") and pass the returned provider/model value to spawn_teammate.`
+                    );
+                }
+
+                const slashIndex = chosenModel.indexOf('/');
+                const provider = chosenModel.slice(0, slashIndex).toLowerCase();
+                const modelId = chosenModel.slice(slashIndex + 1).toLowerCase();
+                const isAvailable = getAvailableModels(ctx.modelRegistry).some(
+                    (m) => m.provider.toLowerCase() === provider && m.model.toLowerCase() === modelId
+                );
+                if (!isAvailable) {
+                    throw new Error(
+                        `Model '${chosenModel}' is not available in the current registry. ` +
+                            `Use resolve_model(model_name="...") to find a valid provider/model value.`
+                    );
+                }
+
+                const useSeparateWindow = params.separate_window ?? teamConfig.separateWindows ?? false;
+                if (useSeparateWindow && !terminal.supportsWindows()) {
+                    throw new Error(`Separate windows mode is not supported in ${terminal.name}.`);
+                }
+
+                const member: Member = {
+                    agentId: `${safeName}@${safeTeamName}`,
+                    name: safeName,
+                    agentType: 'teammate',
+                    model: chosenModel,
+                    joinedAt: Date.now(),
+                    tmuxPaneId: '',
+                    cwd: params.cwd,
+                    subscriptions: [],
+                    color: 'blue',
+                    thinking: params.thinking
+                };
+
+                await teams.addMember(safeTeamName, member);
+
+                const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
+                let piCmd = piBinary;
+
+                if (chosenModel) {
+                    // Use the combined --model provider/model:thinking format
+                    if (params.thinking) {
+                        piCmd = `${piBinary} --model ${chosenModel}:${params.thinking}`;
+                    } else {
+                        piCmd = `${piBinary} --model ${chosenModel}`;
+                    }
+                } else if (params.thinking) {
+                    piCmd = `${piBinary} --thinking ${params.thinking}`;
+                }
+
+                const env: Record<string, string> = {
+                    ...process.env,
+                    PI_TEAM_NAME: safeTeamName,
+                    PI_AGENT_NAME: safeName
+                };
+
+                // Stamp firstActivationFile and clear stale state files BEFORE spawning
+                // the terminal process.  This guarantees session_start sees the file and
+                // skips the inbox-deletion cleanup even if the team-lead sends a message
+                // between spawn_teammate returning and the worker's session_start firing.
+                const firstActivationFile = paths.firstActivationPath(safeTeamName, safeName);
+                const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
+                const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
+                const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
+                if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+                if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
+                if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
+                fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
+                fs.writeFileSync(firstActivationFile, Date.now().toString());
+
+                let terminalId = '';
+                let isWindow = false;
+
+                try {
+                    if (useSeparateWindow) {
+                        isWindow = true;
+                        terminalId = terminal.spawnWindow({
+                            name: safeName,
+                            cwd: params.cwd,
+                            command: piCmd,
+                            env: env,
+                            teamName: safeTeamName
+                        });
+                        await teams.updateMember(safeTeamName, safeName, { windowId: terminalId });
+                    } else {
+                        if (terminal instanceof Iterm2Adapter) {
+                            const teammates = teamConfig.members.filter(
+                                (m) => m.agentType === 'teammate' && m.tmuxPaneId.startsWith('iterm_')
+                            );
+                            const lastTeammate = teammates.length > 0 ? teammates[teammates.length - 1] : null;
+                            if (lastTeammate?.tmuxPaneId) {
+                                terminal.setSpawnContext({ lastSessionId: lastTeammate.tmuxPaneId.replace('iterm_', '') });
+                            } else {
+                                terminal.setSpawnContext({});
+                            }
+                        }
+
+                        terminalId = terminal.spawn({
+                            name: safeName,
+                            cwd: params.cwd,
+                            command: piCmd,
+                            env: env
+                        });
+                        await teams.updateMember(safeTeamName, safeName, { tmuxPaneId: terminalId });
+                    }
+                } catch (e) {
+                    throw new Error(`Failed to spawn ${terminal.name} ${isWindow ? 'window' : 'pane'}: ${e}`);
+                }
+
                 return {
                     content: [
                         {
                             type: 'text',
-                            text: outputText
+                            text: `Teammate ${params.name} spawned in ${isWindow ? 'window' : 'pane'} ${terminalId}.`
                         }
                     ],
-                    details: { requested, resolved_model: null, top_matches: topMatches, default_model: defaultModel }
+                    details: { agentId: member.agentId, terminalId, isWindow }
                 };
             }
+        });
+    }
 
-            return {
-                content: [{ type: 'text', text: resolved }],
-                details: { requested, resolved_model: resolved, top_matches: topMatches, default_model: defaultModel }
-            };
-        }
-    });
+    if (!isTeammate) {
+        pi.registerTool({
+            name: 'spawn_lead_window',
+            label: 'Spawn Lead Window',
+            description: 'Open the team lead in a separate OS window.',
+            parameters: Type.Object({
+                team_name: Type.String(),
+                cwd: Type.Optional(Type.String())
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const safeTeamName = paths.sanitizeName(params.team_name);
+                if (!teams.teamExists(safeTeamName)) throw new Error(`Team ${params.team_name} does not exist`);
+                if (!terminal || !terminal.supportsWindows()) throw new Error('Windows mode not supported.');
 
-    pi.registerTool({
-        name: 'spawn_teammate',
-        label: 'Spawn Teammate',
-        description: 'Spawn a new teammate in a terminal pane or separate window.',
-        parameters: Type.Object({
-            team_name: Type.String(),
-            name: Type.String(),
-            cwd: Type.String(),
-            model: Type.Optional(Type.String()),
-            thinking: Type.Optional(StringEnum(['off', 'minimal', 'low', 'medium', 'high'])),
-            separate_window: Type.Optional(Type.Boolean({ default: false }))
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const safeName = paths.sanitizeName(params.name);
-            const safeTeamName = paths.sanitizeName(params.team_name);
-
-            if (!teams.teamExists(safeTeamName)) {
-                throw new Error(`Team ${params.team_name} does not exist`);
-            }
-
-            if (!terminal) {
-                throw new Error('No terminal adapter detected.');
-            }
-
-            const teamConfig = await teams.readConfig(safeTeamName);
-            let chosenModel = params.model?.trim();
-
-            // If model is not provided or contains "default" (case-insensitive), use the team-leader's model from context
-            if (!chosenModel || /default/i.test(chosenModel)) {
-                const defaultModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
-                if (defaultModel) {
-                    chosenModel = defaultModel;
+                const teamConfig = await teams.readConfig(safeTeamName);
+                const cwd = params.cwd || process.cwd();
+                const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
+                let piCmd = piBinary;
+                if (teamConfig.defaultModel) {
+                    // Use the combined --model provider/model format
+                    piCmd = `${piBinary} --model ${teamConfig.defaultModel}`;
                 }
-            }
 
-            if (!chosenModel) {
-                throw new Error(
-                    'spawn_teammate requires a model. ' +
-                        'Either provide one explicitly or ensure the team-leader has a model configured.'
-                );
-            }
-
-            // Spawn tool only accepts fully-qualified provider/model values.
-            // Use resolve_model first to resolve aliases like "haiku".
-            if (!chosenModel.includes('/')) {
-                throw new Error(
-                    `Model '${chosenModel}' is not fully qualified. ` +
-                        `Use resolve_model(model_name="${chosenModel}") and pass the returned provider/model value to spawn_teammate.`
-                );
-            }
-
-            const slashIndex = chosenModel.indexOf('/');
-            const provider = chosenModel.slice(0, slashIndex).toLowerCase();
-            const modelId = chosenModel.slice(slashIndex + 1).toLowerCase();
-            const isAvailable = getAvailableModels(ctx.modelRegistry).some(
-                (m) => m.provider.toLowerCase() === provider && m.model.toLowerCase() === modelId
-            );
-            if (!isAvailable) {
-                throw new Error(
-                    `Model '${chosenModel}' is not available in the current registry. ` +
-                        `Use resolve_model(model_name="...") to find a valid provider/model value.`
-                );
-            }
-
-            const useSeparateWindow = params.separate_window ?? teamConfig.separateWindows ?? false;
-            if (useSeparateWindow && !terminal.supportsWindows()) {
-                throw new Error(`Separate windows mode is not supported in ${terminal.name}.`);
-            }
-
-            const member: Member = {
-                agentId: `${safeName}@${safeTeamName}`,
-                name: safeName,
-                agentType: 'teammate',
-                model: chosenModel,
-                joinedAt: Date.now(),
-                tmuxPaneId: '',
-                cwd: params.cwd,
-                subscriptions: [],
-                color: 'blue',
-                thinking: params.thinking
-            };
-
-            await teams.addMember(safeTeamName, member);
-
-            const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
-            let piCmd = piBinary;
-
-            if (chosenModel) {
-                // Use the combined --model provider/model:thinking format
-                if (params.thinking) {
-                    piCmd = `${piBinary} --model ${chosenModel}:${params.thinking}`;
-                } else {
-                    piCmd = `${piBinary} --model ${chosenModel}`;
-                }
-            } else if (params.thinking) {
-                piCmd = `${piBinary} --thinking ${params.thinking}`;
-            }
-
-            const env: Record<string, string> = {
-                ...process.env,
-                PI_TEAM_NAME: safeTeamName,
-                PI_AGENT_NAME: safeName
-            };
-
-            let terminalId = '';
-            let isWindow = false;
-
-            try {
-                if (useSeparateWindow) {
-                    isWindow = true;
-                    terminalId = terminal.spawnWindow({
-                        name: safeName,
-                        cwd: params.cwd,
+                const env = { ...process.env, PI_TEAM_NAME: safeTeamName, PI_AGENT_NAME: 'team-lead' };
+                try {
+                    const windowId = terminal.spawnWindow({
+                        name: 'team-lead',
+                        cwd,
                         command: piCmd,
-                        env: env,
+                        env,
                         teamName: safeTeamName
                     });
-                    await teams.updateMember(safeTeamName, safeName, { windowId: terminalId });
-                } else {
-                    if (terminal instanceof Iterm2Adapter) {
-                        const teammates = teamConfig.members.filter(
-                            (m) => m.agentType === 'teammate' && m.tmuxPaneId.startsWith('iterm_')
-                        );
-                        const lastTeammate = teammates.length > 0 ? teammates[teammates.length - 1] : null;
-                        if (lastTeammate?.tmuxPaneId) {
-                            terminal.setSpawnContext({ lastSessionId: lastTeammate.tmuxPaneId.replace('iterm_', '') });
-                        } else {
-                            terminal.setSpawnContext({});
-                        }
-                    }
-
-                    terminalId = terminal.spawn({
-                        name: safeName,
-                        cwd: params.cwd,
-                        command: piCmd,
-                        env: env
-                    });
-                    await teams.updateMember(safeTeamName, safeName, { tmuxPaneId: terminalId });
+                    await teams.updateMember(safeTeamName, 'team-lead', { windowId });
+                    return { content: [{ type: 'text', text: `Lead window spawned: ${windowId}` }], details: { windowId } };
+                } catch (e) {
+                    throw new Error(`Failed: ${e}`);
                 }
-            } catch (e) {
-                throw new Error(`Failed to spawn ${terminal.name} ${isWindow ? 'window' : 'pane'}: ${e}`);
             }
-
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: `Teammate ${params.name} spawned in ${isWindow ? 'window' : 'pane'} ${terminalId}.`
-                    }
-                ],
-                details: { agentId: member.agentId, terminalId, isWindow }
-            };
-        }
-    });
-
-    pi.registerTool({
-        name: 'spawn_lead_window',
-        label: 'Spawn Lead Window',
-        description: 'Open the team lead in a separate OS window.',
-        parameters: Type.Object({
-            team_name: Type.String(),
-            cwd: Type.Optional(Type.String())
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const safeTeamName = paths.sanitizeName(params.team_name);
-            if (!teams.teamExists(safeTeamName)) throw new Error(`Team ${params.team_name} does not exist`);
-            if (!terminal || !terminal.supportsWindows()) throw new Error('Windows mode not supported.');
-
-            const teamConfig = await teams.readConfig(safeTeamName);
-            const cwd = params.cwd || process.cwd();
-            const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
-            let piCmd = piBinary;
-            if (teamConfig.defaultModel) {
-                // Use the combined --model provider/model format
-                piCmd = `${piBinary} --model ${teamConfig.defaultModel}`;
-            }
-
-            const env = { ...process.env, PI_TEAM_NAME: safeTeamName, PI_AGENT_NAME: 'team-lead' };
-            try {
-                const windowId = terminal.spawnWindow({
-                    name: 'team-lead',
-                    cwd,
-                    command: piCmd,
-                    env,
-                    teamName: safeTeamName
-                });
-                await teams.updateMember(safeTeamName, 'team-lead', { windowId });
-                return { content: [{ type: 'text', text: `Lead window spawned: ${windowId}` }], details: { windowId } };
-            } catch (e) {
-                throw new Error(`Failed: ${e}`);
-            }
-        }
-    });
+        });
+    }
 
     pi.registerTool({
         name: 'send_message',
         label: 'Send Message',
         description: 'Send a message to a teammate.',
         parameters: Type.Object({
-            team_name: Type.String(),
+            team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
             recipient: Type.String(),
             content: Type.String(),
             summary: Type.String()
         }),
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+            const resolvedTeam = params.team_name || teamName;
+            if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
             await messaging.sendPlainMessage(
-                params.team_name,
+                resolvedTeam,
                 agentName,
                 params.recipient,
                 params.content,
                 params.summary
             );
             return {
-                content: [{ type: 'text', text: `Message sent to ${params.recipient}.` }],
+                content: [
+                    {
+                        type: 'text',
+                        text: `Message sent to ${params.recipient}.\n\n${params.content}`
+                    }
+                ],
                 details: {}
             };
         }
@@ -707,13 +900,15 @@ export default function (pi: ExtensionAPI) {
         description:
             'Broadcast a message to all team members.  Do not use this just to respond to the team-lead.  Use send_message instead.',
         parameters: Type.Object({
-            team_name: Type.String(),
+            team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
             content: Type.String(),
             summary: Type.String(),
             color: Type.Optional(Type.String())
         }),
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            await messaging.broadcastMessage(params.team_name, agentName, params.content, params.summary, params.color);
+            const resolvedTeam = params.team_name || teamName;
+            if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
+            await messaging.broadcastMessage(resolvedTeam, agentName, params.content, params.summary, params.color);
             return {
                 content: [{ type: 'text', text: `Message broadcasted to all team members.` }],
                 details: {}
@@ -726,13 +921,15 @@ export default function (pi: ExtensionAPI) {
         label: 'Read Inbox',
         description: "Read messages from an agent's inbox.",
         parameters: Type.Object({
-            team_name: Type.String(),
+            team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
             agent_name: Type.Optional(Type.String({ description: 'Whose inbox to read. Defaults to your own.' })),
             unread_only: Type.Optional(Type.Boolean({ default: true }))
         }),
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+            const resolvedTeam = params.team_name || teamName;
+            if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
             const targetAgent = params.agent_name || agentName;
-            const msgs = await messaging.readInbox(params.team_name, targetAgent, params.unread_only);
+            const msgs = await messaging.readInbox(resolvedTeam, targetAgent, params.unread_only ?? true);
             return {
                 content: [{ type: 'text', text: JSON.stringify(msgs, null, 2) }],
                 details: { messages: msgs }
@@ -740,28 +937,30 @@ export default function (pi: ExtensionAPI) {
         }
     });
 
-    pi.registerTool({
-        name: 'team_shutdown',
-        label: 'Shutdown Team',
-        description: 'Shutdown the entire team and close all panes/windows.',
-        parameters: Type.Object({
-            team_name: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const teamName = params.team_name;
-            try {
-                const config = await teams.readConfig(teamName);
-                for (const member of config.members) {
-                    await killTeammate(teamName, member);
+    if (!isTeammate) {
+        pi.registerTool({
+            name: 'team_shutdown',
+            label: 'Shutdown Team',
+            description: 'Shutdown the entire team and close all panes/windows.',
+            parameters: Type.Object({
+                team_name: Type.String()
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const teamName = params.team_name;
+                try {
+                    const config = await teams.readConfig(teamName);
+                    for (const member of config.members) {
+                        await killTeammate(teamName, member);
+                    }
+                    const dir = paths.teamDir(teamName);
+                    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
+                    return { content: [{ type: 'text', text: `Team ${teamName} shut down.` }], details: {} };
+                } catch (e) {
+                    throw new Error(`Failed to shutdown team: ${e}`);
                 }
-                const dir = paths.teamDir(teamName);
-                if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
-                return { content: [{ type: 'text', text: `Team ${teamName} shut down.` }], details: {} };
-            } catch (e) {
-                throw new Error(`Failed to shutdown team: ${e}`);
             }
-        }
-    });
+        });
+    }
 
     pi.registerTool({
         name: 'list_teammates',
@@ -801,25 +1000,27 @@ export default function (pi: ExtensionAPI) {
         }
     });
 
-    pi.registerTool({
-        name: 'process_shutdown_approved',
-        label: 'Process Shutdown Approved',
-        description: "Process a teammate's shutdown.",
-        parameters: Type.Object({
-            team_name: Type.String(),
-            agent_name: Type.String()
-        }),
-        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-            const config = await teams.readConfig(params.team_name);
-            const member = config.members.find((m) => m.name === params.agent_name);
-            if (!member) throw new Error(`Teammate ${params.agent_name} not found`);
+    if (!isTeammate) {
+        pi.registerTool({
+            name: 'process_shutdown_approved',
+            label: 'Process Shutdown Approved',
+            description: "Process a teammate's shutdown.",
+            parameters: Type.Object({
+                team_name: Type.String(),
+                agent_name: Type.String()
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const config = await teams.readConfig(params.team_name);
+                const member = config.members.find((m) => m.name === params.agent_name);
+                if (!member) throw new Error(`Teammate ${params.agent_name} not found`);
 
-            await killTeammate(params.team_name, member);
-            await teams.removeMember(params.team_name, params.agent_name);
-            return {
-                content: [{ type: 'text', text: `Teammate ${params.agent_name} has been shut down.` }],
-                details: {}
-            };
-        }
-    });
+                await killTeammate(params.team_name, member);
+                await teams.removeMember(params.team_name, params.agent_name);
+                return {
+                    content: [{ type: 'text', text: `Teammate ${params.agent_name} has been shut down.` }],
+                    details: {}
+                };
+            }
+        });
+    }
 }
