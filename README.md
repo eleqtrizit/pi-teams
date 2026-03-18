@@ -52,63 +52,13 @@ npm install
 
 ## Quick Start
 
-### 1. Create a Team
-
-```javascript
-// Create a basic team
-team_create({ team_name: "my-team" })
-
-// Create with default model
-team_create({
-  team_name: "research-team",
-  default_model: "gpt-4o",
-  description: "AI research and analysis team"
-})
-```
-
-### 2. Spawn Teammates
-
-```javascript
-// Basic teammate
-spawn_teammate({
-  team_name: "my-team",
-  name: "security-bot",
-  cwd: "/path/to/project",
-  prompt: "Review the codebase for security vulnerabilities"
-})
-
-// With custom model and thinking level
-spawn_teammate({
-  team_name: "my-team",
-  name: "architect",
-  cwd: "/path/to/project",
-  model: "gpt-4o",
-  thinking: "high",
-  prompt: "Design the system architecture for the new feature"
-})
-```
-
-### 3. Team Communication
-
-```javascript
-// Send message to specific teammate
-send_message({
-  team_name: "my-team",
-  recipient: "security-bot",
-  content: "Please focus on the auth module first",
-  summary: "Focus on auth module"
-})
-
-// Broadcast to entire team
-broadcast_message({
-  team_name: "my-team",
-  content: "API endpoint has changed to /v2. Please update your work.",
-  summary: "API endpoint changed to v2"
-})
-
-// Read inbox
-read_inbox({ team_name: "my-team", agent_name: "security-bot" })
-```
+1. Create a team called my-team.
+2. Create a team called research-team with model gpt-4o.
+3. Spawn a teammate called security-bot to review the codebase.
+4. Spawn a teammate called architect with model gpt-4o and thinking level high.
+5. Send a message to security-bot to focus on the auth module.
+6. Broadcast a message to the entire team about the API endpoint change.
+7. Read the inbox of security-bot.
 
 ## Thinking Levels
 
@@ -131,17 +81,7 @@ Use different models for different roles:
 - **`glm-4.7`**, **`glm-5`** (Zhipu AI) - Alternative high-performance models
 - **Custom providers** - Any model available in your pi configuration
 
-Example mixed-speed team:
-```javascript
-// Expensive reasoning for design
-spawn_teammate({ team_name: "mixed", name: "architect", model: "gpt-4o", thinking: "high" })
-
-// Fast implementation
-spawn_teammate({ team_name: "mixed", name: "coder", model: "haiku", thinking: "low" })
-
-// Thorough review
-spawn_teammate({ team_name: "mixed", name: "reviewer", model: "gpt-4o", thinking: "medium" })
-```
+Create a mixed-speed team with an architect using gpt-4o, a coder using haiku, and a reviewer using gpt-4o.
 
 ## Terminal Integration
 
