@@ -8,11 +8,8 @@ Complete documentation of all tools, parameters, and automated behavior.
 
 - [Team Management](#team-management)
 - [Teammates](#teammates)
-- [Task Management](#task-management)
 - [Messaging](#messaging)
-- [Task Planning & Approval](#task-planning--approval)
 - [Automated Behavior](#automated-behavior)
-- [Task Statuses](#task-statuses)
 - [Configuration & Data](#configuration--data)
 
 ---
@@ -27,25 +24,27 @@ Start a new team with optional default model.
 - `team_name` (required): Name for the team
 - `description` (optional): Team description
 - `default_model` (optional): Default AI model for all teammates (e.g., `gpt-4o`, `haiku`, `glm-4.7`)
+- `separate_windows` (optional): If `true`, open teammates in separate OS windows instead of panes
 
 **Examples**:
 ```javascript
 team_create({ team_name: "my-team" })
 team_create({ team_name: "research", default_model: "gpt-4o" })
+team_create({ team_name: "windows-team", separate_windows: true })
 ```
 
 ---
 
-### team_delete
+### team_shutdown
 
-Delete a team and all its data (configuration, tasks, messages).
+Shutdown the entire team and close all panes/windows.
 
 **Parameters**:
-- `team_name` (required): Name of the team to delete
+- `team_name` (required): Name of the team to shutdown
 
 **Example**:
 ```javascript
-team_delete({ team_name: "my-team" })
+team_shutdown({ team_name: "my-team" })
 ```
 
 ---
@@ -79,11 +78,10 @@ Launch a new agent into a terminal pane with a role and instructions.
 **Parameters**:
 - `team_name` (required): Name of the team
 - `name` (required): Friendly name for the teammate (e.g., "security-bot")
-- `prompt` (required): Instructions for the teammate's role and initial task
 - `cwd` (required): Working directory for the teammate
 - `model` (optional): AI model for this teammate (overrides team default)
 - `thinking` (optional): Thinking level (`off`, `minimal`, `low`, `medium`, `high`)
-- `plan_mode_required` (optional): If `true`, teammate must submit plans for approval
+- `separate_window` (optional): If `true`, spawn in separate OS window
 
 **Model Options**:
 - Any model available in your pi configuration
@@ -102,7 +100,6 @@ Launch a new agent into a terminal pane with a role and instructions.
 spawn_teammate({
   team_name: "my-team",
   name: "security-bot",
-  prompt: "Scan the codebase for hardcoded API keys",
   cwd: "/path/to/project"
 })
 
@@ -110,63 +107,47 @@ spawn_teammate({
 spawn_teammate({
   team_name: "my-team",
   name: "speed-bot",
-  prompt: "Run benchmarks on the API endpoints",
   cwd: "/path/to/project",
   model: "haiku"
-})
-
-// With plan approval
-spawn_teammate({
-  team_name: "my-team",
-  name: "refactor-bot",
-  prompt: "Refactor the user service",
-  cwd: "/path/to/project",
-  plan_mode_required: true
 })
 
 // With custom model and thinking
 spawn_teammate({
   team_name: "my-team",
   name: "architect-bot",
-  prompt: "Design the new feature architecture",
   cwd: "/path/to/project",
   model: "gpt-4o",
   thinking: "high"
+})
+
+// In separate window
+spawn_teammate({
+  team_name: "my-team",
+  name: "window-bot",
+  cwd: "/path/to/project",
+  separate_window: true
 })
 ```
 
 ---
 
-### check_teammate
+### list_teammates
 
-Check if a teammate is still running or has unread messages.
-
-**Parameters**:
-- `team_name` (required): Name of the team
-- `agent_name` (required): Name of the teammate to check
-
-**Returns**: Status information including:
-- Whether the teammate is still running
-- Number of unread messages
-
-**Example**:
-```javascript
-check_teammate({ team_name: "my-team", agent_name: "security-bot" })
-```
-
----
-
-### force_kill_teammate
-
-Forcibly kill a teammate's tmux pane and remove them from the team.
+List all teammates in a team with their status.
 
 **Parameters**:
 - `team_name` (required): Name of the team
-- `agent_name` (required): Name of the teammate to kill
+
+**Returns**: Array of teammates with:
+- Name and agent type
+- Model used
+- Whether they're alive (process running)
+- Whether they're active (recently used)
+- Unread message count
 
 **Example**:
 ```javascript
-force_kill_teammate({ team_name: "my-team", agent_name: "security-bot" })
+list_teammates({ team_name: "my-team" })
 ```
 
 ---
@@ -186,94 +167,6 @@ process_shutdown_approved({ team_name: "my-team", agent_name: "security-bot" })
 
 ---
 
-## Task Management
-
-### task_create
-
-Create a new task for the team.
-
-**Parameters**:
-- `team_name` (required): Name of the team
-- `subject` (required): Brief task title
-- `description` (required): Detailed task description
-- `status` (optional): Initial status (`pending`, `in_progress`, `planning`, `completed`, `deleted`). Default: `pending`
-- `owner` (optional): Name of the teammate assigned to the task
-
-**Example**:
-```javascript
-task_create({
-  team_name: "my-team",
-  subject: "Audit auth endpoints",
-  description: "Review all authentication endpoints for SQL injection vulnerabilities",
-  status: "pending",
-  owner: "security-bot"
-})
-```
-
----
-
-### task_list
-
-List all tasks and their current status.
-
-**Parameters**:
-- `team_name` (required): Name of the team
-
-**Returns**: Array of all tasks with their current status, owners, and details.
-
-**Example**:
-```javascript
-task_list({ team_name: "my-team" })
-```
-
----
-
-### task_get
-
-Get full details of a specific task.
-
-**Parameters**:
-- `team_name` (required): Name of the team
-- `task_id` (required): ID of the task to retrieve
-
-**Returns**: Full task object including:
-- Subject and description
-- Status and owner
-- Plan (if in planning mode)
-- Plan feedback (if rejected)
-- Blocked relationships
-
-**Example**:
-```javascript
-task_get({ team_name: "my-team", task_id: "task_abc123" })
-```
-
----
-
-### task_update
-
-Update a task's status or owner.
-
-**Parameters**:
-- `team_name` (required): Name of the team
-- `task_id` (required): ID of the task to update
-- `status` (optional): New status (`pending`, `planning`, `in_progress`, `completed`, `deleted`)
-- `owner` (optional): New owner (teammate name)
-
-**Example**:
-```javascript
-task_update({
-  team_name: "my-team",
-  task_id: "task_abc123",
-  status: "in_progress",
-  owner: "security-bot"
-})
-```
-
-**Note**: When status changes to `completed`, any hook script at `.pi/team-hooks/task_completed.sh` will automatically run.
-
----
-
 ## Messaging
 
 ### send_message
@@ -281,7 +174,7 @@ task_update({
 Send a message to a specific teammate or the team lead.
 
 **Parameters**:
-- `team_name` (required): Name of the team
+- `team_name` (optional): Name of the team (defaults to current team)
 - `recipient` (required): Name of the agent receiving the message
 - `content` (required): Full message content
 - `summary` (required): Brief summary for message list
@@ -304,7 +197,7 @@ send_message({
 Send a message to the entire team (excluding the sender).
 
 **Parameters**:
-- `team_name` (required): Name of the team
+- `team_name` (optional): Name of the team (defaults to current team)
 - `content` (required): Full message content
 - `summary` (required): Brief summary for message list
 - `color` (optional): Message color for UI highlighting
@@ -331,7 +224,7 @@ broadcast_message({
 Read incoming messages for an agent.
 
 **Parameters**:
-- `team_name` (required): Name of the team
+- `team_name` (optional): Name of the team (defaults to current team)
 - `agent_name` (optional): Whose inbox to read. Defaults to current agent.
 - `unread_only` (optional): Only show unread messages. Default: `true`
 
@@ -351,63 +244,21 @@ read_inbox({ team_name: "my-team", agent_name: "security-bot" })
 
 ---
 
-## Task Planning & Approval
+## Model Resolution
 
-### task_submit_plan
+### resolve_model
 
-For teammates to submit their implementation plans for approval.
+Use this tool to find the correct provider/model name to use in spawn_teammate. Use DEFAULT MODEL if no good match is found.
 
 **Parameters**:
-- `team_name` (required): Name of the team
-- `task_id` (required): ID of the task
-- `plan` (required): Implementation plan description
+- `model_name` (required): Model name to resolve (e.g., "haiku", "gpt-4o")
 
-**Behavior**:
-- Updates task status to `planning`
-- Saves the plan to the task
-- Lead agent can then review and approve/reject
+**Returns**: Full provider/model string (e.g., "anthropic/claude-3-5-haiku")
 
 **Example**:
 ```javascript
-task_submit_plan({
-  team_name: "my-team",
-  task_id: "task_abc123",
-  plan: "1. Add password strength validator component\n2. Integrate with existing signup form\n3. Add unit tests using zxcvbn library"
-})
-```
-
----
-
-### task_evaluate_plan
-
-For the lead agent to approve or reject a submitted plan.
-
-**Parameters**:
-- `team_name` (required): Name of the team
-- `task_id` (required): ID of the task
-- `action` (required): `"approve"` or `"reject"`
-- `feedback` (optional): Feedback message (required when rejecting)
-
-**Behavior**:
-- **Approve**: Sets task status to `in_progress`, clears any previous feedback
-- **Reject**: Sets task status back to `in_progress` (for revision), saves feedback
-
-**Examples**:
-```javascript
-// Approve plan
-task_evaluate_plan({
-  team_name: "my-team",
-  task_id: "task_abc123",
-  action: "approve"
-})
-
-// Reject with feedback
-task_evaluate_plan({
-  team_name: "my-team",
-  task_id: "task_abc123",
-  action: "reject",
-  feedback: "Please add more detail about error handling and edge cases"
-})
+resolve_model({ model_name: "haiku" })
+// Returns: "anthropic/claude-3-5-haiku"
 ```
 
 ---
@@ -463,27 +314,13 @@ This ensures teammates understand their responsibilities and can work autonomous
 
 ---
 
-## Task Statuses
+### Reminder System
 
-### pending
+If a teammate completes work without reporting back to the team-lead, the system automatically sends a one-time reminder:
 
-Task is created but not yet assigned or started.
+> "What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately."
 
-### planning
-
-Task is being planned. Teammate has submitted a plan and is awaiting lead approval. (Only available when `plan_mode_required` is true for the teammate)
-
-### in_progress
-
-Task is actively being worked on by the assigned teammate.
-
-### completed
-
-Task is finished. Status change triggers the `task_completed.sh` hook.
-
-### deleted
-
-Task is removed from the active task list. Still preserved in data history.
+The reminder system uses instruction-based timestamps to avoid false positives from incidental wake cycles.
 
 ---
 
@@ -520,34 +357,15 @@ All pi-teams data is stored in your home directory under `~/.pi/`:
       "name": "security-bot",
       "model": "gpt-4o",
       "thinking": "medium",
-      "planModeRequired": true
+      "agentType": "teammate"
     },
     {
       "name": "frontend-dev",
       "model": "haiku",
       "thinking": "low",
-      "planModeRequired": false
+      "agentType": "teammate"
     }
   ]
-}
-```
-
-### Task File (task_*.json)
-
-```json
-{
-  "id": "task_abc123",
-  "subject": "Audit auth endpoints",
-  "description": "Review all authentication endpoints for vulnerabilities",
-  "status": "in_progress",
-  "owner": "security-bot",
-  "plan": "1. Scan /api/login\n2. Scan /api/register\n3. Scan /api/refresh",
-  "planFeedback": null,
-  "blocks": [],
-  "blockedBy": [],
-  "activeForm": "Auditing auth endpoints",
-  "createdAt": "2024-02-22T10:00:00Z",
-  "updatedAt": "2024-02-22T10:30:00Z"
 }
 ```
 
@@ -559,8 +377,7 @@ All pi-teams data is stored in your home directory under `~/.pi/`:
     {
       "id": "msg_def456",
       "from": "team-lead",
-      "to": "security-bot",
-      "content": "Please focus on the auth module first",
+      "text": "Please focus on the auth module first",
       "summary": "Focus on auth module",
       "timestamp": "2024-02-22T10:15:00Z",
       "read": false
@@ -577,7 +394,8 @@ pi-teams respects the following environment variables:
 
 - `ZELLIJ`: Automatically detected when running inside Zellij. Enables Zellij pane management.
 - `TMUX`: Automatically detected when running inside tmux. Enables tmux pane management.
-- `PI_DEFAULT_THINKING_LEVEL`: Default thinking level for spawned teammates if not specified (`off`, `minimal`, `low`, `medium`, `high`).
+- `PI_TEAM_NAME`: Set automatically when joining a team.
+- `PI_AGENT_NAME`: Set automatically to identify the current agent.
 
 ---
 
@@ -605,6 +423,12 @@ If neither tmux nor Zellij is detected, and you're on macOS with iTerm2, pi-team
 - macOS
 - iTerm2 terminal
 - Not inside tmux or Zellij
+
+### WezTerm Detection
+
+WezTerm is detected automatically and uses `wezterm cli spawn` to create panes.
+
+**Layout**: Same as tmux/Zellij - large lead pane on left, teammates on right.
 
 ---
 

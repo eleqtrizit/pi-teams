@@ -1,166 +1,336 @@
-# pi-teams 🚀
+# pi-teams
 
-**pi-teams** turns your single Pi agent into a coordinated software engineering team. It allows you to spawn multiple "Teammate" agents in separate terminal panes that work autonomously, communicate with each other, and manage a shared task board—all mediated through tmux, Zellij, iTerm2, or WezTerm.
+**Multi-agent collaboration for the pi coding agent.**
 
-### 🖥️ pi-teams in Action
+> **Note:** This repository is a fork of [burggraf/pi-teams](https://github.com/burggraf/pi-teams).
 
-| iTerm2 | tmux | Zellij |
-| :---: | :---: | :---: |
-| <a href="iTerm2.png"><img src="iTerm2.png" width="300" alt="pi-teams in iTerm2"></a> | <a href="tmux.png"><img src="tmux.png" width="300" alt="pi-teams in tmux"></a> | <a href="zellij.png"><img src="zellij.png" width="300" alt="pi-teams in Zellij"></a> |
+Orchestrate teams of AI agents that work together on complex coding tasks. pi-teams enables you to spawn specialized agents, coordinate communication, and automate workflows with hooks.
 
-*Also works with **WezTerm** (cross-platform support)*
-
-## 🛠 Installation
-
-Open your Pi terminal and type:
+## Quickstart
 
 ```bash
-pi install npm:pi-teams
+pi install https://github.com/eleqtrizit/pi-teams
 ```
 
-## 🚀 Quick Start
+![pi-teams in action](https://raw.githubusercontent.com/burggraf/pi-teams/main/pi-team-in-action.png)
+
+## Features
+
+- **🏢 Team Management**: Create teams with custom names, descriptions, and default AI models
+- **🤖 Agent Spawning**: Launch specialized teammates with different models and thinking levels
+- **💬 Inter-Agent Messaging**: Agents communicate autonomously via inbox system
+- **🔔 Automated Reminders**: System prompts idle agents to report back to team-lead
+- **🪝 Hook System**: Run automated scripts (tests, linting, notifications) on task completion
+- **🖥️ Terminal Integration**: Native support for tmux, Zellij, iTerm2, and WezTerm
+- **🔒 Lock System**: Thread-safe operations with automatic stale lock cleanup
+- **📊 Model Resolution**: Smart provider selection with priority-based model matching
+
+## Installation
+
+pi-teams is a pi package. Install it through your pi configuration:
 
 ```bash
-# 1. Start a team (inside tmux, Zellij, or iTerm2)
-"Create a team named 'my-team' using 'gpt-4o'"
-
-# 2. Spawn teammates
-"Spawn 'security-bot' to scan for vulnerabilities"
-"Spawn 'frontend-dev' using 'haiku' for quick iterations"
-
-# 3. Create and assign tasks
-"Create a task for security-bot: 'Audit auth endpoints'"
-
-# 4. Review and approve work
-"List all tasks and approve any pending plans"
+# Add to your pi config
+pi config add-package @burggraf/pi-teams
 ```
 
-## 🌟 What can it do?
+Or reference it directly in your project:
 
-### Core Features
-- **Spawn Specialists**: Create agents like "Security Expert" or "Frontend Pro" to handle sub-tasks in parallel.
-- **Shared Task Board**: Keep everyone on the same page with a persistent list of tasks and their status.
-- **Agent Messaging**: Agents can send direct messages to each other and to you (the Team Lead) to report progress.
-- **Autonomous Work**: Teammates automatically "wake up," read their instructions, and poll their inboxes for new work while idle.
-- **Beautiful UI**: Optimized vertical splits in `tmux` with clear labels so you always know who is doing what.
+```bash
+# Clone the repository
+git clone https://github.com/burggraf/pi-teams.git
+cd pi-teams
+npm install
+```
 
-### Advanced Features
-- **Isolated OS Windows**: Launch teammates in true separate OS windows instead of panes.
-- **Persistent Window Titles**: Windows are automatically titled `[team-name]: [agent-name]` for easy identification in your window manager.
-- **Plan Approval Mode**: Require teammates to submit their implementation plans for your approval before they touch any code.
-- **Broadcast Messaging**: Send a message to the entire team at once for global coordination and announcements.
-- **Quality Gate Hooks**: Automated shell scripts run when tasks are completed (e.g., to run tests or linting).
-- **Thinking Level Control**: Set per-teammate thinking levels (`off`, `minimal`, `low`, `medium`, `high`) to balance speed vs. reasoning depth.
+## Quick Start
 
-## 💬 Key Examples
+### 1. Create a Team
 
-### 1. Start a Team
-> **You:** "Create a team named 'my-app-audit' for reviewing the codebase."
+```javascript
+// Create a basic team
+team_create({ team_name: "my-team" })
 
-**Set a default model for the whole team:**
-> **You:** "Create a team named 'Research' and use 'gpt-4o' for everyone."
+// Create with default model
+team_create({
+  team_name: "research-team",
+  default_model: "gpt-4o",
+  description: "AI research and analysis team"
+})
+```
 
-**Start a team in "Separate Windows" mode:**
-> **You:** "Create a team named 'Dev' and open everyone in separate windows."
-*(Supported in iTerm2 and WezTerm only)*
+### 2. Spawn Teammates
 
-### 2. Spawn Teammate with Custom Settings
-> **You:** "Spawn a teammate named 'security-bot' in the current folder. Tell them to scan for hardcoded API keys."
+```javascript
+// Basic teammate
+spawn_teammate({
+  team_name: "my-team",
+  name: "security-bot",
+  cwd: "/path/to/project",
+  prompt: "Review the codebase for security vulnerabilities"
+})
 
-**Spawn a specific teammate in a separate window:**
-> **You:** "Spawn 'researcher' in a separate window."
+// With custom model and thinking level
+spawn_teammate({
+  team_name: "my-team",
+  name: "architect",
+  cwd: "/path/to/project",
+  model: "gpt-4o",
+  thinking: "high",
+  prompt: "Design the system architecture for the new feature"
+})
+```
 
-**Move the Team Lead to a separate window:**
-> **You:** "Open the team lead in its own window."
-*(Requires separate_windows mode enabled or iTerm2/WezTerm)*
+### 3. Team Communication
 
-**Use a different model:**
-> **You:** "Spawn a teammate named 'speed-bot' using 'haiku' to quickly run some benchmarks."
+```javascript
+// Send message to specific teammate
+send_message({
+  team_name: "my-team",
+  recipient: "security-bot",
+  content: "Please focus on the auth module first",
+  summary: "Focus on auth module"
+})
 
-**Require plan approval:**
-> **You:** "Spawn a teammate named 'refactor-bot' and require plan approval before they make any changes."
+// Broadcast to entire team
+broadcast_message({
+  team_name: "my-team",
+  content: "API endpoint has changed to /v2. Please update your work.",
+  summary: "API endpoint changed to v2"
+})
 
-**Customize model and thinking level:**
-> **You:** "Spawn a teammate named 'architect-bot' using 'gpt-4o' with 'high' thinking level for deep reasoning."
+// Read inbox
+read_inbox({ team_name: "my-team", agent_name: "security-bot" })
+```
 
-**Smart Model Resolution:**
-When you specify a model name without a provider (e.g., `gemini-2.5-flash`), pi-teams automatically:
-- Queries available models from `pi --list-models`
-- Prioritizes **OAuth/subscription providers** (cheaper/free) over API-key providers:
-  - `google-gemini-cli` (OAuth) is preferred over `google` (API key)
-  - `github-copilot`, `kimi-sub` are preferred over their API-key equivalents
-- Falls back to API-key providers if OAuth providers aren't available
-- Constructs the correct `--model provider/model:thinking` command
+## Thinking Levels
 
-> **Example:** Specifying `gemini-2.5-flash` will automatically use `google-gemini-cli/gemini-2.5-flash` if available, saving API costs.
+Control reasoning depth for cost and performance optimization:
 
-### 3. Assign Task & Get Approval
-> **You:** "Create a task for security-bot: 'Check the .env.example file for sensitive defaults' and set it to in_progress."
+| Level | Use Case | Cost/Speed |
+|-------|----------|------------|
+| `off` | Formatting, renaming, moving code | Fastest / Cheapest |
+| `minimal` | Quick refactors, straightforward bugfixes | Very fast |
+| `low` | Standard feature implementation, tests | Fast |
+| `medium` | Complex work, architecture decisions | Balanced (default) |
+| `high` | Security reviews, major refactors, design specs | Thorough / Slower |
 
-Teammates in `planning` mode will use `task_submit_plan`. As the lead, review their work:
-> **You:** "Review refactor-bot's plan for task 5. If it looks good, approve it. If not, reject it with feedback on the test coverage."
+## Model Selection
 
-### 4. Broadcast to Team
-> **You:** "Broadcast to the entire team: 'The API endpoint has changed to /v2. Please update your work accordingly.'"
+Use different models for different roles:
 
-### 5. Shut Down Team
-> **You:** "We're done. Shut down the team and close the panes."
+- **`gpt-4o`** (OpenAI) - High-quality reasoning, expensive
+- **`haiku`** (Anthropic) - Fast, cost-effective for routine work
+- **`glm-4.7`**, **`glm-5`** (Zhipu AI) - Alternative high-performance models
+- **Custom providers** - Any model available in your pi configuration
+
+Example mixed-speed team:
+```javascript
+// Expensive reasoning for design
+spawn_teammate({ team_name: "mixed", name: "architect", model: "gpt-4o", thinking: "high" })
+
+// Fast implementation
+spawn_teammate({ team_name: "mixed", name: "coder", model: "haiku", thinking: "low" })
+
+// Thorough review
+spawn_teammate({ team_name: "mixed", name: "reviewer", model: "gpt-4o", thinking: "medium" })
+```
+
+## Hook System
+
+Automate workflows when tasks complete:
+
+### Setup
+
+Create a hook script at `.pi/team-hooks/task_completed.sh`:
+
+```bash
+#!/bin/bash
+# .pi/team-hooks/task_completed.sh
+
+TASK_DATA="$1"
+SUBJECT=$(echo "$TASK_DATA" | jq -r '.subject')
+OWNER=$(echo "$TASK_DATA" | jq -r '.owner')
+
+echo "Task completed: $SUBJECT by $OWNER"
+
+# Run tests
+npm test
+if [ $? -ne 0 ]; then
+  echo "Tests failed! Task cannot be marked complete."
+  exit 1
+fi
+
+# Run linting
+npm run lint
+
+echo "All checks passed!"
+```
+
+Make it executable:
+```bash
+chmod +x .pi/team-hooks/task_completed.sh
+```
+
+### Hook Payload
+
+Hooks receive task data as JSON:
+
+```json
+{
+  "id": "task_123",
+  "subject": "Fix login bug",
+  "description": "Users can't login with special characters",
+  "status": "completed",
+  "owner": "fixer-bot",
+  "createdAt": "2024-02-22T10:00:00Z",
+  "updatedAt": "2024-02-22T10:30:00Z"
+}
+```
+
+### Common Hook Use Cases
+
+- **Test execution** - Run test suite on completion
+- **Linting** - Enforce code quality standards
+- **Notifications** - Slack, email, or other external systems
+- **Deployments** - Trigger CI/CD pipelines
+- **Reports** - Generate documentation or changelogs
+
+## Terminal Integration
+
+pi-teams automatically detects and integrates with your terminal environment:
+
+| Terminal | Detection | Pane Management |
+|----------|-----------|-----------------|
+| **tmux** | `TMUX` env var | `tmux split-window` |
+| **Zellij** | `ZELLIJ` env var | `zellij run` |
+| **iTerm2** | macOS detection | AppleScript window splits |
+| **WezTerm** | Cross-platform | `wezterm cli spawn` |
+
+### Window Title Support
+
+Team member windows are titled with format: `{teamName}: {agentName}`
+
+Supported terminals:
+- **iTerm2**: Escape sequences via AppleScript
+- **WezTerm**: CLI `set-window-title` command
+- **tmux/Zellij**: Pane titles within session
+
+## Automated Behavior
+
+### Idle Polling
+
+Teammates automatically check for new messages every **30 seconds** when idle, ensuring responsiveness without manual intervention.
+
+### Reminder System
+
+If a teammate completes work without reporting back to the team-lead, the system automatically sends a one-time reminder:
+
+> "What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately."
+
+The reminder system uses instruction-based timestamps to avoid false positives from incidental wake cycles.
+
+### Context Injection
+
+Each teammate receives a custom system prompt including:
+- Their role and instructions
+- Team context (team name, member list)
+- Available tools
+- Team environment guidelines
+
+## Data Storage
+
+All team data is stored in `~/.pi/`:
+
+```
+~/.pi/
+├── teams/
+│   └── <team-name>/
+│       └── config.json          # Team configuration
+├── tasks/
+│   └── <team-name>/
+│       ├── task_*.json          # Individual tasks
+│       └── tasks.json           # Task index
+└── messages/
+    └── <team-name>/
+        ├── <agent-name>.json    # Message inboxes
+        └── index.json           # Message index
+```
+
+## Security
+
+- **Lock files** prevent concurrent modifications with automatic stale lock cleanup (60s timeout)
+- **Race condition protection** for multi-agent operations
+- **Input validation** on all task and message data
+- **File-based isolation** between teams
+
+## Troubleshooting
+
+### Teammate Not Responding
+
+```javascript
+// Check status and list all teammates
+list_teammates({ team_name: "my-team" })
+
+// Read their inbox
+read_inbox({ team_name: "my-team", agent_name: "security-bot", unread_only: false })
+
+// Force kill and remove if needed
+process_shutdown_approved({ team_name: "my-team", agent_name: "security-bot" })
+```
+
+### Hook Not Running
+
+Check:
+1. File exists at `.pi/team-hooks/task_completed.sh`
+2. File is executable: `chmod +x .pi/team-hooks/task_completed.sh`
+3. Shebang line present: `#!/bin/bash`
+4. Test manually: `.pi/team-hooks/task_completed.sh '{"test":"data"}'`
+
+### Model Errors
+
+Verify model name is available in your pi config:
+```javascript
+// Resolve model to full provider/model format
+resolve_model({ model_name: "gpt-4o" })
+```
+
+## API Reference
+
+Full documentation available in [`docs/reference.md`](docs/reference.md) and [`docs/guide.md`](docs/guide.md).
+
+### Core Tools
+
+- `team_create` - Create new team
+- `spawn_teammate` - Launch agent
+- `send_message` / `broadcast_message` / `read_inbox` - Messaging
+- `list_teammates` - List and check teammate status
+- `process_shutdown_approved` - Gracefully shut down teammate
+- `team_shutdown` - Shutdown entire team
+- `resolve_model` - Find correct provider/model name
+
+## Examples
+
+See workflow examples in:
+- [Usage Guide](docs/guide.md) - Common patterns and best practices
+- [Research Findings](findings.md) - Terminal integration details
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests: `npm test`
+5. Submit a pull request
+
+## License
+
+MIT License - See [LICENSE](LICENSE) for details.
+
+## Credits
+
+Ported from [claude-code-teams-mcp](https://github.com/burggraf/claude-code-teams-mcp) for the pi coding agent ecosystem.
 
 ---
 
-## 📚 Learn More
-
-- **[Full Usage Guide](docs/guide.md)** - Detailed examples, hook system, best practices, and troubleshooting
-- **[Tool Reference](docs/reference.md)** - Complete documentation of all tools and parameters
-
-## 🪟 Terminal Requirements
-
-To show multiple agents on one screen, **pi-teams** requires a way to manage terminal panes. It supports **tmux**, **Zellij**, **iTerm2**, and **WezTerm**.
-
-### Option 1: tmux (Recommended)
-
-Install tmux:
-- **macOS**: `brew install tmux`
-- **Linux**: `sudo apt install tmux`
-
-How to run:
-```bash
-tmux  # Start tmux session
-pi   # Start pi inside tmux
-```
-
-### Option 2: Zellij
-
-Simply start `pi` inside a Zellij session. **pi-teams** will detect it via the `ZELLIJ` environment variable and use `zellij run` to spawn teammates in new panes.
-
-### Option 3: iTerm2 (macOS)
-
-If you are using **iTerm2** on macOS and are *not* inside tmux or Zellij, **pi-teams** can manage your team in two ways:
-1. **Panes (Default)**: Automatically split your current window into an optimized layout.
-2. **Windows**: Create true separate OS windows for each agent.
-
-It will name the panes or windows with the teammate's agent name for easy identification.
-
-### Option 4: WezTerm (macOS, Linux, Windows)
-
-**WezTerm** is a GPU-accelerated, cross-platform terminal emulator written in Rust. Like iTerm2, it supports both **Panes** and **Separate OS Windows**.
-
-Install WezTerm:
-- **macOS**: `brew install --cask wezterm`
-- **Linux**: See [wezterm.org/installation](https://wezterm.org/installation)
-- **Windows**: Download from [wezterm.org](https://wezterm.org)
-
-How to run:
-```bash
-wezterm  # Start WezTerm
-pi       # Start pi inside WezTerm
-```
-
-## 📜 Credits & Attribution
-
-This project is a port of the excellent [claude-code-teams-mcp](https://github.com/cs50victor/claude-code-teams-mcp) by [cs50victor](https://github.com/cs50victor).
-
-We have adapted the original MCP coordination protocol to work natively as a **Pi Package**, adding features like auto-starting teammates, balanced vertical UI layouts, automatic inbox polling, plan approval mode, broadcast messaging, and quality gate hooks.
-
-## 📄 License
-MIT
+Built for the [pi coding agent](https://github.com/mariozechner/pi-coding-agent).

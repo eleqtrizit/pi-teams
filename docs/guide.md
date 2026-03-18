@@ -45,24 +45,21 @@ Set a default model for all teammates:
 > **You:** "Create a team named 'code-review' using 'gpt-4o'"
 > **You:** "Spawn a teammate named 'security-reviewer' to check for vulnerabilities"
 > **You:** "Spawn a teammate named 'performance-reviewer' using 'haiku' to check for optimization opportunities"
-> **You:** "Create a task for security-reviewer: 'Review the auth module for SQL injection risks' and set it to in_progress"
-> **You:** "Create a task for performance-reviewer: 'Analyze the database queries for N+1 issues' and set it to in_progress"
 
-### 2. Refactor with Plan Approval
+Send instructions to teammates:
+
+> **You:** "Send a message to security-reviewer: 'Review the auth module for SQL injection risks'"
+> **You:** "Send a message to performance-reviewer: 'Analyze the database queries for N+1 issues'"
+
+### 2. Refactor with Team Coordination
 
 > **You:** "Create a team named 'refactor-squad'"
 > **You:** "Spawn a teammate named 'refactor-bot' and require plan approval before they make any changes"
-> **You:** "Create a task for refactor-bot: 'Refactor the user service to use dependency injection' and set it to in_progress"
 
-Teammate submits a plan. Review it:
+Teammates will coordinate via their inboxes. Monitor progress:
 
-> **You:** "List all tasks and show me refactor-bot's plan for task 1"
-
-Approve or reject:
-
-> **You:** "Approve refactor-bot's plan for task 1"
-
-> **You:** "Reject refactor-bot's plan for task 1 with feedback: 'Add unit tests for the new injection pattern'"
+> **You:** "Read refactor-bot's inbox"
+> **You:** "List all teammates in the team"
 
 ### 3. Testing with Automated Hooks
 
@@ -70,7 +67,7 @@ Create a hook script at `.pi/team-hooks/task_completed.sh`:
 
 ```bash
 #!/bin/bash
-# This script runs automatically when any task is completed
+# This script runs automatically when tasks are completed
 
 echo "Running post-task checks..."
 npm test
@@ -85,9 +82,9 @@ echo "All checks passed!"
 
 > **You:** "Create a team named 'test-team'"
 > **You:** "Spawn a teammate named 'qa-bot' to write tests"
-> **You:** "Create a task for qa-bot: 'Write unit tests for the payment module' and set it to in_progress"
+> **You:** "Send a message to qa-bot: 'Write unit tests for the payment module'"
 
-When qa-bot marks the task as completed, the hook automatically runs tests and linting.
+When qa-bot completes work and the hook is triggered, tests and linting run automatically.
 
 ### 4. Coordinated Migration
 
@@ -95,7 +92,6 @@ When qa-bot marks the task as completed, the hook automatically runs tests and l
 > **You:** "Spawn a teammate named 'db-migrator' to handle database changes"
 > **You:** "Spawn a teammate named 'api-updater' using 'gpt-4o' to update API endpoints"
 > **You:** "Spawn a teammate named 'test-writer' to write tests for the migration"
-> **You:** "Create a task for db-migrator: 'Add new columns to the users table' and set it to in_progress"
 
 After db-migrator completes, broadcast the schema change:
 
@@ -120,7 +116,7 @@ Now you have expensive reasoning for design and reviews, but fast/cheap implemen
 
 Hooks are shell scripts that run automatically at specific events. Currently supported:
 
-- **`task_completed.sh`** - Runs when any task's status changes to `completed`
+- **`task_completed.sh`** - Runs when tasks are marked as completed
 
 ### Hook Location
 
@@ -232,20 +228,7 @@ spawn "frontend-dev" using "haiku" with "low" thinking
 spawn "test-writer" using "haiku" with "off" thinking
 ```
 
-### 3. Plan Approval for High-Risk Changes
-
-Enable plan approval mode for:
-- Database schema changes
-- API contract changes
-- Security-related work
-- Performance-critical code
-
-Disable for:
-- Documentation updates
-- Test additions
-- Simple bug fixes
-
-### 4. Broadcast for Coordination
+### 3. Broadcast for Coordination
 
 Use broadcasts when:
 - API endpoints change
@@ -253,23 +236,23 @@ Use broadcasts when:
 - Deployment happens
 - Team priorities shift
 
-### 5. Clear Task Descriptions
+### 4. Clear Instructions
 
-Good task:
+Good instruction:
 ```
 "Add password strength validation to the signup form. 
 Requirements: minimum 8 chars, at least one number and symbol.
 Use the zxcvbn library for strength calculation."
 ```
 
-Bad task:
+Bad instruction:
 ```
 "Fix signup form"
 ```
 
-### 6. Check Progress Regularly
+### 5. Check Progress Regularly
 
-> **You:** "List all tasks"
+> **You:** "List all teammates"
 > **You:** "Check my inbox for messages"
 > **You:** "How is the team doing?"
 
@@ -285,11 +268,11 @@ This helps you catch blockers early and provide feedback.
 
 **Solution**:
 1. Check if they're still running:
-   > **You:** "Check on teammate named 'security-bot'"
+   > **You:** "List teammates in my-team"
 2. Check their inbox:
    > **You:** "Read security-bot's inbox"
-3. Force kill and respawn if needed:
-   > **You:** "Force kill security-bot and respawn them"
+3. Force shutdown if needed:
+   > **You:** "Process shutdown for teammate 'security-bot'"
 
 ### tmux Pane Issues
 
@@ -326,7 +309,8 @@ pi  # Then try to use tmux commands
 - `haiku` - Anthropic (usually `claude-3-5-haiku`)
 - `glm-4.7` - Zhipu AI
 
-Check your pi config for available models.
+Use `resolve_model` to find the correct provider/model format:
+> **You:** "Resolve model 'haiku'"
 
 ### Data Location
 
@@ -377,6 +361,3 @@ rm -rf ~/.pi/teams/my-team/
 rm -rf ~/.pi/tasks/my-team/
 rm -rf ~/.pi/messages/my-team/
 ```
-
-Or use the delete command:
-> **You:** "Delete the team named 'my-team'"
