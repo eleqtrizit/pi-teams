@@ -28,7 +28,6 @@ pi install https://github.com/eleqtrizit/pi-tasks
 - **🤖 Agent Spawning**: Launch specialized teammates with different models and thinking levels
 - **💬 Inter-Agent Messaging**: Agents communicate autonomously via inbox system
 - **🔔 Automated Reminders**: System prompts idle agents to report back to team-lead
-- **🪝 Hook System**: (removed)
 - **🖥️ Terminal Integration**: Native support for tmux, Zellij, iTerm2, and WezTerm
 - **🔒 Lock System**: Thread-safe operations with automatic stale lock cleanup
 - **📊 Model Resolution**: Smart provider selection with priority-based model matching
@@ -144,20 +143,6 @@ spawn_teammate({ team_name: "mixed", name: "coder", model: "haiku", thinking: "l
 spawn_teammate({ team_name: "mixed", name: "reviewer", model: "gpt-4o", thinking: "medium" })
 ```
 
-## Hook System
-
-This codebase no longer includes the task/hook execution system.
-
-For automation on your side, run scripts manually from your own CI/workflow.
-
-### Setup
-
-No hook scripts are executed by this codebase.
-
-### Hook Payload
-
-No task data is passed to hook scripts by this codebase.
-
 ## Terminal Integration
 
 pi-teams automatically detects and integrates with your terminal environment:
@@ -209,10 +194,6 @@ All team data is stored in `~/.pi/`:
 ├── teams/
 │   └── <team-name>/
 │       └── config.json          # Team configuration
-├── tasks/
-│   └── <team-name>/
-│       ├── (unused) task_*.json  # Task persistence removed from runtime
-│       └── (unused) tasks.json   # Task index removed from runtime
 └── messages/
     └── <team-name>/
         ├── <agent-name>.json    # Message inboxes
@@ -241,10 +222,6 @@ read_inbox({ team_name: "my-team", agent_name: "security-bot", unread_only: fals
 process_shutdown_approved({ team_name: "my-team", agent_name: "security-bot" })
 ```
 
-### Hook Not Running
-
-This repository no longer executes task completion hooks.
-
 ### Model Errors
 
 Verify model name is available in your pi config:
@@ -268,6 +245,12 @@ Full documentation available in [`docs/reference.md`](docs/reference.md) and [`d
 - `resolve_model` - Find correct provider/model name
 
 ## Examples
+
+- Spawn a team called averagejoes and create a worker to do a code review.
+
+- Make a team called joeblows and give tasks to workers. Use model openai/gpt5.4 for the workers.
+
+- Create a worker to research the bug and use model gpt5.3 nano.
 
 See workflow examples in:
 - [Usage Guide](docs/guide.md) - Common patterns and best practices
