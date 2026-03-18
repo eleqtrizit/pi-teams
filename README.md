@@ -12,6 +12,14 @@ Orchestrate teams of AI agents that work together on complex coding tasks. pi-te
 pi install https://github.com/eleqtrizit/pi-teams
 ```
 
+Goes well with Pi-Tasks:
+
+https://github.com/eleqtrizit/pi-tasks
+
+```bash
+pi install https://github.com/eleqtrizit/pi-tasks
+```
+
 ![pi-teams in action](https://raw.githubusercontent.com/burggraf/pi-teams/main/pi-team-in-action.png)
 
 ## Features
