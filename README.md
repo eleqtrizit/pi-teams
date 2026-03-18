@@ -20,7 +20,7 @@ pi install https://github.com/eleqtrizit/pi-teams
 - **🤖 Agent Spawning**: Launch specialized teammates with different models and thinking levels
 - **💬 Inter-Agent Messaging**: Agents communicate autonomously via inbox system
 - **🔔 Automated Reminders**: System prompts idle agents to report back to team-lead
-- **🪝 Hook System**: Run automated scripts (tests, linting, notifications) on task completion
+- **🪝 Hook System**: (removed)
 - **🖥️ Terminal Integration**: Native support for tmux, Zellij, iTerm2, and WezTerm
 - **🔒 Lock System**: Thread-safe operations with automatic stale lock cleanup
 - **📊 Model Resolution**: Smart provider selection with priority-based model matching
@@ -138,63 +138,17 @@ spawn_teammate({ team_name: "mixed", name: "reviewer", model: "gpt-4o", thinking
 
 ## Hook System
 
-Automate workflows when tasks complete:
+This codebase no longer includes the task/hook execution system.
+
+For automation on your side, run scripts manually from your own CI/workflow.
 
 ### Setup
 
-Create a hook script at `.pi/team-hooks/task_completed.sh`:
-
-```bash
-#!/bin/bash
-# .pi/team-hooks/task_completed.sh
-
-TASK_DATA="$1"
-SUBJECT=$(echo "$TASK_DATA" | jq -r '.subject')
-OWNER=$(echo "$TASK_DATA" | jq -r '.owner')
-
-echo "Task completed: $SUBJECT by $OWNER"
-
-# Run tests
-npm test
-if [ $? -ne 0 ]; then
-  echo "Tests failed! Task cannot be marked complete."
-  exit 1
-fi
-
-# Run linting
-npm run lint
-
-echo "All checks passed!"
-```
-
-Make it executable:
-```bash
-chmod +x .pi/team-hooks/task_completed.sh
-```
+No hook scripts are executed by this codebase.
 
 ### Hook Payload
 
-Hooks receive task data as JSON:
-
-```json
-{
-  "id": "task_123",
-  "subject": "Fix login bug",
-  "description": "Users can't login with special characters",
-  "status": "completed",
-  "owner": "fixer-bot",
-  "createdAt": "2024-02-22T10:00:00Z",
-  "updatedAt": "2024-02-22T10:30:00Z"
-}
-```
-
-### Common Hook Use Cases
-
-- **Test execution** - Run test suite on completion
-- **Linting** - Enforce code quality standards
-- **Notifications** - Slack, email, or other external systems
-- **Deployments** - Trigger CI/CD pipelines
-- **Reports** - Generate documentation or changelogs
+No task data is passed to hook scripts by this codebase.
 
 ## Terminal Integration
 
@@ -249,8 +203,8 @@ All team data is stored in `~/.pi/`:
 │       └── config.json          # Team configuration
 ├── tasks/
 │   └── <team-name>/
-│       ├── task_*.json          # Individual tasks
-│       └── tasks.json           # Task index
+│       ├── (unused) task_*.json  # Task persistence removed from runtime
+│       └── (unused) tasks.json   # Task index removed from runtime
 └── messages/
     └── <team-name>/
         ├── <agent-name>.json    # Message inboxes
@@ -281,11 +235,7 @@ process_shutdown_approved({ team_name: "my-team", agent_name: "security-bot" })
 
 ### Hook Not Running
 
-Check:
-1. File exists at `.pi/team-hooks/task_completed.sh`
-2. File is executable: `chmod +x .pi/team-hooks/task_completed.sh`
-3. Shebang line present: `#!/bin/bash`
-4. Test manually: `.pi/team-hooks/task_completed.sh '{"test":"data"}'`
+This repository no longer executes task completion hooks.
 
 ### Model Errors
 
