@@ -2,7 +2,7 @@
 
 **Multi-agent collaboration for the pi coding agent.**
 
-> **Note:** This repository is a fork of [burggraf/pi-teams](https://github.com/burggraf/pi-teams).
+> **Note:** This repository is a fork of [burggraf/pi-teams](https://github.com/burggraf/pi-teams).  Many credits to him!
 
 Orchestrate teams of AI agents that work together on complex coding tasks. pi-teams enables you to spawn specialized agents, coordinate communication, and automate workflows with hooks.
 
@@ -20,7 +20,51 @@ https://github.com/eleqtrizit/pi-tasks
 pi install https://github.com/eleqtrizit/pi-tasks
 ```
 
-![pi-teams in action](https://raw.githubusercontent.com/burggraf/pi-teams/main/pi-team-in-action.png)
+![pi-teams in action](https://raw.githubusercontent.com/eleqtrizit/pi-teams/main/pi-team-in-action.png)
+
+
+
+## Quick Start
+
+Use simple phrasing in the chat window to make teams and workers:
+
+```
+Create a team called my-team.
+```
+
+```
+Create a team called research-team with model gpt-4o.
+```
+
+```
+Spawn a teammate called security-bot to review the codebase.
+```
+
+```
+Spawn a teammate called architect with model gpt-4o and thinking level high.
+```
+
+```
+Send a message to security-bot to focus on the auth module.
+```
+
+```
+Broadcast a message to the entire team about the API endpoint change.
+```
+
+```
+Read the inbox of security-bot.
+```
+
+### Core Tools
+
+- `team_create` - Create new team
+- `spawn_teammate` - Launch agent
+- `send_message` / `broadcast_message` / `read_inbox` - Messaging
+- `list_teammates` - List and check teammate status
+- `process_shutdown_approved` - Gracefully shut down teammate
+- `team_shutdown` - Shutdown entire team
+- `resolve_model` - Find correct provider/model name
 
 ## Features
 
@@ -32,56 +76,6 @@ pi install https://github.com/eleqtrizit/pi-tasks
 - **🔒 Lock System**: Thread-safe operations with automatic stale lock cleanup
 - **📊 Model Resolution**: Smart provider selection with priority-based model matching
 
-## Installation
-
-pi-teams is a pi package. Install it through your pi configuration:
-
-```bash
-# Add to your pi config
-pi config add-package @burggraf/pi-teams
-```
-
-Or reference it directly in your project:
-
-```bash
-# Clone the repository
-git clone https://github.com/burggraf/pi-teams.git
-cd pi-teams
-npm install
-```
-
-## Quick Start
-
-1. Create a team called my-team.
-2. Create a team called research-team with model gpt-4o.
-3. Spawn a teammate called security-bot to review the codebase.
-4. Spawn a teammate called architect with model gpt-4o and thinking level high.
-5. Send a message to security-bot to focus on the auth module.
-6. Broadcast a message to the entire team about the API endpoint change.
-7. Read the inbox of security-bot.
-
-## Thinking Levels
-
-Control reasoning depth for cost and performance optimization:
-
-| Level | Use Case | Cost/Speed |
-|-------|----------|------------|
-| `off` | Formatting, renaming, moving code | Fastest / Cheapest |
-| `minimal` | Quick refactors, straightforward bugfixes | Very fast |
-| `low` | Standard feature implementation, tests | Fast |
-| `medium` | Complex work, architecture decisions | Balanced (default) |
-| `high` | Security reviews, major refactors, design specs | Thorough / Slower |
-
-## Model Selection
-
-Use different models for different roles:
-
-- **`gpt-4o`** (OpenAI) - High-quality reasoning, expensive
-- **`haiku`** (Anthropic) - Fast, cost-effective for routine work
-- **`glm-4.7`**, **`glm-5`** (Zhipu AI) - Alternative high-performance models
-- **Custom providers** - Any model available in your pi configuration
-
-Create a mixed-speed team with an architect using gpt-4o, a coder using haiku, and a reviewer using gpt-4o.
 
 ## Terminal Integration
 
@@ -120,6 +114,7 @@ The reminder system uses instruction-based timestamps to avoid false positives f
 ### Context Injection
 
 Each teammate receives a custom system prompt including:
+
 - Their role and instructions
 - Team context (team name, member list)
 - Available tools
@@ -147,54 +142,6 @@ All team data is stored in `~/.pi/`:
 - **Input validation** on all task and message data
 - **File-based isolation** between teams
 
-## Troubleshooting
-
-### Teammate Not Responding
-
-```javascript
-// Check status and list all teammates
-list_teammates({ team_name: "my-team" })
-
-// Read their inbox
-read_inbox({ team_name: "my-team", agent_name: "security-bot", unread_only: false })
-
-// Force kill and remove if needed
-process_shutdown_approved({ team_name: "my-team", agent_name: "security-bot" })
-```
-
-### Model Errors
-
-Verify model name is available in your pi config:
-```javascript
-// Resolve model to full provider/model format
-resolve_model({ model_name: "gpt-4o" })
-```
-
-## API Reference
-
-Full documentation available in [`docs/reference.md`](docs/reference.md) and [`docs/guide.md`](docs/guide.md).
-
-### Core Tools
-
-- `team_create` - Create new team
-- `spawn_teammate` - Launch agent
-- `send_message` / `broadcast_message` / `read_inbox` - Messaging
-- `list_teammates` - List and check teammate status
-- `process_shutdown_approved` - Gracefully shut down teammate
-- `team_shutdown` - Shutdown entire team
-- `resolve_model` - Find correct provider/model name
-
-## Examples
-
-- Spawn a team called averagejoes and create a worker to do a code review.
-
-- Make a team called joeblows and give tasks to workers. Use model openai/gpt5.4 for the workers.
-
-- Create a worker to research the bug and use model gpt5.3 nano.
-
-See workflow examples in:
-- [Usage Guide](docs/guide.md) - Common patterns and best practices
-- [Research Findings](findings.md) - Terminal integration details
 
 ## Contributing
 
