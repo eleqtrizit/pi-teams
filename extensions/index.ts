@@ -1,6 +1,6 @@
 import { StringEnum } from '@mariozechner/pi-ai';
-import type { ExtensionAPI } from '@mariozechner/pi-coding-agent';
-import { Type } from '@sinclair/typebox';
+import type { ExtensionAPI, ExtensionContext } from '@mariozechner/pi-coding-agent';
+import { Type } from 'typebox';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Iterm2Adapter } from '../src/adapters/iterm2-adapter';
@@ -395,12 +395,96 @@ export function getTopModelMatches(
         .slice(0, limit);
 }
 
+/**
+ * Bridge local TypeBox schemas into Pi's tool registration surface.
+ *
+ * Pi's extension typings brand ``TSchema`` from its own resolved ``typebox``
+ * dependency. This package may resolve a different module instance, so a direct
+ * assignment fails type checking despite runtime compatibility.
+ *
+ * :param schema: The locally created TypeBox schema
+ * :type schema: TSchemaLike
+ * :return: Schema cast compatible with Pi tool registration
+ * :rtype: TSchemaLike
+ */
+function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
+    return schema as TSchemaLike;
+}
+
 export default function (pi: ExtensionAPI) {
     const isTeammate = !!process.env.PI_AGENT_NAME;
     const agentName = process.env.PI_AGENT_NAME || 'team-lead';
     let teamName = process.env.PI_TEAM_NAME;
 
     const terminal = getTerminalAdapter();
+    let inboxCheckInterval: ReturnType<typeof setInterval> | null = null;
+    let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
+    let isAgentIdle = true;
+    let hasUnreadInboxNotification = false;
+
+    function clearInboxCheckInterval(): void {
+        if (inboxCheckInterval == null) {
+            return;
+        }
+        clearInterval(inboxCheckInterval);
+        inboxCheckInterval = null;
+    }
+
+    function clearTitleRefreshTimeouts(): void {
+        for (const timeoutId of titleRefreshTimeouts) {
+            clearTimeout(timeoutId);
+        }
+        titleRefreshTimeouts = [];
+    }
+
+    function setSessionTitle(ctx: ExtensionContext, title: string): void {
+        ctx.ui.setTitle(title);
+        terminal?.setTitle(title);
+    }
+
+    function scheduleTerminalTitleRefreshes(title: string): void {
+        if (!terminal) {
+            return;
+        }
+        clearTitleRefreshTimeouts();
+        for (const delayMs of [500, 2000, 5000]) {
+            const timeoutId = setTimeout(() => {
+                terminal.setTitle(title);
+            }, delayMs);
+            titleRefreshTimeouts.push(timeoutId);
+        }
+    }
+
+    function resetUnreadInboxNotification(unreadCount: number): void {
+        if (unreadCount === 0) {
+            hasUnreadInboxNotification = false;
+        }
+    }
+
+    function startInboxPolling(): void {
+        clearInboxCheckInterval();
+        inboxCheckInterval = setInterval(async () => {
+            if (!teamName || !isAgentIdle) {
+                return;
+            }
+
+            const unread = await messaging.readInbox(teamName, agentName, true, false);
+            resetUnreadInboxNotification(unread.length);
+            if (unread.length === 0 || hasUnreadInboxNotification) {
+                return;
+            }
+
+            hasUnreadInboxNotification = true;
+            if (isTeammate) {
+                pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox.`);
+                return;
+            }
+
+            pi.sendUserMessage(
+                `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`
+            );
+        }, 1000);
+    }
 
     pi.on('session_start', async (_event, ctx) => {
         paths.ensureDirs();
@@ -412,17 +496,9 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.notify(`Teammate: ${agentName} (Team: ${teamName})`, 'info');
             ctx.ui.setStatus('00-pi-teams', `[${agentName.toUpperCase()}]`);
 
-            if (terminal) {
-                const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
-                const setIt = () => {
-                    if ((ctx.ui as any).setTitle) (ctx.ui as any).setTitle(fullTitle);
-                    terminal.setTitle(fullTitle);
-                };
-                setIt();
-                setTimeout(setIt, 500);
-                setTimeout(setIt, 2000);
-                setTimeout(setIt, 5000);
-            }
+            const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
+            setSessionTitle(ctx, fullTitle);
+            scheduleTerminalTitleRefreshes(fullTitle);
 
             // On first spawn, purge ALL stale state from any previous session and
             // stamp the firstActivationFile immediately (before messages can arrive).
@@ -444,30 +520,13 @@ export default function (pi: ExtensionAPI) {
                 }
             }
 
-            setInterval(async () => {
-                if (!ctx.isIdle() || !teamName) {
-                    return;
-                }
-
-                const unread = await messaging.readInbox(teamName, agentName, true, false);
-                if (unread.length > 0) {
-                    pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox.`);
-                }
-            }, 1000);
+            startInboxPolling();
         } else {
             if (teamName) {
                 ctx.ui.setStatus('pi-teams', `Lead @ ${teamName}`);
             }
 
-            setInterval(async () => {
-                if (!ctx.isIdle() || !teamName) return;
-                const unread = await messaging.readInbox(teamName, agentName, true, false);
-                if (unread.length > 0) {
-                    pi.sendUserMessage(
-                        `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`
-                    );
-                }
-            }, 1000);
+            startInboxPolling();
         }
     });
 
@@ -507,19 +566,29 @@ export default function (pi: ExtensionAPI) {
     }
 
     pi.on('turn_start', async (_event, ctx) => {
+        isAgentIdle = false;
         setActiveStatus(true);
         if (isTeammate) {
             const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
-            if ((ctx.ui as any).setTitle) (ctx.ui as any).setTitle(fullTitle);
-            if (terminal) terminal.setTitle(fullTitle);
+            setSessionTitle(ctx, fullTitle);
         }
     });
 
-    pi.on('turn_end', async (_event, ctx) => {
+    pi.on('turn_end', async (_event, _ctx) => {
+        isAgentIdle = true;
         setActiveStatus(false);
+        if (teamName) {
+            const unread = await messaging.readInbox(teamName, agentName, true, false);
+            resetUnreadInboxNotification(unread.length);
+        }
         if (isTeammate && teamName) {
             await messaging.ensureReminderMessage(teamName, agentName);
         }
+    });
+
+    pi.on('session_shutdown', async () => {
+        clearInboxCheckInterval();
+        clearTitleRefreshTimeouts();
     });
 
     let firstTurn = true;
@@ -581,14 +650,16 @@ export default function (pi: ExtensionAPI) {
             name: 'team_create',
             label: 'Create Team',
             description: 'Create a new agent team.',
-            parameters: Type.Object({
-                team_name: Type.String(),
-                description: Type.Optional(Type.String()),
-                default_model: Type.Optional(Type.String()),
-                separate_windows: Type.Optional(
-                    Type.Boolean({ default: false, description: 'Open teammates in separate OS windows instead of panes' })
-                )
-            }),
+            parameters: asPiToolSchema(
+                Type.Object({
+                    team_name: Type.String(),
+                    description: Type.Optional(Type.String()),
+                    default_model: Type.Optional(Type.String()),
+                    separate_windows: Type.Optional(
+                        Type.Boolean({ default: false, description: 'Open teammates in separate OS windows instead of panes' })
+                    )
+                })
+            ) as any,
             async execute(toolCallId, params: any, signal, onUpdate, ctx) {
                 const config = teams.createTeam(
                     params.team_name,
@@ -614,9 +685,11 @@ export default function (pi: ExtensionAPI) {
             label: 'Resolve Model',
             description:
                 'Use this tool to find the correct provider/model name to use in spawn_teammate.  Use DEFAULT MODEL if no good match is found.',
-            parameters: Type.Object({
-                model_name: Type.String()
-            }),
+            parameters: asPiToolSchema(
+                Type.Object({
+                    model_name: Type.String()
+                })
+            ) as any,
             async execute(toolCallId, params: any, signal, onUpdate, ctx) {
                 const requested = params.model_name.trim();
                 if (!requested) {
@@ -655,14 +728,16 @@ export default function (pi: ExtensionAPI) {
             name: 'spawn_teammate',
             label: 'Spawn Teammate',
             description: 'Spawn a new teammate in a terminal pane or separate window.',
-            parameters: Type.Object({
-                team_name: Type.String(),
-                name: Type.String(),
-                cwd: Type.String(),
-                model: Type.Optional(Type.String()),
-                thinking: Type.Optional(StringEnum(['off', 'minimal', 'low', 'medium', 'high'])),
-                separate_window: Type.Optional(Type.Boolean({ default: false }))
-            }),
+            parameters: asPiToolSchema(
+                Type.Object({
+                    team_name: Type.String(),
+                    name: Type.String(),
+                    cwd: Type.String(),
+                    model: Type.Optional(Type.String()),
+                    thinking: Type.Optional(StringEnum(['off', 'minimal', 'low', 'medium', 'high'])),
+                    separate_window: Type.Optional(Type.Boolean({ default: false }))
+                })
+            ) as any,
             async execute(toolCallId, params: any, signal, onUpdate, ctx) {
                 const safeName = paths.sanitizeName(params.name);
                 const safeTeamName = paths.sanitizeName(params.team_name);
@@ -826,10 +901,12 @@ export default function (pi: ExtensionAPI) {
             name: 'spawn_lead_window',
             label: 'Spawn Lead Window',
             description: 'Open the team lead in a separate OS window.',
-            parameters: Type.Object({
-                team_name: Type.String(),
-                cwd: Type.Optional(Type.String())
-            }),
+            parameters: asPiToolSchema(
+                Type.Object({
+                    team_name: Type.String(),
+                    cwd: Type.Optional(Type.String())
+                })
+            ) as any,
             async execute(toolCallId, params: any, signal, onUpdate, ctx) {
                 const safeTeamName = paths.sanitizeName(params.team_name);
                 if (!teams.teamExists(safeTeamName)) throw new Error(`Team ${params.team_name} does not exist`);
@@ -866,12 +943,14 @@ export default function (pi: ExtensionAPI) {
         name: 'send_message',
         label: 'Send Message',
         description: 'Send a message to a teammate.',
-        parameters: Type.Object({
-            team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
-            recipient: Type.String(),
-            content: Type.String(),
-            summary: Type.String()
-        }),
+        parameters: asPiToolSchema(
+            Type.Object({
+                team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
+                recipient: Type.String(),
+                content: Type.String(),
+                summary: Type.String()
+            })
+        ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
             const resolvedTeam = params.team_name || teamName;
             if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
@@ -899,12 +978,14 @@ export default function (pi: ExtensionAPI) {
         label: 'Broadcast Message',
         description:
             'Broadcast a message to all team members.  Do not use this just to respond to the team-lead.  Use send_message instead.',
-        parameters: Type.Object({
-            team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
-            content: Type.String(),
-            summary: Type.String(),
-            color: Type.Optional(Type.String())
-        }),
+        parameters: asPiToolSchema(
+            Type.Object({
+                team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
+                content: Type.String(),
+                summary: Type.String(),
+                color: Type.Optional(Type.String())
+            })
+        ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
             const resolvedTeam = params.team_name || teamName;
             if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
@@ -920,11 +1001,13 @@ export default function (pi: ExtensionAPI) {
         name: 'read_inbox',
         label: 'Read Inbox',
         description: "Read messages from an agent's inbox.",
-        parameters: Type.Object({
-            team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
-            agent_name: Type.Optional(Type.String({ description: 'Whose inbox to read. Defaults to your own.' })),
-            unread_only: Type.Optional(Type.Boolean({ default: true }))
-        }),
+        parameters: asPiToolSchema(
+            Type.Object({
+                team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
+                agent_name: Type.Optional(Type.String({ description: 'Whose inbox to read. Defaults to your own.' })),
+                unread_only: Type.Optional(Type.Boolean({ default: true }))
+            })
+        ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
             const resolvedTeam = params.team_name || teamName;
             if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
@@ -942,9 +1025,11 @@ export default function (pi: ExtensionAPI) {
             name: 'team_shutdown',
             label: 'Shutdown Team',
             description: 'Shutdown the entire team and close all panes/windows.',
-            parameters: Type.Object({
-                team_name: Type.String()
-            }),
+            parameters: asPiToolSchema(
+                Type.Object({
+                    team_name: Type.String()
+                })
+            ) as any,
             async execute(toolCallId, params: any, signal, onUpdate, ctx) {
                 const teamName = params.team_name;
                 try {
@@ -966,9 +1051,11 @@ export default function (pi: ExtensionAPI) {
         name: 'list_teammates',
         label: 'List Teammates',
         description: 'List all teammates in a team with their status.',
-        parameters: Type.Object({
-            team_name: Type.String()
-        }),
+        parameters: asPiToolSchema(
+            Type.Object({
+                team_name: Type.String()
+            })
+        ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
             const config = await teams.readConfig(params.team_name);
             const teammates = await Promise.all(
@@ -1005,10 +1092,12 @@ export default function (pi: ExtensionAPI) {
             name: 'process_shutdown_approved',
             label: 'Process Shutdown Approved',
             description: "Process a teammate's shutdown.",
-            parameters: Type.Object({
-                team_name: Type.String(),
-                agent_name: Type.String()
-            }),
+            parameters: asPiToolSchema(
+                Type.Object({
+                    team_name: Type.String(),
+                    agent_name: Type.String()
+                })
+            ) as any,
             async execute(toolCallId, params: any, signal, onUpdate, ctx) {
                 const config = await teams.readConfig(params.team_name);
                 const member = config.members.find((m) => m.name === params.agent_name);

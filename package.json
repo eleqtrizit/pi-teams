@@ -23,6 +23,7 @@
     "README.md"
   ],
   "dependencies": {
+    "typebox": "^1.1.33",
     "uuid": "^11.1.0"
   },
   "peerDependencies": {
