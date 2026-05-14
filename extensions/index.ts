@@ -898,6 +898,112 @@ export default function (pi: ExtensionAPI) {
 
     if (!isTeammate) {
         pi.registerTool({
+            name: 'spawn_readonly_worker',
+            label: 'Spawn Read-Only Worker',
+            description: 'Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. The worker uses the team leader\'s model by default.',
+            parameters: Type.Object({
+                team_name: Type.String(),
+                name: Type.String(),
+                cwd: Type.String()
+            }),
+            async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+                const safeName = paths.sanitizeName(params.name);
+                const safeTeamName = paths.sanitizeName(params.team_name);
+
+                if (!teams.teamExists(safeTeamName)) {
+                    throw new Error(`Team ${params.team_name} does not exist`);
+                }
+
+                if (!terminal) {
+                    throw new Error('No terminal adapter detected.');
+                }
+
+                const teamConfig = await teams.readConfig(safeTeamName);
+
+                // Use the team-leader\'s model
+                const defaultModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                if (!defaultModel) {
+                    throw new Error(
+                        'Cannot spawn read-only worker: no model configured. ' +
+                            'Ensure the team-leader has a model configured.'
+                    );
+                }
+
+                const member: Member = {
+                    agentId: `${safeName}@${safeTeamName}`,
+                    name: safeName,
+                    agentType: 'readonly-worker',
+                    model: defaultModel,
+                    joinedAt: Date.now(),
+                    tmuxPaneId: '',
+                    cwd: params.cwd,
+                    subscriptions: [],
+                    color: 'green'
+                };
+
+                await teams.addMember(safeTeamName, member);
+
+                const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
+                const piCmd = `${piBinary} --model ${defaultModel} --tools read,grep,find,ls`;
+
+                const env: Record<string, string> = {
+                    ...process.env,
+                    PI_TEAM_NAME: safeTeamName,
+                    PI_AGENT_NAME: safeName
+                };
+
+                // Stamp firstActivationFile and clear stale state files BEFORE spawning
+                const firstActivationFile = paths.firstActivationPath(safeTeamName, safeName);
+                const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
+                const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
+                const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
+                if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+                if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
+                if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
+                fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
+                fs.writeFileSync(firstActivationFile, Date.now().toString());
+
+                let terminalId = '';
+
+                try {
+                    if (terminal instanceof Iterm2Adapter) {
+                        const teammates = teamConfig.members.filter(
+                            (m) => m.agentType === 'teammate' || m.agentType === 'readonly-worker'
+                        );
+                        const lastTeammate = teammates.length > 0 ? teammates[teammates.length - 1] : null;
+                        if (lastTeammate?.tmuxPaneId) {
+                            terminal.setSpawnContext({ lastSessionId: lastTeammate.tmuxPaneId.replace('iterm_', '') });
+                        } else {
+                            terminal.setSpawnContext({});
+                        }
+                    }
+
+                    terminalId = terminal.spawn({
+                        name: safeName,
+                        cwd: params.cwd,
+                        command: piCmd,
+                        env: env
+                    });
+                    await teams.updateMember(safeTeamName, safeName, { tmuxPaneId: terminalId });
+                } catch (e) {
+                    throw new Error(`Failed to spawn ${terminal.name} pane: ${e}`);
+                }
+
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls.`
+                        }
+                    ],
+                    details: { agentId: member.agentId, terminalId, tools: ['read', 'grep', 'find', 'ls'] }
+                };
+            }
+        });
+    }
+
+    if (!isTeammate) {
+        pi.registerTool({
             name: 'spawn_lead_window',
             label: 'Spawn Lead Window',
             description: 'Open the team lead in a separate OS window.',
