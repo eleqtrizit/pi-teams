@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { getTopModelMatches, clearModelsCache, resolveModelWithProvider } from './index';
+import { getTopModelMatches, clearModelsCache, resolveModelWithProvider, unreadInboxSignature } from './index';
 
 describe('getTopModelMatches', () => {
     beforeEach(() => {
@@ -98,5 +98,31 @@ describe('resolveModelWithProvider', () => {
         };
         const resolved = resolveModelWithProvider('bighank/qwen3coder-35b', modelRegistry);
         expect(resolved).toBe('bighank/qwen3coder-35b');
+    });
+});
+
+describe('unreadInboxSignature', () => {
+    it('changes when a new unread message is added', () => {
+        const first = [
+            {
+                from: 'worker',
+                text: 'first report',
+                timestamp: '2026-05-28T10:00:00.000Z',
+                read: false,
+                summary: 'report'
+            }
+        ];
+        const second = [
+            ...first,
+            {
+                from: 'worker',
+                text: 'second report',
+                timestamp: '2026-05-28T10:01:00.000Z',
+                read: false,
+                summary: 'report'
+            }
+        ];
+
+        expect(unreadInboxSignature(second)).not.toBe(unreadInboxSignature(first));
     });
 });

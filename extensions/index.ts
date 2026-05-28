@@ -7,7 +7,7 @@ import { Iterm2Adapter } from '../src/adapters/iterm2-adapter';
 import { getTerminalAdapter } from '../src/adapters/terminal-registry';
 import * as messaging from '../src/utils/messaging';
 import { updateLastAwokenTime } from '../src/utils/messaging';
-import { Member } from '../src/utils/models';
+import { InboxMessage, Member } from '../src/utils/models';
 import * as paths from '../src/utils/paths';
 import * as teams from '../src/utils/teams';
 
@@ -22,6 +22,12 @@ const MODELS_CACHE_TTL = 60000; // 1 minute
 export function clearModelsCache(): void {
     availableModelsCache = null;
     modelsCacheTime = 0;
+}
+
+export function unreadInboxSignature(messages: InboxMessage[]): string {
+    return messages
+        .map((message) => [message.timestamp, message.from, message.summary, message.text].join('\u0000'))
+        .join('\u0001');
 }
 
 /**
@@ -420,7 +426,8 @@ export default function (pi: ExtensionAPI) {
     let inboxCheckInterval: ReturnType<typeof setInterval> | null = null;
     let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
     let isAgentIdle = true;
-    let hasUnreadInboxNotification = false;
+    let lastNotifiedUnreadInboxSignature: string | null = null;
+    let currentContext: ExtensionContext | null = null;
 
     function clearInboxCheckInterval(): void {
         if (inboxCheckInterval == null) {
@@ -457,36 +464,51 @@ export default function (pi: ExtensionAPI) {
 
     function resetUnreadInboxNotification(unreadCount: number): void {
         if (unreadCount === 0) {
-            hasUnreadInboxNotification = false;
+            lastNotifiedUnreadInboxSignature = null;
+        }
+    }
+
+    function sendInboxNotification(message: string): void {
+        const isIdle = currentContext?.isIdle() ?? isAgentIdle;
+        if (isIdle) {
+            pi.sendUserMessage(message);
+        } else {
+            pi.sendUserMessage(message, { deliverAs: 'steer' });
         }
     }
 
     function startInboxPolling(): void {
         clearInboxCheckInterval();
         inboxCheckInterval = setInterval(async () => {
-            if (!teamName || !isAgentIdle) {
+            if (!teamName) {
                 return;
             }
 
             const unread = await messaging.readInbox(teamName, agentName, true, false);
             resetUnreadInboxNotification(unread.length);
-            if (unread.length === 0 || hasUnreadInboxNotification) {
+            if (unread.length === 0) {
                 return;
             }
 
-            hasUnreadInboxNotification = true;
+            const unreadSignature = unreadInboxSignature(unread);
+            if (unreadSignature === lastNotifiedUnreadInboxSignature) {
+                return;
+            }
+
+            lastNotifiedUnreadInboxSignature = unreadSignature;
             if (isTeammate) {
-                pi.sendUserMessage(`I have ${unread.length} new message(s) in my inbox.`);
+                sendInboxNotification(`I have ${unread.length} new message(s) in my inbox.`);
                 return;
             }
 
-            pi.sendUserMessage(
+            sendInboxNotification(
                 `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`
             );
         }, 1000);
     }
 
     pi.on('session_start', async (_event, ctx) => {
+        currentContext = ctx;
         paths.ensureDirs();
         if (isTeammate) {
             if (teamName) {
@@ -566,6 +588,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     pi.on('turn_start', async (_event, ctx) => {
+        currentContext = ctx;
         isAgentIdle = false;
         setActiveStatus(true);
         if (isTeammate) {
@@ -574,7 +597,8 @@ export default function (pi: ExtensionAPI) {
         }
     });
 
-    pi.on('turn_end', async (_event, _ctx) => {
+    pi.on('turn_end', async (_event, ctx) => {
+        currentContext = ctx;
         isAgentIdle = true;
         setActiveStatus(false);
         if (teamName) {
