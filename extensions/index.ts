@@ -30,6 +30,14 @@ export function unreadInboxSignature(messages: InboxMessage[]): string {
         .join('\u0001');
 }
 
+export function formatInboxResponse(messages: InboxMessage[], includeEmptyInboxSleepInstruction: boolean): string {
+    const json = JSON.stringify(messages, null, 2);
+    if (messages.length === 0 && includeEmptyInboxSleepInstruction) {
+        return `${json}\n\nSleep before checking again`;
+    }
+    return json;
+}
+
 /**
  * Minimal model-registry interface used by this extension.
  */
@@ -1145,8 +1153,9 @@ export default function (pi: ExtensionAPI) {
             if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
             const targetAgent = params.agent_name || agentName;
             const msgs = await messaging.readInbox(resolvedTeam, targetAgent, params.unread_only ?? true);
+            const includeEmptyInboxSleepInstruction = !isTeammate && targetAgent === agentName;
             return {
-                content: [{ type: 'text', text: JSON.stringify(msgs, null, 2) }],
+                content: [{ type: 'text', text: formatInboxResponse(msgs, includeEmptyInboxSleepInstruction) }],
                 details: { messages: msgs }
             };
         }

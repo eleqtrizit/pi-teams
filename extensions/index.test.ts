@@ -1,5 +1,11 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { getTopModelMatches, clearModelsCache, resolveModelWithProvider, unreadInboxSignature } from './index';
+import {
+    getTopModelMatches,
+    clearModelsCache,
+    resolveModelWithProvider,
+    unreadInboxSignature,
+    formatInboxResponse
+} from './index';
 
 describe('getTopModelMatches', () => {
     beforeEach(() => {
@@ -124,5 +130,29 @@ describe('unreadInboxSignature', () => {
         ];
 
         expect(unreadInboxSignature(second)).not.toBe(unreadInboxSignature(first));
+    });
+});
+
+describe('formatInboxResponse', () => {
+    it('adds a sleep instruction for an empty team-lead inbox', () => {
+        expect(formatInboxResponse([], true)).toBe('[]\n\nSleep before checking again');
+    });
+
+    it('does not add a sleep instruction when messages are returned', () => {
+        const messages = [
+            {
+                from: 'worker',
+                text: 'done',
+                timestamp: '2026-05-28T10:00:00.000Z',
+                read: false,
+                summary: 'report'
+            }
+        ];
+
+        expect(formatInboxResponse(messages, true)).toBe(JSON.stringify(messages, null, 2));
+    });
+
+    it('does not add a sleep instruction when disabled', () => {
+        expect(formatInboxResponse([], false)).toBe('[]');
     });
 });
