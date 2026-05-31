@@ -26,7 +26,10 @@ export interface TeamConfig {
 }
 
 export interface InboxMessage {
+  id: string;
   from: string;
+  to: string;
+  subject: string;
   text: string;
   timestamp: string;
   read: boolean;

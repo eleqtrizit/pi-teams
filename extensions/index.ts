@@ -26,16 +26,31 @@ export function clearModelsCache(): void {
 
 export function unreadInboxSignature(messages: InboxMessage[]): string {
     return messages
-        .map((message) => [message.timestamp, message.from, message.summary, message.text].join('\u0000'))
+        .map((message) => [message.id, message.timestamp, message.from, message.subject, message.text].join('\u0000'))
         .join('\u0001');
 }
 
 export function formatInboxResponse(messages: InboxMessage[], includeEmptyInboxSleepInstruction: boolean): string {
-    const json = JSON.stringify(messages, null, 2);
-    if (messages.length === 0 && includeEmptyInboxSleepInstruction) {
-        return `${json}\n\nSleep before checking again`;
+    if (messages.length === 0) {
+        if (includeEmptyInboxSleepInstruction) {
+            return 'Your inbox is empty.\n\nSleep before checking again';
+        }
+        return 'Your inbox is empty.';
     }
-    return json;
+
+    const escapePipe = (v: string): string => v.replace(/\|/g, '\\|');
+
+    const rows = messages.map((m) => {
+        const ts = new Date(m.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        const readStatus = m.read ? '✅' : '⬜';
+        const uuid = m.id.slice(0, 8);
+        return `| ${ts} | ${readStatus} | \`${uuid}\` | ${escapePipe(m.from)} | ${escapePipe(m.to)} | ${escapePipe(m.subject)} |`;
+    });
+
+    const header = '| Datetime | Read | UUID | From | To | Subject |';
+    const separator = '|----------|------|------|------|-----|---------|';
+
+    return [header, separator, ...rows].join('\n');
 }
 
 /**
@@ -478,14 +493,14 @@ export default function (pi: ExtensionAPI) {
 
     async function sendInboxNotification(message: string): Promise<void> {
         const isIdle = currentContext?.isIdle() ?? isAgentIdle;
-        if (isIdle) {
-            pi.sendUserMessage(message, { deliverAs: 'steer' });
-        } else {
+        if (!isIdle) {
             // Abort the current tool execution first so the steer message is
             // processed immediately rather than waiting for the tool to finish.
             await currentContext?.abort();
-            pi.sendUserMessage(message, { deliverAs: 'steer' });
         }
+        // Fire-and-forget — abort may have killed the current turn context,
+        // and awaiting the post-abort user-message would reject.
+        pi.sendUserMessage(message, { deliverAs: 'steer' });
     }
 
     function startInboxPolling(): void {
@@ -495,7 +510,7 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
-            const unread = await messaging.readInbox(teamName, agentName, true, false);
+            const unread = await messaging.readInbox(teamName, agentName, true);
             resetUnreadInboxNotification(unread.length);
             if (unread.length === 0) {
                 return;
@@ -613,7 +628,7 @@ export default function (pi: ExtensionAPI) {
         isAgentIdle = true;
         setActiveStatus(false);
         if (teamName) {
-            const unread = await messaging.readInbox(teamName, agentName, true, false);
+            const unread = await messaging.readInbox(teamName, agentName, true);
             resetUnreadInboxNotification(unread.length);
         }
         if (isTeammate && teamName) {
@@ -1090,8 +1105,9 @@ export default function (pi: ExtensionAPI) {
             Type.Object({
                 team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
                 recipient: Type.String(),
-                content: Type.String(),
-                summary: Type.String()
+                subject: Type.String({ description: 'Short subject line for the message.' }),
+                content: Type.String({ description: 'Full message body.' }),
+                summary: Type.Optional(Type.String({ description: 'Optional brief summary.' }))
             })
         ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
@@ -1101,6 +1117,7 @@ export default function (pi: ExtensionAPI) {
                 resolvedTeam,
                 agentName,
                 params.recipient,
+                params.subject,
                 params.content,
                 params.summary
             );
@@ -1124,15 +1141,16 @@ export default function (pi: ExtensionAPI) {
         parameters: asPiToolSchema(
             Type.Object({
                 team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
-                content: Type.String(),
-                summary: Type.String(),
+                subject: Type.String({ description: 'Short subject line for the broadcast.' }),
+                content: Type.String({ description: 'Full message body.' }),
+                summary: Type.Optional(Type.String({ description: 'Optional brief summary.' })),
                 color: Type.Optional(Type.String())
             })
         ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
             const resolvedTeam = params.team_name || teamName;
             if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
-            await messaging.broadcastMessage(resolvedTeam, agentName, params.content, params.summary, params.color);
+            await messaging.broadcastMessage(resolvedTeam, agentName, params.subject, params.content, params.summary, params.color);
             return {
                 content: [{ type: 'text', text: `Message broadcasted to all team members.` }],
                 details: {}
@@ -1143,7 +1161,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
         name: 'read_inbox',
         label: 'Read Inbox',
-        description: "Read messages from an agent's inbox.",
+        description: "Read messages from an agent's inbox. Does not mark messages as read — use read_message to read a specific message and mark it as read.",
         parameters: asPiToolSchema(
             Type.Object({
                 team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
@@ -1160,6 +1178,43 @@ export default function (pi: ExtensionAPI) {
             return {
                 content: [{ type: 'text', text: formatInboxResponse(msgs, includeEmptyInboxSleepInstruction) }],
                 details: { messages: msgs }
+            };
+        }
+    });
+
+    pi.registerTool({
+        name: 'read_message',
+        label: 'Read Message',
+        description: 'Read the full body of a specific message by its ID and mark it as read.',
+        parameters: asPiToolSchema(
+            Type.Object({
+                team_name: Type.Optional(Type.String({ description: 'Defaults to your current team.' })),
+                agent_name: Type.Optional(Type.String({ description: 'Whose inbox the message is in. Defaults to your own.' })),
+                message_id: Type.String({ description: 'The ID of the message to read (the UUID column from read_inbox table).' })
+            })
+        ) as any,
+        async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+            const resolvedTeam = params.team_name || teamName;
+            if (!resolvedTeam) throw new Error('team_name is required (no team is currently active).');
+            const targetAgent = params.agent_name || agentName;
+            const message = await messaging.readMessage(resolvedTeam, targetAgent, params.message_id);
+            if (!message) {
+                return {
+                    content: [{ type: 'text', text: `Message with UUID \`${params.message_id}\` not found in ${targetAgent}'s inbox.` }],
+                    details: {}
+                };
+            }
+            const body = [
+                `**From:** ${message.from}`,
+                `**To:** ${message.to}`,
+                `**Subject:** ${message.subject}`,
+                `**Timestamp:** ${message.timestamp}`,
+                '',
+                message.text
+            ].join('\n');
+            return {
+                content: [{ type: 'text', text: body }],
+                details: { message }
             };
         }
     });
@@ -1212,7 +1267,7 @@ export default function (pi: ExtensionAPI) {
                     } else if (m.tmuxPaneId && terminal) {
                         alive = terminal.isAlive(m.tmuxPaneId);
                     }
-                    const unreadCount = (await messaging.readInbox(params.team_name, m.name, true, false)).length;
+                    const unreadCount = (await messaging.readInbox(params.team_name, m.name, true)).length;
                     const active = isAgentActive(params.team_name, m.name);
                     return {
                         name: m.name,

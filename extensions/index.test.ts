@@ -6,6 +6,7 @@ import {
     unreadInboxSignature,
     formatInboxResponse
 } from './index';
+import type { InboxMessage } from '../src/utils/models';
 
 describe('getTopModelMatches', () => {
     beforeEach(() => {
@@ -109,19 +110,25 @@ describe('resolveModelWithProvider', () => {
 
 describe('unreadInboxSignature', () => {
     it('changes when a new unread message is added', () => {
-        const first = [
+        const first: InboxMessage[] = [
             {
+                id: 'aaa11111',
                 from: 'worker',
+                to: 'team-lead',
+                subject: 'Status update',
                 text: 'first report',
                 timestamp: '2026-05-28T10:00:00.000Z',
                 read: false,
                 summary: 'report'
             }
         ];
-        const second = [
+        const second: InboxMessage[] = [
             ...first,
             {
+                id: 'bbb22222',
                 from: 'worker',
+                to: 'team-lead',
+                subject: 'Another update',
                 text: 'second report',
                 timestamp: '2026-05-28T10:01:00.000Z',
                 read: false,
@@ -135,13 +142,16 @@ describe('unreadInboxSignature', () => {
 
 describe('formatInboxResponse', () => {
     it('adds a sleep instruction for an empty team-lead inbox', () => {
-        expect(formatInboxResponse([], true)).toBe('[]\n\nSleep before checking again');
+        expect(formatInboxResponse([], true)).toBe('Your inbox is empty.\n\nSleep before checking again');
     });
 
-    it('does not add a sleep instruction when messages are returned', () => {
-        const messages = [
+    it('renders a markdown table with headers when messages are returned', () => {
+        const messages: InboxMessage[] = [
             {
+                id: 'aaa11111',
                 from: 'worker',
+                to: 'team-lead',
+                subject: 'Report',
                 text: 'done',
                 timestamp: '2026-05-28T10:00:00.000Z',
                 read: false,
@@ -149,10 +159,36 @@ describe('formatInboxResponse', () => {
             }
         ];
 
-        expect(formatInboxResponse(messages, true)).toBe(JSON.stringify(messages, null, 2));
+        const output = formatInboxResponse(messages, true);
+        expect(output).toContain('| Datetime | Read | UUID | From | To | Subject |');
+        expect(output).toContain('|----------|------|------|------|-----|---------|');
+        expect(output).toContain('| 2026-05-28 10:00:00');
+        expect(output).toContain('| ⬜');
+        expect(output).toContain('| \`aaa11111\`');
+        expect(output).toContain('| worker');
+        expect(output).toContain('| team-lead');
+        expect(output).toContain('| Report |');
+        expect(output).not.toContain('Sleep');
     });
 
     it('does not add a sleep instruction when disabled', () => {
-        expect(formatInboxResponse([], false)).toBe('[]');
+        expect(formatInboxResponse([], false)).toBe('Your inbox is empty.');
+    });
+
+    it('shows checkmark for read messages', () => {
+        const messages: InboxMessage[] = [
+            {
+                id: 'ccc33333',
+                from: 'alice',
+                to: 'bob',
+                subject: 'Done',
+                text: 'all set',
+                timestamp: '2026-05-28T11:00:00.000Z',
+                read: true
+            }
+        ];
+
+        const output = formatInboxResponse(messages, false);
+        expect(output).toContain('| ✅');
     });
 });

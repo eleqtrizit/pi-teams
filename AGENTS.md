@@ -10,4 +10,4 @@ If the team member finishes work and has not sent a message back to the team lea
 
 The reminder is only if the last active time is greater than the last sent message time. We also only send one reminder.
 
-Team members should never see read messages.  Messages get marked READ *after* they are displayed to the team member.
+Team members should never see read messages. Use `read_inbox` to list unread messages (shows a table with subject, sender, and ID). Then call `read_message` with the message ID to read the full body — this marks the message as read. The reminder system relies on messages being marked read via `read_message`; skipping it will trigger false reminders.

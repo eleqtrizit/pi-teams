@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { v4 as uuidv4 } from 'uuid';
 import { withLock } from './lock';
 import { InboxMessage } from './models';
 import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath } from './paths';
@@ -128,12 +129,6 @@ export function needsReminderMessage(
 }
 
 /**
- * Ensure a reminder message exists when the teammate finished a cycle without reporting.
- * @param teamName The name of the team
- * @param agentName The name of the agent
- * @returns true if a reminder was added
- */
-/**
  * Append a reminder to the agent's inbox if they have read instructions but
  * never reported back. Safe to call repeatedly — only one reminder is added
  * per instruction cycle.
@@ -162,7 +157,12 @@ export async function ensureReminderMessage(teamName: string, agentName: string)
         }
 
         const reminderMsg: InboxMessage = {
+            // 8-char hex prefix of a v4 UUID — 32 bits of entropy. Collision
+            // risk is accepted: ~1 in 42M per inbox; unambiguous in practice.
+            id: uuidv4().slice(0, 8),
             from: 'system',
+            to: agentName,
+            subject: 'Reminder: Report to team lead',
             text: REMINDER_TEXT,
             timestamp: nowIso(),
             read: false,
@@ -191,11 +191,21 @@ export async function appendMessage(teamName: string, agentName: string, message
     });
 }
 
+/**
+ * Read messages from an agent's inbox.
+ *
+ * This function does NOT modify read state. To mark a message as read,
+ * use {@link readMessage} with the message's UUID.
+ *
+ * @param teamName The name of the team
+ * @param agentName The name of the agent
+ * @param unreadOnly When true, only return unread messages
+ * @returns A list of inbox messages (shallow copies, read state preserved)
+ */
 export async function readInbox(
     teamName: string,
     agentName: string,
-    unreadOnly = true,
-    markAsRead = true
+    unreadOnly = true
 ): Promise<InboxMessage[]> {
     const p = inboxPath(teamName, agentName);
 
@@ -204,22 +214,67 @@ export async function readInbox(
     return await withLock(p, async () => {
         const allMsgs: InboxMessage[] = JSON.parse(fs.readFileSync(p, 'utf-8'));
 
-        // Identify which messages to surface (snapshot BEFORE any mutation so callers
-        // always receive objects with their original read state).
-        const unreadMsgs = allMsgs.filter((m) => !m.read);
-        const toReturn = unreadOnly ? unreadMsgs : allMsgs;
-        const resultSnapshot: InboxMessage[] = toReturn.map((m) => ({ ...m }));
+        const toReturn = unreadOnly ? allMsgs.filter((m) => !m.read) : allMsgs;
+        return toReturn.map((m) => ({ ...m }));
+    });
+}
 
-        if (markAsRead && unreadMsgs.length > 0) {
-            for (const m of allMsgs) {
-                if (unreadMsgs.includes(m)) {
-                    m.read = true;
-                }
+/**
+ * Read a single message by its UUID and mark it as read.
+ *
+ * @param teamName The name of the team
+ * @param agentName The name of the agent
+ * @param messageId The short UUID of the message to read
+ * @returns The full inbox message, or null if no message with that id exists
+ */
+export async function readMessage(
+    teamName: string,
+    agentName: string,
+    messageId: string
+): Promise<InboxMessage | null> {
+    const p = inboxPath(teamName, agentName);
+
+    if (!fs.existsSync(p)) return null;
+
+    return await withLock(p, async () => {
+        const allMsgs: InboxMessage[] = JSON.parse(fs.readFileSync(p, 'utf-8'));
+
+        const idx = allMsgs.findIndex((m) => m.id === messageId);
+        if (idx === -1) return null;
+
+        const message = allMsgs[idx];
+        message.read = true;
+        fs.writeFileSync(p, JSON.stringify(allMsgs, null, 2));
+
+        return { ...message };
+    });
+}
+
+/**
+ * Mark all unread messages as read.
+ *
+ * @param teamName The name of the team
+ * @param agentName The name of the agent
+ * @returns The number of messages that were marked as read
+ */
+export async function markAllAsRead(teamName: string, agentName: string): Promise<number> {
+    const p = inboxPath(teamName, agentName);
+
+    if (!fs.existsSync(p)) return 0;
+
+    return await withLock(p, async () => {
+        const allMsgs: InboxMessage[] = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        let count = 0;
+        for (const m of allMsgs) {
+            if (!m.read) {
+                m.read = true;
+                count++;
             }
+        }
+        if (count > 0) {
             fs.writeFileSync(p, JSON.stringify(allMsgs, null, 2));
         }
-
-        return resultSnapshot;
+        return count;
     });
 }
 
@@ -227,12 +282,18 @@ export async function sendPlainMessage(
     teamName: string,
     fromName: string,
     toName: string,
+    subject: string,
     text: string,
-    summary: string,
+    summary?: string,
     color?: string
 ) {
     const msg: InboxMessage = {
+        // 8-char hex prefix of a v4 UUID — 32 bits of entropy. Collision
+        // risk is accepted: ~1 in 42M per inbox; unambiguous in practice.
+        id: uuidv4().slice(0, 8),
         from: fromName,
+        to: toName,
+        subject,
         text,
         timestamp: nowIso(),
         read: false,
@@ -255,8 +316,9 @@ export async function sendPlainMessage(
 export async function broadcastMessage(
     teamName: string,
     fromName: string,
+    subject: string,
     text: string,
-    summary: string,
+    summary?: string,
     color?: string
 ) {
     const config = await readConfig(teamName);
@@ -264,7 +326,7 @@ export async function broadcastMessage(
     // Create an array of delivery promises for all members except the sender
     const deliveryPromises = config.members
         .filter((member) => member.name !== fromName)
-        .map((member) => sendPlainMessage(teamName, fromName, member.name, text, summary, color));
+        .map((member) => sendPlainMessage(teamName, fromName, member.name, subject, text, summary, color));
 
     // Execute deliveries in parallel and wait for all to settle
     const results = await Promise.allSettled(deliveryPromises);
