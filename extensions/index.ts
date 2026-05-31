@@ -493,14 +493,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     async function sendInboxNotification(message: string): Promise<void> {
-        const isIdle = currentContext?.isIdle() ?? isAgentIdle;
-        if (!isIdle) {
-            // Abort the current tool execution first so the steer message is
-            // processed immediately rather than waiting for the tool to finish.
-            await currentContext?.abort();
-        }
-        // Fire-and-forget — abort may have killed the current turn context,
-        // and awaiting the post-abort user-message would reject.
+        // deliverAs: 'steer' already interrupts any active turn internally.
+        // Calling abort() explicitly before it kills the turn context and causes
+        // a double-cancel: the tool abort fires first, then the steer delivery
+        // tries to abort again — leaving the agent dormant.
         pi.sendUserMessage(message, { deliverAs: 'steer' });
     }
 
