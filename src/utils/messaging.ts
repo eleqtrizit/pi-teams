@@ -10,9 +10,6 @@ export function nowIso(): string {
     return new Date().toISOString();
 }
 
-const REMINDER_TEXT =
-    'What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately and then wait for further instructions.';
-
 /**
  * Get the timestamp of the last message sent by this agent.
  * @param teamName The name of the team
@@ -126,54 +123,6 @@ export function needsReminderMessage(
     if (lastMessageTime === null) return true;
 
     return lastMessageTime < latestInstructionTs;
-}
-
-/**
- * Append a reminder to the agent's inbox if they have read instructions but
- * never reported back. Safe to call repeatedly — only one reminder is added
- * per instruction cycle.
- *
- * @param teamName The name of the team
- * @param agentName The name of the agent
- * @returns true if a reminder was added
- */
-export async function ensureReminderMessage(teamName: string, agentName: string): Promise<boolean> {
-    const p = inboxPath(teamName, agentName);
-    if (!fs.existsSync(p)) return false;
-
-    return await withLock(p, async () => {
-        const allMsgs: InboxMessage[] = JSON.parse(fs.readFileSync(p, 'utf-8'));
-
-        const teamLeadMsgs = allMsgs.filter((m) => m.from === 'team-lead');
-        const latestInstructionTs =
-            teamLeadMsgs.length > 0 ? Math.max(...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime())) : null;
-        const allInstructionsRead = teamLeadMsgs.length > 0 && teamLeadMsgs.every((m) => m.read);
-
-        const unreadMsgs = allMsgs.filter((m) => !m.read);
-        if (unreadMsgs.some((m) => m.from === 'system')) return false;
-
-        if (!needsReminderMessage(teamName, agentName, latestInstructionTs, allInstructionsRead)) {
-            return false;
-        }
-
-        const reminderMsg: InboxMessage = {
-            // 8-char hex prefix of a v4 UUID — 32 bits of entropy. Collision
-            // risk is accepted: ~1 in 42M per inbox; unambiguous in practice.
-            id: uuidv4().slice(0, 8),
-            from: 'system',
-            to: agentName,
-            subject: 'Reminder: Report to team lead',
-            text: REMINDER_TEXT,
-            timestamp: nowIso(),
-            read: false,
-            summary: 'Reminder: Report to team lead',
-            color: 'yellow'
-        };
-        allMsgs.push(reminderMsg);
-        fs.writeFileSync(p, JSON.stringify(allMsgs, null, 2));
-        updateLastReminderTime(teamName, agentName);
-        return true;
-    });
 }
 
 export async function appendMessage(teamName: string, agentName: string, message: InboxMessage) {

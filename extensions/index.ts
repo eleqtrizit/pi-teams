@@ -442,6 +442,7 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
 
 export default function (pi: ExtensionAPI) {
     const isTeammate = !!process.env.PI_AGENT_NAME;
+    const agentType = process.env.PI_AGENT_TYPE || 'lead';
     const agentName = process.env.PI_AGENT_NAME || 'team-lead';
     let teamName = process.env.PI_TEAM_NAME;
 
@@ -627,12 +628,26 @@ export default function (pi: ExtensionAPI) {
         currentContext = ctx;
         isAgentIdle = true;
         setActiveStatus(false);
-        if (teamName) {
+        if (isTeammate && teamName) {
+            // Single inbox read: check for unread messages (for notification
+            // reset) and determine whether the agent needs a direct steer to
+            // report back after reading all team-lead instructions.
+            const allMsgs = await messaging.readInbox(teamName, agentName, false);
+            const unreadMsgs = allMsgs.filter((m) => !m.read);
+            resetUnreadInboxNotification(unreadMsgs.length);
+
+            const teamLeadMsgs = allMsgs.filter((m) => m.from === 'team-lead');
+            if (teamLeadMsgs.length > 0) {
+                const latestInstructionTs = Math.max(...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime()));
+                const allInstructionsRead = teamLeadMsgs.every((m) => m.read);
+                if (messaging.needsReminderMessage(teamName, agentName, latestInstructionTs, allInstructionsRead)) {
+                    messaging.updateLastReminderTime(teamName, agentName);
+                    pi.sendUserMessage('Report back to the team-lead with your results.', { deliverAs: 'steer' });
+                }
+            }
+        } else if (teamName) {
             const unread = await messaging.readInbox(teamName, agentName, true);
             resetUnreadInboxNotification(unread.length);
-        }
-        if (isTeammate && teamName) {
-            await messaging.ensureReminderMessage(teamName, agentName);
         }
     });
 
@@ -663,10 +678,18 @@ export default function (pi: ExtensionAPI) {
                 }
             }
 
+            const roleDescription = agentType === 'readonly-worker'
+                ? 'read-only worker'
+                : 'teammate';
+
+            const capabilitiesNote = agentType === 'readonly-worker'
+                ? '\nYou are limited to reading files (read, grep, find, ls) and messaging tools (send_message, broadcast_message, read_inbox). You cannot write, edit, or execute commands.'
+                : '';
+
             return {
                 systemPrompt:
                     event.systemPrompt +
-                    `\n\nYou are teammate '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}\nWait for instructions via your inbox. You will be notified when new messages arrive.`
+                    `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nWait for instructions via your inbox. You will be notified when new messages arrive.`
             };
         }
     });
@@ -877,7 +900,8 @@ export default function (pi: ExtensionAPI) {
                 const env: Record<string, string> = {
                     ...process.env,
                     PI_TEAM_NAME: safeTeamName,
-                    PI_AGENT_NAME: safeName
+                    PI_AGENT_NAME: safeName,
+                    PI_AGENT_TYPE: 'teammate'
                 };
 
                 // Stamp firstActivationFile and clear stale state files BEFORE spawning
@@ -1001,7 +1025,8 @@ export default function (pi: ExtensionAPI) {
                 const env: Record<string, string> = {
                     ...process.env,
                     PI_TEAM_NAME: safeTeamName,
-                    PI_AGENT_NAME: safeName
+                    PI_AGENT_NAME: safeName,
+                    PI_AGENT_TYPE: 'readonly-worker'
                 };
 
                 // Stamp firstActivationFile and clear stale state files BEFORE spawning

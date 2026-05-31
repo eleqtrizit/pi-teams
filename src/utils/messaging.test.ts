@@ -4,11 +4,13 @@ import path from "node:path";
 import os from "node:os";
 import {
     appendMessage,
-    ensureReminderMessage,
     readInbox,
     readMessage,
     sendPlainMessage,
-    broadcastMessage
+    broadcastMessage,
+    needsReminderMessage,
+    updateLastMessageTime,
+    updateLastReminderTime
 } from "./messaging";
 import * as paths from "./paths";
 
@@ -132,64 +134,6 @@ describe("Messaging Utilities", () => {
         expect(unread[0].id).toBe(all[1].id);
     });
 
-    it("should inject a reminder after instructions are read and no response sent", async () => {
-        await sendPlainMessage("test-team", "team-lead", "worker", "Instruction", "check plan.md", "instruction");
-
-        // Mark the team-lead message as read
-        const msgs = await readInbox("test-team", "worker", false);
-        await readMessage("test-team", "worker", msgs[0].id);
-
-        const reminderAdded = await ensureReminderMessage("test-team", "worker");
-        expect(reminderAdded).toBe(true);
-
-        const polled = await readInbox("test-team", "worker", true);
-        expect(polled.length).toBe(1);
-        expect(polled[0].from).toBe("system");
-        expect(polled[0].text).toContain("You report to the team-lead");
-    });
-
-    it("should not inject a reminder while team-lead instructions are still unread", async () => {
-        await sendPlainMessage("test-team", "team-lead", "worker", "Instruction", "check plan.md", "instruction");
-
-        const reminderAdded = await ensureReminderMessage("test-team", "worker");
-        expect(reminderAdded).toBe(false);
-
-        const polled = await readInbox("test-team", "worker", true);
-        expect(polled.length).toBe(1);
-        expect(polled[0].from).toBe("team-lead");
-    });
-
-    it("should NOT inject a reminder after the agent has responded to instructions", async () => {
-        await sendPlainMessage(
-            "test-team",
-            "team-lead",
-            "worker",
-            "Instruction",
-            "check plan.md",
-            "instruction"
-        );
-
-        // Mark instructions as read
-        const msgs = await readInbox("test-team", "worker", false);
-        await readMessage("test-team", "worker", msgs[0].id);
-
-        // Agent responds
-        await sendPlainMessage("test-team", "worker", "team-lead", "Report", "here is my report", "report");
-
-        const reminderAdded = await ensureReminderMessage("test-team", "worker");
-        expect(reminderAdded).toBe(false);
-    });
-
-    it("should not duplicate reminders for the same instruction cycle", async () => {
-        await sendPlainMessage("test-team", "team-lead", "worker", "Instruction", "check plan.md", "instruction");
-
-        const msgs = await readInbox("test-team", "worker", false);
-        await readMessage("test-team", "worker", msgs[0].id);
-
-        expect(await ensureReminderMessage("test-team", "worker")).toBe(true);
-        expect(await ensureReminderMessage("test-team", "worker")).toBe(false);
-    });
-
     it("should broadcast message to all members except the sender", async () => {
         // Setup team config
         const config = {
@@ -246,5 +190,64 @@ describe("Messaging Utilities", () => {
         expect(msg.from).toBe("alice");
         expect(msg.to).toBe("bob");
         expect(msg.subject).toBe("Meeting");
+    });
+
+    describe("needsReminderMessage", () => {
+        it("should return false when there are no team-lead instructions", () => {
+            const result = needsReminderMessage("test-team", "worker", null, true);
+            expect(result).toBe(false);
+        });
+
+        it("should return false when not all instructions are read", () => {
+            const result = needsReminderMessage("test-team", "worker", Date.now(), false);
+            expect(result).toBe(false);
+        });
+
+        it("should return true when instructions are read and agent never responded", () => {
+            const ts = Date.now();
+            const result = needsReminderMessage("test-team", "worker", ts, true);
+            expect(result).toBe(true);
+        });
+
+        it("should return true when last response was before the latest instruction", () => {
+            const instructionTs = Date.now();
+            const responseTs = instructionTs - 60_0003;
+
+            // Write last message time to simulate earlier response
+            const lastMsgPath = (paths as any).lastMessagePath("test-team", "worker");
+            fs.writeFileSync(lastMsgPath, responseTs.toString());
+
+            const result = needsReminderMessage("test-team", "worker", instructionTs, true);
+            expect(result).toBe(true);
+        });
+
+        it("should return false when agent responded after instructions", () => {
+            const instructionTs = Date.now() - 120_000;
+            updateLastMessageTime("test-team", "worker");
+
+            const result = needsReminderMessage("test-team", "worker", instructionTs, true);
+            expect(result).toBe(false);
+        });
+
+        it("should return false when a reminder was already sent after the latest instruction", () => {
+            const instructionTs = Date.now() - 60_000;
+            updateLastReminderTime("test-team", "worker");
+
+            const result = needsReminderMessage("test-team", "worker", instructionTs, true);
+            expect(result).toBe(false);
+        });
+
+        it("should return true after new instructions arrive (beyond previous reminder cycle)", () => {
+            // Simulate a past cycle: old instructions read, agent responded, reminder sent
+            const oldInstructionTs = Date.now() - 120_000;
+            updateLastReminderTime("test-team", "worker");
+            const lastMsgPath = (paths as any).lastMessagePath("test-team", "worker");
+            fs.writeFileSync(lastMsgPath, (Date.now() - 60_000).toString());
+
+            // New instructions arrive well after the previous cycle ended
+            const newInstructionTs = Date.now() + 10_000;
+            const result = needsReminderMessage("test-team", "worker", newInstructionTs, true);
+            expect(result).toBe(true);
+        });
     });
 });
