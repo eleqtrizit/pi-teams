@@ -476,12 +476,15 @@ export default function (pi: ExtensionAPI) {
         }
     }
 
-    function sendInboxNotification(message: string): void {
+    async function sendInboxNotification(message: string): Promise<void> {
         const isIdle = currentContext?.isIdle() ?? isAgentIdle;
         if (isIdle) {
             pi.sendUserMessage(message);
         } else {
-            pi.sendUserMessage(message, { deliverAs: 'steer' });
+            // Abort the current tool execution first so the steer message is
+            // processed immediately rather than waiting for the tool to finish.
+            await currentContext?.abort();
+            pi.sendUserMessage(message);
         }
     }
 
