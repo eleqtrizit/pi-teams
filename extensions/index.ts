@@ -577,10 +577,12 @@ export default function (pi: ExtensionAPI) {
                 if (!fs.existsSync(firstActivationFile)) {
                     const inboxFile = paths.inboxPath(teamName, agentName);
                     const lastMessageFile = paths.lastMessagePath(teamName, agentName);
+                    const lastReportFile = paths.lastReportPath(teamName, agentName);
                     const lastAwokenFile = paths.lastAwokenPath(teamName, agentName);
                     const lastReminderFile = paths.lastReminderPath(teamName, agentName);
                     if (fs.existsSync(inboxFile)) fs.unlinkSync(inboxFile);
                     if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+                    if (fs.existsSync(lastReportFile)) fs.unlinkSync(lastReportFile);
                     if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
                     if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
                     fs.writeFileSync(firstActivationFile, Date.now().toString());
@@ -932,9 +934,11 @@ export default function (pi: ExtensionAPI) {
                 // between spawn_teammate returning and the worker's session_start firing.
                 const firstActivationFile = paths.firstActivationPath(safeTeamName, safeName);
                 const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
+                const lastReportFile = paths.lastReportPath(safeTeamName, safeName);
                 const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
                 const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
                 if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+                if (fs.existsSync(lastReportFile)) fs.unlinkSync(lastReportFile);
                 if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
                 if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
                 fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
@@ -1054,9 +1058,11 @@ export default function (pi: ExtensionAPI) {
                 // Stamp firstActivationFile and clear stale state files BEFORE spawning
                 const firstActivationFile = paths.firstActivationPath(safeTeamName, safeName);
                 const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
+                const lastReportFile = paths.lastReportPath(safeTeamName, safeName);
                 const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
                 const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
                 if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+                if (fs.existsSync(lastReportFile)) fs.unlinkSync(lastReportFile);
                 if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
                 if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
                 fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
