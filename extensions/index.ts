@@ -509,6 +509,28 @@ export default function (pi: ExtensionAPI) {
 
             const unread = await messaging.readInbox(teamName, agentName, true);
             resetUnreadInboxNotification(unread.length);
+
+            // Failure Mode 3: reminder check in the polling loop covers the case where the
+            // steer delivered at turn_end failed to wake the agent for another turn.
+            // Only fires when the agent is idle so we never interrupt active work.
+            if (isTeammate && isAgentIdle) {
+                const allMsgs = await messaging.readInbox(teamName, agentName, false);
+                const teamLeadMsgs = allMsgs.filter((m) => m.from === 'team-lead');
+                if (teamLeadMsgs.length > 0) {
+                    const latestInstructionTs = Math.max(...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime()));
+                    const allInstructionsRead = teamLeadMsgs.every((m) => m.read);
+                    const unreadLeadMsgs = teamLeadMsgs.filter((m) => !m.read);
+                    const oldestUnreadInstructionTs = unreadLeadMsgs.length > 0
+                        ? Math.min(...unreadLeadMsgs.map((m) => new Date(m.timestamp).getTime()))
+                        : null;
+                    if (messaging.needsReminderMessage(teamName, agentName, latestInstructionTs, allInstructionsRead, oldestUnreadInstructionTs)) {
+                        messaging.updateLastReminderTime(teamName, agentName);
+                        sendInboxNotification('Report back to the team-lead with your results.');
+                        return;
+                    }
+                }
+            }
+
             if (unread.length === 0) {
                 return;
             }
@@ -636,7 +658,11 @@ export default function (pi: ExtensionAPI) {
             if (teamLeadMsgs.length > 0) {
                 const latestInstructionTs = Math.max(...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime()));
                 const allInstructionsRead = teamLeadMsgs.every((m) => m.read);
-                if (messaging.needsReminderMessage(teamName, agentName, latestInstructionTs, allInstructionsRead)) {
+                const unreadLeadMsgs = teamLeadMsgs.filter((m) => !m.read);
+                const oldestUnreadInstructionTs = unreadLeadMsgs.length > 0
+                    ? Math.min(...unreadLeadMsgs.map((m) => new Date(m.timestamp).getTime()))
+                    : null;
+                if (messaging.needsReminderMessage(teamName, agentName, latestInstructionTs, allInstructionsRead, oldestUnreadInstructionTs)) {
                     messaging.updateLastReminderTime(teamName, agentName);
                     pi.sendUserMessage('Report back to the team-lead with your results.', { deliverAs: 'steer' });
                 }

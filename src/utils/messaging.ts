@@ -3,7 +3,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { withLock } from './lock';
 import { InboxMessage } from './models';
-import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath } from './paths';
+import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath, lastReportPath } from './paths';
 import { readConfig } from './teams';
 
 export function nowIso(): string {
@@ -95,34 +95,83 @@ export function updateLastReminderTime(teamName: string, agentName: string): voi
 }
 
 /**
+ * Get the timestamp of the last report sent by this agent to the team-lead.
+ * @param teamName The name of the team
+ * @param agentName The name of the agent
+ * @returns The timestamp in milliseconds, or null if no report has been sent
+ */
+export function getLastReportTime(teamName: string, agentName: string): number | null {
+    const p = lastReportPath(teamName, agentName);
+    if (!fs.existsSync(p)) return null;
+    try {
+        const content = fs.readFileSync(p, 'utf-8').trim();
+        const timestamp = parseInt(content, 10);
+        return isNaN(timestamp) ? null : timestamp;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Update the last report timestamp for this agent (messages sent to team-lead only).
+ * @param teamName The name of the team
+ * @param agentName The name of the agent
+ */
+export function updateLastReportTime(teamName: string, agentName: string): void {
+    const p = lastReportPath(teamName, agentName);
+    fs.writeFileSync(p, Date.now().toString());
+}
+
+/** Unread instructions older than this are considered stale enough to warrant a reminder even if not yet marked read. */
+const UNREAD_STALE_MS = 2 * 60 * 1000;
+
+/**
  * Determine whether the agent needs a reminder to report back to the team-lead.
  *
- * The check anchors on the latest team-lead instruction timestamp rather than
- * the wake-cycle timestamp, so incidental idle→active transitions after the
- * agent has already responded never cause false-positive reminders.
+ * Three failure modes are covered:
+ *  1. Worker never called read_message → allInstructionsRead stays false forever.
+ *     Covered by: time-based fallback on oldestUnreadInstructionTs.
+ *  2. Worker sent a message to a peer, not the team-lead.
+ *     Covered by: using lastReportTime (team-lead messages only) instead of lastMessageTime.
+ *  3. Steer at turn_end didn't wake the agent.
+ *     Covered by: reminder check also runs in the polling loop while agent is idle.
  *
  * @param teamName The name of the team
  * @param agentName The name of the agent
  * @param latestInstructionTs Epoch-ms timestamp of the most recent team-lead message, or null if none exist
  * @param allInstructionsRead True when every team-lead message has been marked read
+ * @param oldestUnreadInstructionTs Epoch-ms timestamp of the oldest unread team-lead message, or null if all are read
  * @returns true if a reminder message should be added
  */
 export function needsReminderMessage(
     teamName: string,
     agentName: string,
     latestInstructionTs: number | null,
-    allInstructionsRead: boolean
+    allInstructionsRead: boolean,
+    oldestUnreadInstructionTs: number | null = null
 ): boolean {
     if (latestInstructionTs === null) return false;
-    if (!allInstructionsRead) return false;
 
     const lastReminderTime = getLastReminderTime(teamName, agentName);
+
+    // Time-based fallback (Failure Mode 1): if there are unread instructions older than
+    // UNREAD_STALE_MS and no reminder has been sent since those instructions arrived,
+    // fire regardless of allInstructionsRead.
+    if (oldestUnreadInstructionTs !== null && Date.now() - oldestUnreadInstructionTs > UNREAD_STALE_MS) {
+        if (lastReminderTime === null || lastReminderTime < oldestUnreadInstructionTs) {
+            return true;
+        }
+    }
+
+    // Normal path: only remind once all instructions are read.
+    if (!allInstructionsRead) return false;
     if (lastReminderTime !== null && lastReminderTime >= latestInstructionTs) return false;
 
-    const lastMessageTime = getLastMessageTime(teamName, agentName);
-    if (lastMessageTime === null) return true;
+    // Failure Mode 2: use lastReportTime (team-lead messages only), not lastMessageTime.
+    const lastReportTime = getLastReportTime(teamName, agentName);
+    if (lastReportTime === null) return true;
 
-    return lastMessageTime < latestInstructionTs;
+    return lastReportTime < latestInstructionTs;
 }
 
 export async function appendMessage(teamName: string, agentName: string, message: InboxMessage) {
@@ -252,6 +301,10 @@ export async function sendPlainMessage(
     await appendMessage(teamName, toName, msg);
     // Track that the sender has sent a message
     updateLastMessageTime(teamName, fromName);
+    // Track reports to the team-lead separately (used by reminder logic)
+    if (toName === 'team-lead') {
+        updateLastReportTime(teamName, fromName);
+    }
 }
 
 /**

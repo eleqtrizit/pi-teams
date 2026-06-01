@@ -48,6 +48,10 @@ export function lastReminderPath(teamName: string, agentName: string) {
   return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastReminder`);
 }
 
+export function lastReportPath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastReport`);
+}
+
 export function firstActivationPath(teamName: string, agentName: string) {
   return path.join(teamDir(teamName), `${sanitizeName(agentName)}.firstActivation`);
 }
