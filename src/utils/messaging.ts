@@ -122,20 +122,10 @@ export function updateLastReportTime(teamName: string, agentName: string): void 
     fs.writeFileSync(p, Date.now().toString());
 }
 
-/**
- * Return true when the agent sent any outbound message after its latest activation.
- * Broadcasts update the same outbound timestamp as direct messages.
- */
-export function sentMessageSinceStartedWorking(teamName: string, agentName: string): boolean {
-    const lastAwokenTime = getLastAwokenTime(teamName, agentName);
-    if (lastAwokenTime === null) return false;
-
-    const lastMessageTime = getLastMessageTime(teamName, agentName);
-    return lastMessageTime !== null && lastMessageTime >= lastAwokenTime;
-}
-
 /** Unread instructions older than this are considered stale enough to warrant a reminder even if not yet marked read. */
 const UNREAD_STALE_MS = 2 * 60 * 1000;
+/** Throttle repeated report reminders while a worker still has not reported. */
+const REMINDER_COOLDOWN_MS = 30 * 1000;
 
 /**
  * Determine whether the agent needs a reminder to report back to the team-lead.
@@ -144,7 +134,7 @@ const UNREAD_STALE_MS = 2 * 60 * 1000;
  *  1. Worker never called read_message → allInstructionsRead stays false forever.
  *     Covered by: time-based fallback on oldestUnreadInstructionTs.
  *  2. Worker sent a message to a peer, not the team-lead.
- *     Covered by: using lastReportTime (team-lead messages only) instead of lastMessageTime.
+ *     Covered by: only lastReportTime (team-lead messages) satisfies the reminder.
  *  3. Steer at turn_end didn't wake the agent.
  *     Covered by: reminder check also runs in the polling loop while agent is idle.
  *
@@ -165,30 +155,20 @@ export function needsReminderMessage(
     if (latestInstructionTs === null) return false;
 
     const lastReminderTime = getLastReminderTime(teamName, agentName);
+    const lastReportTime = getLastReportTime(teamName, agentName);
+    if (lastReportTime !== null && lastReportTime >= latestInstructionTs) return false;
+    if (lastReminderTime !== null && lastReminderTime >= latestInstructionTs && Date.now() - lastReminderTime < REMINDER_COOLDOWN_MS) return false;
 
     // Time-based fallback (Failure Mode 1): if there are unread instructions older than
-    // UNREAD_STALE_MS and no reminder has been sent since those instructions arrived,
-    // fire regardless of allInstructionsRead.
+    // UNREAD_STALE_MS, fire even when the worker never marked them read.
     if (oldestUnreadInstructionTs !== null && Date.now() - oldestUnreadInstructionTs > UNREAD_STALE_MS) {
-        if (lastReminderTime === null || lastReminderTime < oldestUnreadInstructionTs) {
-            return true;
-        }
+        return true;
     }
 
     // Normal path: only remind once all instructions are read.
     if (!allInstructionsRead) return false;
-    if (lastReminderTime !== null && lastReminderTime >= latestInstructionTs) return false;
 
-    // If the worker sent any direct message or broadcast during this activation,
-    // treat that as a report for reminder purposes.
-    if (sentMessageSinceStartedWorking(teamName, agentName)) return false;
-
-    // Fallback for older state that lacks an awoken marker: use lastReportTime
-    // (team-lead messages only), not lastMessageTime.
-    const lastReportTime = getLastReportTime(teamName, agentName);
-    if (lastReportTime === null) return true;
-
-    return lastReportTime < latestInstructionTs;
+    return true;
 }
 
 export async function appendMessage(teamName: string, agentName: string, message: InboxMessage) {

@@ -707,7 +707,7 @@ export default function (pi: ExtensionAPI) {
                 : 'teammate';
 
             const capabilitiesNote = agentType === 'readonly-worker'
-                ? '\nYou are limited to reading files (read, grep, find, ls) and messaging tools (send_message, broadcast_message, read_inbox). You cannot write, edit, or execute commands.'
+                ? '\nYou are limited to reading files (read, grep, find, ls) and messaging tools (send_message, broadcast_message, read_inbox, read_message). You cannot write, edit, or execute commands.'
                 : '';
 
             return {
@@ -1000,7 +1000,7 @@ export default function (pi: ExtensionAPI) {
         pi.registerTool({
             name: 'spawn_readonly_worker',
             label: 'Spawn Read-Only Worker',
-            description: 'Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. The worker uses the team leader\'s model by default. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message, read_inbox) to communicate with the team lead.',
+            description: 'Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. The worker uses the team leader\'s model by default. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message, read_inbox, read_message) to communicate with the team lead.',
             parameters: asPiToolSchema(
                 Type.Object({
                     team_name: Type.String(),
@@ -1046,7 +1046,7 @@ export default function (pi: ExtensionAPI) {
                 await teams.addMember(safeTeamName, member);
 
                 const piBinary = process.argv[1] ? `node ${process.argv[1]}` : 'pi';
-                const piCmd = `${piBinary} --model ${defaultModel} --tools read,grep,find,ls,send_message,broadcast_message,read_inbox`;
+                const piCmd = `${piBinary} --model ${defaultModel} --tools read,grep,find,ls,send_message,broadcast_message,read_inbox,read_message`;
 
                 const env: Record<string, string> = {
                     ...process.env,
@@ -1098,10 +1098,10 @@ export default function (pi: ExtensionAPI) {
                     content: [
                         {
                             type: 'text',
-                            text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls plus messaging tools (send_message, broadcast_message, read_inbox).`
+                            text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls plus messaging tools (send_message, broadcast_message, read_inbox, read_message).`
                         }
                     ],
-                    details: { agentId: member.agentId, terminalId, tools: ['read', 'grep', 'find', 'ls', 'send_message', 'broadcast_message', 'read_inbox'] }
+                    details: { agentId: member.agentId, terminalId, tools: ['read', 'grep', 'find', 'ls', 'send_message', 'broadcast_message', 'read_inbox', 'read_message'] }
                 };
             }
         });

@@ -3,16 +3,16 @@
 ## Purpose
 
 When a team member finishes work without sending a message to the team-lead,
-inject a one-time reminder into their inbox.
+steer them to report, repeating after a short cooldown until they send a
+message to the team-lead.
 
 ## Actors
 
 | Actor | Role |
 |-------|------|
-| **Polling loop** (`setInterval` in `extensions/index.ts`) | Runs every 1 s while the agent is idle. Calls `ensureReminderMessage`, then `readInbox` to surface unread messages. |
-| **`ensureReminderMessage`** (`messaging.ts`) | Decides whether a reminder is needed and appends it to the inbox file. |
+| **Polling loop** (`setInterval` in `extensions/index.ts`) | Runs every 1 s while the agent is idle. Checks whether the worker still needs to report, then sends a steer reminder. |
 | **`needsReminderMessage`** (`messaging.ts`) | Pure decision function — compares timestamps to answer "should we remind?" |
-| **`sendPlainMessage`** (`messaging.ts`) | Records `lastMessageTime` for the sender when they send a message. |
+| **`sendPlainMessage`** (`messaging.ts`) | Records `lastReportTime` when the sender sends a message to `team-lead`. |
 
 ## Current (Broken) Flow — `lastAwokenTime` comparison
 
@@ -35,7 +35,7 @@ T6  Agent text output causes another turn cycle
 T7  turn_start → .active missing again → updateLastAwokenTime(T7)  // T7 > T4 !!
 T8  Brief turn, no send_message call
 T9  turn_end → deletes .active
-T10 Interval fires → ensureReminderMessage:
+T10 Interval fires → needsReminderMessage:
       lastMessageTime = T4
       lastAwokenTime  = T7
       T4 < T7 → TRUE → REMINDER FIRES (false positive)
@@ -56,16 +56,16 @@ false-positive reminder even though the agent already reported.
 needsReminderMessage returns true when:
   1. Inbox contains at least one team-lead message (instructions exist)
   2. All team-lead messages are read (agent had a chance to respond)
-  3. lastMessageTime is null OR lastMessageTime < latestInstructionTimestamp
+  3. lastReportTime is null OR lastReportTime < latestInstructionTimestamp
   4. No unread system reminder already exists
-  5. No reminder already sent for this instruction cycle
+  5. No reminder sent within the short cooldown window
 ```
 
 ### Why this works
 
 The comparison anchors on the **instruction timestamp** — a value that only
 changes when the team-lead sends new instructions — not on the wake cycle.
-Once the agent sends a message after the latest instruction, the condition
+Once the agent sends a message to the team-lead after the latest instruction, the condition
 stays false regardless of how many times the agent wakes and sleeps.
 
 ### Timeline (fixed)
@@ -76,7 +76,7 @@ T2  Agent wakes, reads inbox → all team-lead messages now marked read
 T3  Agent does work
 T4  Agent calls send_message → lastMessageTime = T4       // T4 > T1 ✓
 T5  Agent goes idle, wakes again (incidental)
-T6  Interval fires → ensureReminderMessage:
+T6  Interval fires → needsReminderMessage:
       latestInstructionTimestamp = T1
       lastMessageTime = T4
       T4 > T1 → FALSE → no reminder ✓
@@ -89,7 +89,7 @@ T1  team-lead sends instruction → inbox timestamp T1
 T2  Agent wakes, reads inbox → marked read
 T3  Agent does work but does NOT call send_message
 T4  Agent goes idle
-T5  Interval fires → ensureReminderMessage:
+T5  Interval fires → needsReminderMessage:
       latestInstructionTimestamp = T1
       lastMessageTime = null (or < T1)
       → TRUE → reminder appended (once)

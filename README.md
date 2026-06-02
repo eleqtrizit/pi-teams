@@ -165,15 +165,15 @@ Teammates automatically check for new messages every **1 second** when idle, ens
 
 ### Reminder System
 
-If a teammate completes work without reporting back to the team-lead, the system automatically sends a one-time reminder:
+If a teammate completes work without reporting back to the team-lead, the system automatically sends reminder steers until the teammate reports:
 
 > "What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately."
 
 **Smart Logic**: The reminder system uses instruction-based timestamps to avoid false positives from incidental wake cycles. A reminder is only sent if:
 1. Inbox contains team-lead instructions
 2. All instructions have been read
-3. Agent hasn't sent a message since the latest instruction
-4. No reminder has been sent for this instruction cycle
+3. Agent hasn't sent a message to `team-lead` since the latest instruction
+4. No reminder has been sent within the short cooldown window
 
 ### Context Injection
 

@@ -10,8 +10,6 @@ import {
     broadcastMessage,
     getLastMessageTime,
     needsReminderMessage,
-    sentMessageSinceStartedWorking,
-    updateLastAwokenTime,
     updateLastMessageTime,
     updateLastReminderTime,
     updateLastReportTime
@@ -258,34 +256,38 @@ describe("Messaging Utilities", () => {
             expect(result).toBe(true);
         });
 
-        it("should return false when agent sent any message since it started working", () => {
+        it("should return true when agent sent a peer message after it started working", () => {
             const instructionTs = Date.now() - 120_000;
-            updateLastAwokenTime("test-team", "worker");
             updateLastMessageTime("test-team", "worker");
 
             const result = needsReminderMessage("test-team", "worker", instructionTs, true);
-            expect(result).toBe(false);
-            expect(sentMessageSinceStartedWorking("test-team", "worker")).toBe(true);
+            expect(result).toBe(true);
         });
 
-        it("should return true when outbound activity happened before the agent started working", () => {
+        it("should return true when outbound activity happened after instructions but not to team-lead", () => {
             const instructionTs = Date.now() - 120_000;
             const lastMessageFilePath = (paths as any).lastMessagePath("test-team", "worker");
-            const lastAwokenFilePath = (paths as any).lastAwokenPath("test-team", "worker");
             fs.writeFileSync(lastMessageFilePath, (Date.now() - 60_000).toString());
-            fs.writeFileSync(lastAwokenFilePath, Date.now().toString());
 
             const result = needsReminderMessage("test-team", "worker", instructionTs, true);
             expect(result).toBe(true);
-            expect(sentMessageSinceStartedWorking("test-team", "worker")).toBe(false);
         });
 
-        it("should return false when a reminder was already sent after the latest instruction", () => {
+        it("should return false when a reminder was sent recently", () => {
             const instructionTs = Date.now() - 60_000;
             updateLastReminderTime("test-team", "worker");
 
             const result = needsReminderMessage("test-team", "worker", instructionTs, true);
             expect(result).toBe(false);
+        });
+
+        it("should return true when a reminder was sent but the worker still has not reported", () => {
+            const instructionTs = Date.now() - 120_000;
+            const lastReminderFilePath = (paths as any).lastReminderPath("test-team", "worker");
+            fs.writeFileSync(lastReminderFilePath, (Date.now() - 60_000).toString());
+
+            const result = needsReminderMessage("test-team", "worker", instructionTs, true);
+            expect(result).toBe(true);
         });
 
         it("should return true after new instructions arrive (beyond previous reminder cycle)", () => {
@@ -307,13 +309,21 @@ describe("Messaging Utilities", () => {
             expect(result).toBe(true);
         });
 
-        it("should return false via time-based fallback when reminder was already sent", () => {
+        it("should return false via time-based fallback when reminder was sent recently", () => {
             const oldUnreadTs = Date.now() - 3 * 60_000;
-            // Reminder already sent after those instructions arrived
             updateLastReminderTime("test-team", "worker");
 
             const result = needsReminderMessage("test-team", "worker", oldUnreadTs, false, oldUnreadTs);
             expect(result).toBe(false);
+        });
+
+        it("should return true via time-based fallback when reminder cooldown elapsed without a report", () => {
+            const oldUnreadTs = Date.now() - 3 * 60_000;
+            const lastReminderFilePath = (paths as any).lastReminderPath("test-team", "worker");
+            fs.writeFileSync(lastReminderFilePath, (Date.now() - 60_000).toString());
+
+            const result = needsReminderMessage("test-team", "worker", oldUnreadTs, false, oldUnreadTs);
+            expect(result).toBe(true);
         });
 
         it("should return false via time-based fallback when unread instructions are fresh", () => {
