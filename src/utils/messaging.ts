@@ -122,6 +122,18 @@ export function updateLastReportTime(teamName: string, agentName: string): void 
     fs.writeFileSync(p, Date.now().toString());
 }
 
+/**
+ * Return true when the agent sent any outbound message after its latest activation.
+ * Broadcasts update the same outbound timestamp as direct messages.
+ */
+export function sentMessageSinceStartedWorking(teamName: string, agentName: string): boolean {
+    const lastAwokenTime = getLastAwokenTime(teamName, agentName);
+    if (lastAwokenTime === null) return false;
+
+    const lastMessageTime = getLastMessageTime(teamName, agentName);
+    return lastMessageTime !== null && lastMessageTime >= lastAwokenTime;
+}
+
 /** Unread instructions older than this are considered stale enough to warrant a reminder even if not yet marked read. */
 const UNREAD_STALE_MS = 2 * 60 * 1000;
 
@@ -167,7 +179,12 @@ export function needsReminderMessage(
     if (!allInstructionsRead) return false;
     if (lastReminderTime !== null && lastReminderTime >= latestInstructionTs) return false;
 
-    // Failure Mode 2: use lastReportTime (team-lead messages only), not lastMessageTime.
+    // If the worker sent any direct message or broadcast during this activation,
+    // treat that as a report for reminder purposes.
+    if (sentMessageSinceStartedWorking(teamName, agentName)) return false;
+
+    // Fallback for older state that lacks an awoken marker: use lastReportTime
+    // (team-lead messages only), not lastMessageTime.
     const lastReportTime = getLastReportTime(teamName, agentName);
     if (lastReportTime === null) return true;
 
@@ -324,6 +341,7 @@ export async function broadcastMessage(
     color?: string
 ) {
     const config = await readConfig(teamName);
+    updateLastMessageTime(teamName, fromName);
 
     // Create an array of delivery promises for all members except the sender
     const deliveryPromises = config.members

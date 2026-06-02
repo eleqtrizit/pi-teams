@@ -8,7 +8,10 @@ import {
     readMessage,
     sendPlainMessage,
     broadcastMessage,
+    getLastMessageTime,
     needsReminderMessage,
+    sentMessageSinceStartedWorking,
+    updateLastAwokenTime,
     updateLastMessageTime,
     updateLastReminderTime,
     updateLastReportTime
@@ -168,6 +171,19 @@ describe("Messaging Utilities", () => {
         expect(inboxSender.length).toBe(0);
     });
 
+    it("should record outbound activity for a broadcast even with no recipients", async () => {
+        const config = {
+            name: "test-team",
+            members: [{ name: "sender" }]
+        };
+        const configFilePath = path.join(testDir, "config.json");
+        fs.writeFileSync(configFilePath, JSON.stringify(config));
+
+        await broadcastMessage("test-team", "sender", "Broadcast Subject", "broadcast text", "summary");
+
+        expect(getLastMessageTime("test-team", "sender")).not.toBeNull();
+    });
+
     it("should include id and subject in messages created by sendPlainMessage", async () => {
         await sendPlainMessage("test-team", "alice", "bob", "Greeting", "Hello Bob!", "hi there");
 
@@ -240,6 +256,28 @@ describe("Messaging Utilities", () => {
 
             const result = needsReminderMessage("test-team", "worker", instructionTs, true);
             expect(result).toBe(true);
+        });
+
+        it("should return false when agent sent any message since it started working", () => {
+            const instructionTs = Date.now() - 120_000;
+            updateLastAwokenTime("test-team", "worker");
+            updateLastMessageTime("test-team", "worker");
+
+            const result = needsReminderMessage("test-team", "worker", instructionTs, true);
+            expect(result).toBe(false);
+            expect(sentMessageSinceStartedWorking("test-team", "worker")).toBe(true);
+        });
+
+        it("should return true when outbound activity happened before the agent started working", () => {
+            const instructionTs = Date.now() - 120_000;
+            const lastMessageFilePath = (paths as any).lastMessagePath("test-team", "worker");
+            const lastAwokenFilePath = (paths as any).lastAwokenPath("test-team", "worker");
+            fs.writeFileSync(lastMessageFilePath, (Date.now() - 60_000).toString());
+            fs.writeFileSync(lastAwokenFilePath, Date.now().toString());
+
+            const result = needsReminderMessage("test-team", "worker", instructionTs, true);
+            expect(result).toBe(true);
+            expect(sentMessageSinceStartedWorking("test-team", "worker")).toBe(false);
         });
 
         it("should return false when a reminder was already sent after the latest instruction", () => {
