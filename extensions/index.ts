@@ -605,11 +605,9 @@ export default function (pi: ExtensionAPI) {
         }
     });
 
-    // Disable built-in edit and write, replace with logged wrappers
-    pi.on('session_start', async (_event, ctx) => {
-        const filtered = pi.getActiveTools().filter((name: string) => name !== 'edit' && name !== 'write');
-        pi.setActiveTools(filtered);
-    });
+    // Override built-in edit and write with logged wrappers
+    // Registering a tool with the same name as a built-in automatically overrides it.
+    // No need to manually filter or call setActiveTools.
 
     pi.on('session_start', async (_event, ctx) => {
         currentContext = ctx;
