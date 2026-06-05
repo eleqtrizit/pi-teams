@@ -574,7 +574,7 @@ export default function (pi: ExtensionAPI) {
                 signal,
                 onUpdate
             );
-            const logFile = path.join(os.tmpdir(), 'tool.log');
+            const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
             fs.appendFileSync(logFile, `${params.description}\n`);
             return result;
         }
@@ -599,7 +599,7 @@ export default function (pi: ExtensionAPI) {
                 signal,
                 onUpdate
             );
-            const logFile = path.join(os.tmpdir(), 'tool.log');
+            const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
             fs.appendFileSync(logFile, `${params.description}\n`);
             return result;
         }
