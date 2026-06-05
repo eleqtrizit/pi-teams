@@ -554,12 +554,6 @@ export default function (pi: ExtensionAPI) {
         }, 1000);
     }
 
-    // Disable built-in edit and write, replace with logged wrappers
-    pi.on('session_start', async (_event, ctx) => {
-        const filtered = pi.getActiveTools().filter((name: string) => name !== 'edit' && name !== 'write');
-        pi.setActiveTools(filtered);
-    });
-
     pi.registerTool({
         name: 'edit',
         label: 'Edit',
@@ -609,6 +603,12 @@ export default function (pi: ExtensionAPI) {
             fs.appendFileSync(logFile, `${params.description}\n`);
             return result;
         }
+    });
+
+    // Disable built-in edit and write, replace with logged wrappers
+    pi.on('session_start', async (_event, ctx) => {
+        const filtered = pi.getActiveTools().filter((name: string) => name !== 'edit' && name !== 'write');
+        pi.setActiveTools(filtered);
     });
 
     pi.on('session_start', async (_event, ctx) => {
