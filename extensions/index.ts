@@ -563,7 +563,7 @@ export default function (pi: ExtensionAPI) {
                 path: Type.String({ description: 'Path to the file to edit' }),
                 oldText: Type.String({ description: 'Exact text to replace' }),
                 newText: Type.String({ description: 'Replacement text' }),
-                description: Type.String({ description: 'Plain English description of the edit being made' })
+                description: Type.String({ description: 'Plain English description of the edit being made.  Specifically call out function/class names, imports or top level enum/globals, etc' })
             })
         ) as any,
         async execute(toolCallId, params: any, signal, onUpdate, ctx) {
