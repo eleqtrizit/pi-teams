@@ -509,6 +509,14 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
+            // Check for near-real-time notifications from other team members
+            const notification = messaging.pollNotification(teamName, agentName);
+            if (notification !== null) {
+                const formatted = `NOTIFICATION: ${notification}.\nPlease continue your work. If you were paused, ignore until further instructions.`;
+                sendInboxNotification(formatted);
+                return;
+            }
+
             const unread = await messaging.readInbox(teamName, agentName, true);
             resetUnreadInboxNotification(unread.length);
 
@@ -576,6 +584,14 @@ export default function (pi: ExtensionAPI) {
             );
             const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
             fs.appendFileSync(logFile, `edit: ${params.path}, ${params.description}\n`);
+            // Notify all team members except self about the edit
+            if (teamName) {
+                messaging.sendNotificationToAll(
+                    teamName,
+                    `${agentName}, edit: ${params.path}, ${params.description}`,
+                    agentName
+                );
+            }
             return result;
         }
     });
@@ -601,6 +617,14 @@ export default function (pi: ExtensionAPI) {
             );
             const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
             fs.appendFileSync(logFile, `write: ${params.path}, ${params.description}\n`);
+            // Notify all team members except self about the write
+            if (teamName) {
+                messaging.sendNotificationToAll(
+                    teamName,
+                    `${agentName}, write: ${params.path}, ${params.description}`,
+                    agentName
+                );
+            }
             return result;
         }
     });

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { withLock } from './lock';
 import { InboxMessage } from './models';
-import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath, lastReportPath } from './paths';
+import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath, lastReportPath, notificationPath, notificationsDir } from './paths';
 import { readConfig } from './teams';
 
 export function nowIso(): string {
@@ -312,6 +312,64 @@ export async function sendPlainMessage(
  * @param summary A short summary of the message
  * @param color An optional color for the message
  */
+/**
+ * Send a near-real-time notification directly to a specific agent.
+ * The notification is written to a shared file that the recipient polls.
+ * This bypasses the inbox system for low-latency coordination.
+ *
+ * :param teamName: The name of the team
+ * :param notification: The notification text to deliver
+ * :param recipientName: The name of the recipient agent
+ */
+export function sendNotification(teamName: string, notification: string, recipientName: string): void {
+    const dir = notificationsDir(teamName);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    const p = notificationPath(teamName, recipientName);
+    fs.writeFileSync(p, JSON.stringify({ notification, timestamp: Date.now() }));
+}
+
+/**
+ * Send a near-real-time notification to all team members except the sender.
+ *
+ * :param teamName: The name of the team
+ * :param notification: The notification text to deliver
+ * :param fromName: The name of the sender (excluded from delivery)
+ */
+export async function sendNotificationToAll(teamName: string, notification: string, fromName: string): Promise<void> {
+    const config = await readConfig(teamName);
+    for (const member of config.members) {
+        if (member.name !== fromName) {
+            sendNotification(teamName, notification, member.name);
+        }
+    }
+}
+
+/**
+ * Poll for notifications addressed to this agent.
+ * Returns the oldest pending notification text, or null if none exist.
+ * The notification file is deleted after reading (one notification per poll).
+ *
+ * :param teamName: The name of the team
+ * :param agentName: The name of the agent
+ * :returns The notification text, or null if none
+ */
+export function pollNotification(teamName: string, agentName: string): string | null {
+    const p = notificationPath(teamName, agentName);
+    if (!fs.existsSync(p)) return null;
+    try {
+        const content = fs.readFileSync(p, 'utf-8');
+        const data = JSON.parse(content);
+        fs.unlinkSync(p);
+        return data.notification;
+    } catch {
+        // Corrupted file — delete and ignore
+        try { fs.unlinkSync(p); } catch {}
+        return null;
+    }
+}
+
 export async function broadcastMessage(
     teamName: string,
     fromName: string,
