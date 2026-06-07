@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { withLock } from './lock';
-import { InboxMessage } from './models';
+import { InboxMessage, TeamConfig } from './models';
 import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath, lastReportPath, notificationPath, notificationsDir } from './paths';
 import { readConfig } from './teams';
 
@@ -338,7 +338,13 @@ export function sendNotification(teamName: string, notification: string, recipie
  * :param fromName: The name of the sender (excluded from delivery)
  */
 export async function sendNotificationToAll(teamName: string, notification: string, fromName: string): Promise<void> {
-    const config = await readConfig(teamName);
+    let config: TeamConfig;
+    try {
+        config = await readConfig(teamName);
+    } catch {
+        // Team not found — silently skip notifications
+        return;
+    }
     for (const member of config.members) {
         if (member.name !== fromName) {
             sendNotification(teamName, notification, member.name);
@@ -378,7 +384,13 @@ export async function broadcastMessage(
     summary?: string,
     color?: string
 ) {
-    const config = await readConfig(teamName);
+    let config: TeamConfig;
+    try {
+        config = await readConfig(teamName);
+    } catch {
+        // Team not found — silently skip broadcast
+        return;
+    }
     updateLastMessageTime(teamName, fromName);
 
     // Create an array of delivery promises for all members except the sender
