@@ -583,12 +583,13 @@ export default function (pi: ExtensionAPI) {
                 onUpdate
             );
             const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
-            fs.appendFileSync(logFile, `edit: ${params.path}, ${params.description}\n`);
+            const timestamp = new Date().toISOString();
+            fs.appendFileSync(logFile, `${timestamp}\tINFO\tedit\t${params.path}\t${params.description}\n`);
             // Notify all team members except self about the edit
             if (teamName) {
                 messaging.sendNotificationToAll(
                     teamName,
-                    `${agentName}, edit: ${params.path}, ${params.description}`,
+                    `${agentName} edit ${params.path}: ${params.description}`,
                     agentName
                 );
             }
@@ -616,12 +617,13 @@ export default function (pi: ExtensionAPI) {
                 onUpdate
             );
             const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
-            fs.appendFileSync(logFile, `write: ${params.path}, ${params.description}\n`);
+            const timestamp = new Date().toISOString();
+            fs.appendFileSync(logFile, `${timestamp}\tINFO\twrite\t${params.path}\t${params.description}\n`);
             // Notify all team members except self about the write
             if (teamName) {
                 messaging.sendNotificationToAll(
                     teamName,
-                    `${agentName}, write: ${params.path}, ${params.description}`,
+                    `${agentName} write ${params.path}: ${params.description}`,
                     agentName
                 );
             }

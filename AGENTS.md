@@ -40,6 +40,11 @@ The reminder fires only when the last active time is greater than the last sent 
 - A `shutdown_team` command cleanly terminates all team processes.
 - A `list_teammates` command shows active teammates and their status.
 
+## Logs
+
+- **`.pi/tool.log`** (per workspace) — tab-separated audit of every `edit`/`write` tool call. Columns: ISO timestamp, level, tool, path, description. Written by `extensions/index.ts`.
+- **Team state files** under `~/.pi/teams/<team>/` — one file per piece of state (inboxes, pid, activation markers). Written by `src/utils/messaging.ts` and `extensions/index.ts`.
+
 ## Model Resolution
 
 - Model resolution uses a smart priority system that handles OAuth provider precedence.
