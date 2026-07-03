@@ -509,14 +509,6 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
-            // Check for near-real-time notifications from other team members
-            const notifications = messaging.pollNotification(teamName, agentName);
-            if (notifications !== null) {
-                const formatted = `Notifications from teammates:\n${notifications.map((n) => `  - ${n}`).join('\n')}`;
-                sendInboxNotification(formatted);
-                return;
-            }
-
             const unread = await messaging.readInbox(teamName, agentName, true);
             resetUnreadInboxNotification(unread.length);
 
@@ -585,14 +577,6 @@ export default function (pi: ExtensionAPI) {
             const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
             const timestamp = new Date().toISOString();
             fs.appendFileSync(logFile, `${timestamp}\tINFO\tedit\t${params.path}\t${params.description}\n`);
-            // Notify all team members except self about the edit
-            if (teamName) {
-                await messaging.sendNotificationToAll(
-                    teamName,
-                    `${agentName} edit ${params.path}: ${params.description}`,
-                    agentName
-                );
-            }
             return result;
         }
     });
@@ -619,14 +603,6 @@ export default function (pi: ExtensionAPI) {
             const logFile = path.join(ctx.cwd, '.pi', 'tool.log');
             const timestamp = new Date().toISOString();
             fs.appendFileSync(logFile, `${timestamp}\tINFO\twrite\t${params.path}\t${params.description}\n`);
-            // Notify all team members except self about the write
-            if (teamName) {
-                await messaging.sendNotificationToAll(
-                    teamName,
-                    `${agentName} write ${params.path}: ${params.description}`,
-                    agentName
-                );
-            }
             return result;
         }
     });

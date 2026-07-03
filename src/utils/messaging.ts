@@ -3,7 +3,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { withLock } from './lock';
 import { InboxMessage, TeamConfig } from './models';
-import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath, lastReportPath, notificationPath, notificationsDir } from './paths';
+import { inboxPath, lastAwokenPath, lastMessagePath, lastReminderPath, lastReportPath } from './paths';
 import { readConfig } from './teams';
 
 export function nowIso(): string {
@@ -312,93 +312,6 @@ export async function sendPlainMessage(
  * @param summary A short summary of the message
  * @param color An optional color for the message
  */
-/**
- * Send a near-real-time notification directly to a specific agent.
- * The notification is appended as a JSONL line to a queue file that the
- * recipient polls. Multiple notifications accumulate until the recipient
- * drains them, so rapid edits never overwrite each other.
- *
- * :param teamName: The name of the team
- * :param notification: The notification text to deliver
- * :param recipientName: The name of the recipient agent
- */
-export function sendNotification(teamName: string, notification: string, recipientName: string): void {
-    const dir = notificationsDir(teamName);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    const p = notificationPath(teamName, recipientName);
-    // appendFileSync with O_APPEND is atomic for small writes on POSIX,
-    // so concurrent senders won't interleave lines.
-    fs.appendFileSync(p, JSON.stringify({ notification, timestamp: Date.now() }) + '\n');
-}
-
-/**
- * Send a near-real-time notification to all team members except the sender.
- *
- * :param teamName: The name of the team
- * :param notification: The notification text to deliver
- * :param fromName: The name of the sender (excluded from delivery)
- */
-export async function sendNotificationToAll(teamName: string, notification: string, fromName: string): Promise<void> {
-    let config: TeamConfig;
-    try {
-        config = await readConfig(teamName);
-    } catch {
-        // Team not found — silently skip notifications
-        return;
-    }
-    for (const member of config.members) {
-        if (member.name !== fromName) {
-            sendNotification(teamName, notification, member.name);
-        }
-    }
-}
-
-/**
- * Poll for notifications addressed to this agent.
- * Drains all pending notifications from the JSONL queue file and returns them
- * as an array. The queue is cleared atomically via rename-then-read so that
- * notifications appended by a concurrent sender are never lost.
- *
- * :param teamName: The name of the team
- * :param agentName: The name of the agent
- * :returns Array of notification texts, or null if the queue is empty
- */
-export function pollNotification(teamName: string, agentName: string): string[] | null {
-    const p = notificationPath(teamName, agentName);
-    if (!fs.existsSync(p)) return null;
-    const tmp = `${p}.reading`;
-    try {
-        // Atomic rename: any concurrent appendFileSync after this point
-        // creates a fresh file at p that the next poll will pick up.
-        fs.renameSync(p, tmp);
-    } catch {
-        // File was removed by another poll or rename failed — nothing to read
-        return null;
-    }
-    try {
-        const content = fs.readFileSync(tmp, 'utf-8');
-        fs.unlinkSync(tmp);
-        const notifications: string[] = [];
-        for (const line of content.split('\n')) {
-            const trimmed = line.trim();
-            if (trimmed === '') continue;
-            try {
-                const data = JSON.parse(trimmed);
-                if (data.notification) {
-                    notifications.push(data.notification);
-                }
-            } catch {
-                // Skip corrupted line rather than discarding the whole queue
-            }
-        }
-        return notifications.length > 0 ? notifications : null;
-    } catch {
-        try { fs.unlinkSync(tmp); } catch {}
-        return null;
-    }
-}
 
 export async function broadcastMessage(
     teamName: string,

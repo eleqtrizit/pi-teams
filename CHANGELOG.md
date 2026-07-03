@@ -1,5 +1,11 @@
 # Changelog
 
+## refactor(extensions): remove inter-agent edit/write notification system (`0850b79`)
+
+Remove the near-real-time notification queue (`sendNotification`,
+`sendNotificationToAll`, `pollNotification`) that alerted teammates when an
+agent edited or wrote a file. The tool.log audit trail is preserved.
+
 ## fix(messaging): use JSONL queue for notifications to prevent overwriting (`351d559`)
 
 Switch notification files from single-write JSON to append-only JSONL queues

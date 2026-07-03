@@ -55,11 +55,3 @@ export function lastReportPath(teamName: string, agentName: string) {
 export function firstActivationPath(teamName: string, agentName: string) {
   return path.join(teamDir(teamName), `${sanitizeName(agentName)}.firstActivation`);
 }
-
-export function notificationsDir(teamName: string) {
-  return path.join(teamDir(teamName), "notifications");
-}
-
-export function notificationPath(teamName: string, recipientName: string) {
-  return path.join(notificationsDir(teamName), `${sanitizeName(recipientName)}.jsonl`);
-}
