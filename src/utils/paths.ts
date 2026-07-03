@@ -61,5 +61,5 @@ export function notificationsDir(teamName: string) {
 }
 
 export function notificationPath(teamName: string, recipientName: string) {
-  return path.join(notificationsDir(teamName), `${sanitizeName(recipientName)}.json`);
+  return path.join(notificationsDir(teamName), `${sanitizeName(recipientName)}.jsonl`);
 }

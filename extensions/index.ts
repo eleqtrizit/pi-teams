@@ -495,11 +495,11 @@ export default function (pi: ExtensionAPI) {
     }
 
     async function sendInboxNotification(message: string): Promise<void> {
-        // deliverAs: 'steer' already interrupts any active turn internally.
-        // Calling abort() explicitly before it kills the turn context and causes
-        // a double-cancel: the tool abort fires first, then the steer delivery
-        // tries to abort again — leaving the agent dormant.
-        pi.sendUserMessage(message, { deliverAs: 'steer' });
+        // deliverAs: 'followUp' queues the message and delivers it as a user
+        // message at the start of the agent's next natural turn boundary.
+        // This avoids interrupting mid-turn operations while still providing
+        // real-time context before the agent begins new work.
+        pi.sendUserMessage(message, { deliverAs: 'followUp' });
     }
 
     function startInboxPolling(): void {
@@ -510,9 +510,9 @@ export default function (pi: ExtensionAPI) {
             }
 
             // Check for near-real-time notifications from other team members
-            const notification = messaging.pollNotification(teamName, agentName);
-            if (notification !== null) {
-                const formatted = `NOTIFICATION: ${notification}.\nPlease continue your work. If you were paused, ignore until further instructions.`;
+            const notifications = messaging.pollNotification(teamName, agentName);
+            if (notifications !== null) {
+                const formatted = `Notifications from teammates:\n${notifications.map((n) => `  - ${n}`).join('\n')}`;
                 sendInboxNotification(formatted);
                 return;
             }
@@ -587,7 +587,7 @@ export default function (pi: ExtensionAPI) {
             fs.appendFileSync(logFile, `${timestamp}\tINFO\tedit\t${params.path}\t${params.description}\n`);
             // Notify all team members except self about the edit
             if (teamName) {
-                messaging.sendNotificationToAll(
+                await messaging.sendNotificationToAll(
                     teamName,
                     `${agentName} edit ${params.path}: ${params.description}`,
                     agentName
@@ -621,7 +621,7 @@ export default function (pi: ExtensionAPI) {
             fs.appendFileSync(logFile, `${timestamp}\tINFO\twrite\t${params.path}\t${params.description}\n`);
             // Notify all team members except self about the write
             if (teamName) {
-                messaging.sendNotificationToAll(
+                await messaging.sendNotificationToAll(
                     teamName,
                     `${agentName} write ${params.path}: ${params.description}`,
                     agentName

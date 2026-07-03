@@ -314,8 +314,9 @@ export async function sendPlainMessage(
  */
 /**
  * Send a near-real-time notification directly to a specific agent.
- * The notification is written to a shared file that the recipient polls.
- * This bypasses the inbox system for low-latency coordination.
+ * The notification is appended as a JSONL line to a queue file that the
+ * recipient polls. Multiple notifications accumulate until the recipient
+ * drains them, so rapid edits never overwrite each other.
  *
  * :param teamName: The name of the team
  * :param notification: The notification text to deliver
@@ -327,7 +328,9 @@ export function sendNotification(teamName: string, notification: string, recipie
         fs.mkdirSync(dir, { recursive: true });
     }
     const p = notificationPath(teamName, recipientName);
-    fs.writeFileSync(p, JSON.stringify({ notification, timestamp: Date.now() }));
+    // appendFileSync with O_APPEND is atomic for small writes on POSIX,
+    // so concurrent senders won't interleave lines.
+    fs.appendFileSync(p, JSON.stringify({ notification, timestamp: Date.now() }) + '\n');
 }
 
 /**
@@ -354,24 +357,45 @@ export async function sendNotificationToAll(teamName: string, notification: stri
 
 /**
  * Poll for notifications addressed to this agent.
- * Returns the oldest pending notification text, or null if none exist.
- * The notification file is deleted after reading (one notification per poll).
+ * Drains all pending notifications from the JSONL queue file and returns them
+ * as an array. The queue is cleared atomically via rename-then-read so that
+ * notifications appended by a concurrent sender are never lost.
  *
  * :param teamName: The name of the team
  * :param agentName: The name of the agent
- * :returns The notification text, or null if none
+ * :returns Array of notification texts, or null if the queue is empty
  */
-export function pollNotification(teamName: string, agentName: string): string | null {
+export function pollNotification(teamName: string, agentName: string): string[] | null {
     const p = notificationPath(teamName, agentName);
     if (!fs.existsSync(p)) return null;
+    const tmp = `${p}.reading`;
     try {
-        const content = fs.readFileSync(p, 'utf-8');
-        const data = JSON.parse(content);
-        fs.unlinkSync(p);
-        return data.notification;
+        // Atomic rename: any concurrent appendFileSync after this point
+        // creates a fresh file at p that the next poll will pick up.
+        fs.renameSync(p, tmp);
     } catch {
-        // Corrupted file — delete and ignore
-        try { fs.unlinkSync(p); } catch {}
+        // File was removed by another poll or rename failed — nothing to read
+        return null;
+    }
+    try {
+        const content = fs.readFileSync(tmp, 'utf-8');
+        fs.unlinkSync(tmp);
+        const notifications: string[] = [];
+        for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (trimmed === '') continue;
+            try {
+                const data = JSON.parse(trimmed);
+                if (data.notification) {
+                    notifications.push(data.notification);
+                }
+            } catch {
+                // Skip corrupted line rather than discarding the whole queue
+            }
+        }
+        return notifications.length > 0 ? notifications : null;
+    } catch {
+        try { fs.unlinkSync(tmp); } catch {}
         return null;
     }
 }
