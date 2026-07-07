@@ -1,5 +1,17 @@
 # Changelog
 
+## fix(extensions): enforce provider-scoped model resolution and update tool description (`927023e`)
+
+`resolveModelWithProvider` no longer falls through to cross-provider matching
+when a `<provider>/<model>` pair is requested but not found under that provider.
+Previously, `vyper/Qwen-35B` could silently return `bighank/Qwen-35B`. Now it
+returns `null` — only exact or scoped matches within the named provider are
+accepted.
+
+Update the `resolve_model` tool description to instruct agents to always use
+`<provider>/<model>` format and call `get_available_models()` to discover
+valid pairs.
+
 ## refactor(extensions): remove inter-agent edit/write notification system (`0850b79`)
 
 Remove the near-real-time notification queue (`sendNotification`,
