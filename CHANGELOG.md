@@ -1,5 +1,12 @@
 # Changelog
 
+## fix(extensions): batch queued inbox notifications (`c8b1d71`)
+
+Buffer inbox notifications produced during an active agent run and deliver them
+as one ordered follow-up at the run boundary. This prevents rapid notifications
+from creating a separate future turn for every queued message while preserving
+immediate idle wake-ups and steering reminders.
+
 ## fix(extensions): enforce provider-scoped model resolution and update tool description (`927023e`)
 
 `resolveModelWithProvider` no longer falls through to cross-provider matching

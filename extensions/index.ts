@@ -49,6 +49,46 @@ export function unreadInboxSignature(messages: InboxMessage[]): string {
     .join("\u0001");
 }
 
+export function mergeQueuedMessages(messages: readonly string[]): string {
+  if (messages.length === 0) return "";
+  if (messages.length === 1) return messages[0];
+
+  const sections = messages.map(
+    (message, index) =>
+      `<queued-message index="${index + 1}">\n${message}\n</queued-message>`,
+  );
+
+  return [
+    "Multiple queued messages were produced. Address all of them:",
+    ...sections,
+  ].join("\n\n");
+}
+
+export class FollowUpMessageQueue {
+  private messages: string[] = [];
+
+  enqueue(message: string): void {
+    const trimmedMessage = message.trim();
+    if (trimmedMessage) {
+      this.messages.push(trimmedMessage);
+    }
+  }
+
+  clear(): void {
+    this.messages = [];
+  }
+
+  flush(send: (message: string) => void): void {
+    const messages = this.messages;
+    this.messages = [];
+
+    const mergedMessage = mergeQueuedMessages(messages);
+    if (mergedMessage) {
+      send(mergedMessage);
+    }
+  }
+}
+
 export function formatInboxResponse(
   messages: InboxMessage[],
   includeEmptyInboxSleepInstruction: boolean,
@@ -531,8 +571,10 @@ export default function (pi: ExtensionAPI) {
   let inboxCheckInterval: ReturnType<typeof setInterval> | null = null;
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentIdle = true;
+  let isAgentRunning = false;
   let lastNotifiedUnreadInboxSignature: string | null = null;
   let currentContext: ExtensionContext | null = null;
+  const pendingInboxNotifications = new FollowUpMessageQueue();
 
   function clearInboxCheckInterval(): void {
     if (inboxCheckInterval == null) {
@@ -573,12 +615,26 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  async function sendInboxNotification(message: string): Promise<void> {
+  function sendFollowUp(message: string): void {
     // deliverAs: 'followUp' queues the message and delivers it as a user
     // message at the start of the agent's next natural turn boundary.
     // This avoids interrupting mid-turn operations while still providing
     // real-time context before the agent begins new work.
     pi.sendUserMessage(message, { deliverAs: "followUp" });
+  }
+
+  function sendInboxNotification(message: string): void {
+    if (isAgentRunning) {
+      pendingInboxNotifications.enqueue(message);
+      return;
+    }
+
+    // An idle agent has no agent_end event ahead of it, so the first
+    // notification must still be sent immediately to wake it up.
+    const trimmedMessage = message.trim();
+    if (trimmedMessage) {
+      sendFollowUp(trimmedMessage);
+    }
   }
 
   function startInboxPolling(): void {
@@ -729,6 +785,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     currentContext = ctx;
+    isAgentRunning = false;
+    pendingInboxNotifications.clear();
     paths.ensureDirs();
     if (isTeammate) {
       if (teamName) {
@@ -822,6 +880,16 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.on("agent_start", async () => {
+    isAgentRunning = true;
+    pendingInboxNotifications.clear();
+  });
+
+  pi.on("agent_end", async () => {
+    isAgentRunning = false;
+    pendingInboxNotifications.flush(sendFollowUp);
+  });
+
   pi.on("turn_end", async (_event, ctx) => {
     currentContext = ctx;
     isAgentIdle = true;
@@ -872,6 +940,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     clearInboxCheckInterval();
     clearTitleRefreshTimeouts();
+    isAgentRunning = false;
+    pendingInboxNotifications.clear();
   });
 
   let firstTurn = true;

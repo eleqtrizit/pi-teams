@@ -1,10 +1,12 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
   getTopModelMatches,
   clearModelsCache,
   resolveModelWithProvider,
   unreadInboxSignature,
   formatInboxResponse,
+  FollowUpMessageQueue,
+  mergeQueuedMessages,
 } from "./index";
 import type { InboxMessage } from "../src/utils/models";
 
@@ -152,6 +154,79 @@ describe("unreadInboxSignature", () => {
     ];
 
     expect(unreadInboxSignature(second)).not.toBe(unreadInboxSignature(first));
+  });
+});
+
+describe("mergeQueuedMessages", () => {
+  it("returns nothing for an empty queue", () => {
+    expect(mergeQueuedMessages([])).toBe("");
+  });
+
+  it("preserves one queued message unchanged", () => {
+    expect(mergeQueuedMessages(["Read the new inbox message."])).toBe(
+      "Read the new inbox message.",
+    );
+  });
+
+  it("combines multiple queued messages in order with explicit boundaries", () => {
+    expect(
+      mergeQueuedMessages([
+        "Read the new inbox message.",
+        "Report back to the team-lead.",
+      ]),
+    ).toBe(
+      [
+        "Multiple queued messages were produced. Address all of them:",
+        '<queued-message index="1">\nRead the new inbox message.\n</queued-message>',
+        '<queued-message index="2">\nReport back to the team-lead.\n</queued-message>',
+      ].join("\n\n"),
+    );
+  });
+});
+
+describe("FollowUpMessageQueue", () => {
+  it("sends ten queued messages in one outgoing follow-up", () => {
+    const queue = new FollowUpMessageQueue();
+    const sendUserMessage = vi.fn();
+
+    for (let index = 1; index <= 10; index++) {
+      queue.enqueue(`Message ${index}.`);
+    }
+    queue.flush((message) =>
+      sendUserMessage(message, { deliverAs: "followUp" }),
+    );
+
+    expect(sendUserMessage).toHaveBeenCalledTimes(1);
+    expect(sendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '<queued-message index="10">\nMessage 10.\n</queued-message>',
+      ),
+      { deliverAs: "followUp" },
+    );
+  });
+
+  it("clears the queue before sending to prevent reentrant leakage", () => {
+    const queue = new FollowUpMessageQueue();
+    const sentMessages: string[] = [];
+    queue.enqueue("First run.");
+
+    queue.flush((message) => {
+      sentMessages.push(message);
+      queue.enqueue("Second run.");
+    });
+    queue.flush((message) => sentMessages.push(message));
+
+    expect(sentMessages).toEqual(["First run.", "Second run."]);
+  });
+
+  it("ignores empty messages", () => {
+    const queue = new FollowUpMessageQueue();
+    const sentMessages: string[] = [];
+
+    queue.enqueue("  ");
+    queue.flush((message) => sentMessages.push(message));
+
+    expect(sentMessages).toEqual([]);
   });
 });
 
