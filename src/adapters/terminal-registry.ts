@@ -6,6 +6,7 @@
  */
 
 import { TerminalAdapter } from "../utils/terminal-adapter";
+import { OrcaAdapter } from "./orca-adapter";
 import { TmuxAdapter } from "./tmux-adapter";
 import { Iterm2Adapter } from "./iterm2-adapter";
 import { ZellijAdapter } from "./zellij-adapter";
@@ -15,12 +16,14 @@ import { WezTermAdapter } from "./wezterm-adapter";
  * Available terminal adapters, ordered by priority
  *
  * Detection order (first match wins):
- * 1. tmux - if TMUX env is set
- * 2. Zellij - if ZELLIJ env is set and not in tmux
- * 3. iTerm2 - if TERM_PROGRAM=iTerm.app and not in tmux/zellij
- * 4. WezTerm - if WEZTERM_PANE env is set and not in tmux/zellij
+ * 1. Orca - if TERM_PROGRAM=Orca (takes priority over all others)
+ * 2. tmux - if TMUX env is set
+ * 3. Zellij - if ZELLIJ env is set and not in tmux
+ * 4. iTerm2 - if TERM_PROGRAM=iTerm.app and not in tmux/zellij
+ * 5. WezTerm - if WEZTERM_PANE env is set and not in tmux/zellij
  */
 const adapters: TerminalAdapter[] = [
+  new OrcaAdapter(),
   new TmuxAdapter(),
   new ZellijAdapter(),
   new Iterm2Adapter(),
@@ -36,10 +39,11 @@ let cachedAdapter: TerminalAdapter | null = null;
  * Detect and return the appropriate terminal adapter for the current environment.
  *
  * Detection order (first match wins):
- * 1. tmux - if TMUX env is set
- * 2. Zellij - if ZELLIJ env is set and not in tmux
- * 3. iTerm2 - if TERM_PROGRAM=iTerm.app and not in tmux/zellij
- * 4. WezTerm - if WEZTERM_PANE env is set and not in tmux/zellij
+ * 1. Orca - if TERM_PROGRAM=Orca
+ * 2. tmux - if TMUX env is set
+ * 3. Zellij - if ZELLIJ env is set and not in tmux
+ * 4. iTerm2 - if TERM_PROGRAM=iTerm.app and not in tmux/zellij
+ * 5. WezTerm - if WEZTERM_PANE env is set and not in tmux/zellij
  *
  * @returns The detected terminal adapter, or null if none detected
  */
@@ -61,7 +65,7 @@ export function getTerminalAdapter(): TerminalAdapter | null {
 /**
  * Get a specific terminal adapter by name.
  *
- * @param name - The adapter name (e.g., "tmux", "iTerm2", "zellij", "WezTerm")
+ * @param name - The adapter name (e.g., "Orca", "tmux", "iTerm2", "zellij", "WezTerm")
  * @returns The adapter instance, or undefined if not found
  */
 export function getAdapterByName(name: string): TerminalAdapter | undefined {
