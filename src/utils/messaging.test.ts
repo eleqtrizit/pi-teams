@@ -15,6 +15,7 @@ import {
   updateLastReportTime,
 } from "./messaging";
 import * as paths from "./paths";
+import type { InboxMessage } from "./models";
 
 // Mock the paths to use a temporary directory
 const testDir = path.join(os.tmpdir(), "pi-teams-test-" + Date.now());
@@ -104,6 +105,62 @@ describe("Messaging Utilities", () => {
     for (let i = 0; i < numMessages; i++) {
       expect(texts).toContain(`msg-${i}`);
     }
+  });
+
+  it("should not lose or double-deliver messages under concurrent drain-vs-append", async () => {
+    // Exercises the central atomicity claim: drainUndelivered reads + marks
+    // delivered under the same lock appendMessage acquires, so a concurrent
+    // append cannot interleave between the read and the mark/write.
+    const numMessages = 50;
+    const drainedBatches: InboxMessage[][] = [];
+
+    // Appenders and drainers run concurrently. Drainers keep draining until
+    // all appends have settled and the inbox is fully drained.
+    const appenders = Array.from({ length: numMessages }, (_, i) =>
+      sendPlainMessage(
+        "test-team",
+        `sender-${i}`,
+        "receiver",
+        `subject-${i}`,
+        `msg-${i}`,
+        `summary-${i}`,
+      ),
+    );
+
+    // Spawn a drainer that loops until appends resolve and nothing is left.
+    const drainer = (async () => {
+      while (true) {
+        const batch = await drainUndelivered("test-team", "receiver");
+        if (batch.length > 0) drainedBatches.push(batch);
+        // Stop once the inbox is empty AND all appenders have at least started.
+        const remaining = await readInbox("test-team", "receiver", true);
+        if (remaining.length === 0) {
+          // Yield to let any in-flight append land, then re-check.
+          await new Promise((r) => setTimeout(r, 5));
+          const recheck = await readInbox("test-team", "receiver", true);
+          if (recheck.length === 0) break;
+        }
+      }
+    })();
+
+    await Promise.all([...appenders, drainer]);
+
+    // Collect every delivered message ID across all batches.
+    const deliveredIds = drainedBatches.flat().map((m) => m.id);
+    const deliveredSet = new Set(deliveredIds);
+
+    // No message was delivered twice (no duplicate IDs across batches).
+    expect(deliveredIds.length).toBe(deliveredSet.size);
+
+    // Every message was delivered exactly once (no losses).
+    const allInbox = await readInbox("test-team", "receiver", false);
+    expect(allInbox.length).toBe(numMessages);
+    const inboxIds = new Set(allInbox.map((m) => m.id));
+    expect(inboxIds.size).toBe(deliveredSet.size);
+    for (const id of inboxIds) expect(deliveredSet.has(id)).toBe(true);
+
+    // Every message in the inbox is now marked delivered.
+    expect(allInbox.every((m) => m.delivered)).toBe(true);
   });
 
   it("should drain undelivered messages and mark them delivered", async () => {

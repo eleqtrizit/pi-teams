@@ -4,36 +4,35 @@ The team-lead is the coordinator. The team-leader spawns team members (agents) t
 
 ## Overview
 
-Team members sit idle until a message is received in their inbox. A programmatic loop watches the inbox and triggers the agent when new messages arrive. Active agents are interrupted via `abort_current_tool` when an inbox notification arrives, ensuring responsiveness.
+Team members sit idle until a message is delivered to them. A programmatic loop polls each agent's inbox file every second; when undelivered messages are found, it drains them (atomically marking them delivered under a file lock) and injects their full bodies as user messages, waking the agent for a new turn. Active agents are interrupted via `abort_current_tool` when a delivery arrives, ensuring responsiveness.
 
-## Inbox & Messaging
+## Messaging
 
-- **Messages have UUIDs** — each message has a unique ID, a subject line, a sender identity, and a body.
-- **Use `read_inbox`** to list unread messages (shows a table with subject, sender, and ID).
-- **Use `read_message`** with the message ID to read the full body — this marks the message as read.
-- **Notifications are delivered as steer messages** — when a message arrives for an agent, the system steers the agent (interrupting idle loops or active tools) to surface the notification.
-- **Empty inbox sleep hint** — when the inbox is empty, the loop outputs a hint for the agent to sleep rather than busy-polling.
+- **Messages have UUIDs** — each message has a unique ID, a subject line, a sender identity, a recipient, and a body.
+- **Direct delivery** — agents never call a tool to read their own messages. The polling loop delivers each message's full body (with from/to/subject/timestamp header) directly as a user message. Multiple messages arriving in the same tick are merged into one delivery.
+- **Mid-run vs idle** — if a message arrives while the agent is mid-turn, it is queued and flushed as a follow-up at the run boundary so it never interrupts active tool work. If the agent is idle, the delivery wakes it for a fresh turn.
+- **Sending** — agents use `send_message` (to a named recipient) or `broadcast_message` (to all teammates except themselves) to send messages to others.
 
 ## Reminder System (Automated, No LLM)
 
-If a team member finishes work but has not sent a report back to the team-lead, a reminder is sent automatically:
+If a team member receives a team-lead instruction but finishes its turn without reporting back, a reminder is sent automatically:
 
-> "What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately."
+> "Report back to the team-lead with your results."
 
-The reminder fires only when the last active time is greater than the last sent message time. Only one reminder is sent per agent, and it relies on messages being properly marked read via `read_message`.
+A reminder can fire from two places (belt-and-suspenders): the `turn_end` handler steers the agent immediately if it ended a turn without responding, and the polling loop re-fires the reminder after a 30-second cooldown if the agent is still idle and unresponsive. Reminders re-fire every cooldown period until the agent sends a message to the team-lead, so a permanently stuck agent is nudged repeatedly rather than only once. The logic lives in `needsReminderMessage` (`src/utils/messaging.ts`) and keys off the `delivered` flag on instructions plus `lastReportTime`/`lastReminderTime` timestamps — never off agent read state.
 
-**Important:** Inbox reads and reminders are fully automated — they do NOT involve LLM cycles. The system handles polling, marking read, and sending reminders programmatically.
+**Important:** Delivery and reminders are fully automated — they do NOT involve LLM cycles for the polling itself. The system handles draining, marking delivered, and sending reminders programmatically.
 
 ## Worker Types
 
 - **Regular workers** — full agents spawned by the team-lead with access to all tools.
-- **Read-only workers** — spawned via `spawn_readonly_worker`. These have restricted tool access (read, search, browse) but still get messaging tools for team communication. Useful for research/investigation tasks.
+- **Read-only workers** — spawned via `spawn_readonly_worker`. These have restricted tool access (read, grep, find, ls) plus messaging (send_message, broadcast_message) for team communication. Useful for research/investigation tasks.
 
 ## Agent Lifecycle
 
 - Idle state is managed via event-driven timers with a shared mutable context object.
-- When an inbox notification arrives, the idle loop is interrupted via abort before the steer message is delivered.
-- The steer-to-worker pattern replaces inbox reminders: workers are directly steered rather than receiving inbox messages and then waiting for a separate reminder.
+- When an undelivered message is found, the polling loop drains and delivers it as a user message, which wakes the idle agent for a new turn.
+- The reminder steer at `turn_end` (and its cooldown-gated re-fire in the poller) covers the case where an agent ended its turn without reporting back to the team-lead.
 
 ## Team Shutdown
 

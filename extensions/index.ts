@@ -1600,7 +1600,7 @@ export default function (pi: ExtensionAPI) {
           } else if (m.tmuxPaneId && terminal) {
             alive = terminal.isAlive(m.tmuxPaneId);
           }
-          const unreadCount = (
+          const undeliveredCount = (
             await messaging.readInbox(params.team_name, m.name, true)
           ).length;
           const active = isAgentActive(params.team_name, m.name);
@@ -1610,7 +1610,7 @@ export default function (pi: ExtensionAPI) {
             model: m.model,
             alive,
             active,
-            unreadCount,
+            undeliveredCount,
           };
         }),
       );

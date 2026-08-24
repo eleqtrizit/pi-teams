@@ -1,6 +1,19 @@
 # Changelog
 
-## refactor(messaging): deliver message bodies directly instead of via inbox tools (`42a4f84`)
+## fix(docs): align AGENTS.md and list_teammates field with direct-delivery model (`bd8bc95`)
+
+Follow-up to the inbox-removal refactor (ef8b8aa), addressing findings from an
+independent two-reviewer audit. The repo-level AGENTS.md still told teammates
+to call the now-removed `read_inbox`/`read_message` tools and described the old
+one-reminder-per-agent model; it now documents direct delivery, the
+delivered-flag semantics, and the 30s cooldown re-fire behavior. The
+`list_teammates` output field `unreadCount` is renamed to `undeliveredCount`
+to match the new state. A concurrent drain-vs-append race test is added to
+harden the central atomic-delivery claim that was previously verified by
+inspection only.
+
+
+## refactor(messaging): deliver message bodies directly instead of via inbox tools (`ef8b8aa`)
 
 Remove the agent-facing "inbox" abstraction. The polling loop now drains
 undelivered messages and delivers their full bodies (with from/to/subject/
