@@ -1,5 +1,15 @@
 # Changelog
 
+## fix(extensions): block sleep commands for team agents (`c46344b`)
+
+Prompt-level instructions were not enough to stop teammates from issuing
+`sleep N` bash commands while waiting for inbox messages. A `tool_call` hook
+now blocks any bash command matching `^sleep\s+\d+` for agents in a team
+(teammates and team-lead) and returns a reason telling the agent to stop
+sleeping and simply end its turn; the inbox polling loop wakes it
+automatically when a message arrives.
+
+
 ## fix(extensions): force teammates to end turn when inbox is empty (`5e2f122`)
 
 Teammate agents were burning tokens issuing `sleep` and poll-loop commands while

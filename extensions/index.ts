@@ -777,6 +777,32 @@ export default function (pi: ExtensionAPI) {
   // Registering a tool with the same name as a built-in automatically overrides it.
   // No need to manually filter or call setActiveTools.
 
+  // Block "sleep N" bash commands for agents that participate in a team.
+  // Waiting agents must end their turn; the inbox polling loop wakes them
+  // automatically when a message arrives. Sleeping wastes wall time and
+  // tokens and delays responses to the team-lead.
+  const SLEEP_COMMAND_PATTERN = /^sleep\s+\d+/;
+  pi.on("tool_call", async (event) => {
+    if (!(isTeammate || teamName)) {
+      return;
+    }
+    if (event.toolName !== "bash") {
+      return;
+    }
+    const input = event.input as { command?: unknown };
+    if (typeof input.command !== "string") {
+      return;
+    }
+    if (!SLEEP_COMMAND_PATTERN.test(input.command.trim())) {
+      return;
+    }
+    return {
+      block: true,
+      reason:
+        "Blocked: do not run sleep commands to wait for inbox messages. Stop sleeping and simply end your turn. The system will notify you automatically as soon as a new message arrives. Just say you are waiting and stop.",
+    };
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     currentContext = ctx;
     isAgentRunning = false;
