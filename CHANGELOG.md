@@ -1,5 +1,14 @@
 # Changelog
 
+## fix(extensions): force teammates to end turn when inbox is empty (`5e2f122`)
+
+Teammate agents were burning tokens issuing `sleep` and poll-loop commands while
+waiting for inbox messages. The teammate system prompt now contains hard rules
+forbidding sleep/poll commands and read_inbox loops, and the empty-inbox
+response is now a direct "stop and end your turn" instruction instead of a
+soft suggestion.
+
+
 ## fix(extensions): batch queued inbox notifications (`c8b1d71`)
 
 Buffer inbox notifications produced during an active agent run and deliver them

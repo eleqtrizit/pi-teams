@@ -233,7 +233,7 @@ describe("FollowUpMessageQueue", () => {
 describe("formatInboxResponse", () => {
   it("adds a waiting instruction for an empty inbox", () => {
     expect(formatInboxResponse([])).toBe(
-      "Your inbox is empty.\n\nWe'll notify you when the inbox has a message.  Just tell the user you're waiting for new messages and wait.  No need to issue a sleep command or anything similar.",
+      "Your inbox is empty.\n\nSTOP NOW. End your turn immediately and say nothing else. The system will wake you automatically when a message arrives. Do NOT run sleep, polling, or wait commands. Do NOT call read_inbox again to check for messages. There is nothing to do.",
     );
   });
 

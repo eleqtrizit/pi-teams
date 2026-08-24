@@ -91,7 +91,7 @@ export class FollowUpMessageQueue {
 
 export function formatInboxResponse(messages: InboxMessage[]): string {
   if (messages.length === 0) {
-    return "Your inbox is empty.\n\nWe'll notify you when the inbox has a message.  Just tell the user you're waiting for new messages and wait.  No need to issue a sleep command or anything similar.";
+    return "Your inbox is empty.\n\nSTOP NOW. End your turn immediately and say nothing else. The system will wake you automatically when a message arrives. Do NOT run sleep, polling, or wait commands. Do NOT call read_inbox again to check for messages. There is nothing to do.";
   }
 
   const escapePipe = (v: string): string => v.replace(/\|/g, "\\|");
@@ -971,7 +971,7 @@ export default function (pi: ExtensionAPI) {
       return {
         systemPrompt:
           event.systemPrompt +
-          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nWait for instructions via your inbox. You will be notified when new messages arrive.`,
+          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nWhen waiting for inbox messages, end your turn and stop. The system will automatically deliver a message when something arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER call read_inbox in a loop to wait for messages.\n- When your work is done or your inbox is empty, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }
   });
