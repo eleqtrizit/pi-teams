@@ -89,15 +89,9 @@ export class FollowUpMessageQueue {
   }
 }
 
-export function formatInboxResponse(
-  messages: InboxMessage[],
-  includeEmptyInboxSleepInstruction: boolean,
-): string {
+export function formatInboxResponse(messages: InboxMessage[]): string {
   if (messages.length === 0) {
-    if (includeEmptyInboxSleepInstruction) {
-      return "Your inbox is empty.\n\nSleep before checking again";
-    }
-    return "Your inbox is empty.";
+    return "Your inbox is empty.\n\nWe'll notify you when the inbox has a message.  Just tell the user you're waiting for new messages and wait.  No need to issue a sleep command or anything similar.";
   }
 
   const escapePipe = (v: string): string => v.replace(/\|/g, "\\|");
@@ -1606,13 +1600,11 @@ export default function (pi: ExtensionAPI) {
         targetAgent,
         params.unread_only ?? true,
       );
-      const includeEmptyInboxSleepInstruction =
-        !isTeammate && targetAgent === agentName;
       return {
         content: [
           {
             type: "text",
-            text: formatInboxResponse(msgs, includeEmptyInboxSleepInstruction),
+            text: formatInboxResponse(msgs),
           },
         ],
         details: { messages: msgs },

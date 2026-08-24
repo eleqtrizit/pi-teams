@@ -231,9 +231,9 @@ describe("FollowUpMessageQueue", () => {
 });
 
 describe("formatInboxResponse", () => {
-  it("adds a sleep instruction for an empty team-lead inbox", () => {
-    expect(formatInboxResponse([], true)).toBe(
-      "Your inbox is empty.\n\nSleep before checking again",
+  it("adds a waiting instruction for an empty inbox", () => {
+    expect(formatInboxResponse([])).toBe(
+      "Your inbox is empty.\n\nWe'll notify you when the inbox has a message.  Just tell the user you're waiting for new messages and wait.  No need to issue a sleep command or anything similar.",
     );
   });
 
@@ -251,7 +251,7 @@ describe("formatInboxResponse", () => {
       },
     ];
 
-    const output = formatInboxResponse(messages, true);
+    const output = formatInboxResponse(messages);
     expect(output).toContain(
       "| Datetime | Read | UUID | From | To | Subject |",
     );
@@ -267,8 +267,8 @@ describe("formatInboxResponse", () => {
     expect(output).not.toContain("Sleep");
   });
 
-  it("does not add a sleep instruction when disabled", () => {
-    expect(formatInboxResponse([], false)).toBe("Your inbox is empty.");
+  it("does not mention sleep in the empty-inbox message", () => {
+    expect(formatInboxResponse([])).not.toContain("Sleep");
   });
 
   it("shows checkmark for read messages", () => {
@@ -284,7 +284,7 @@ describe("formatInboxResponse", () => {
       },
     ];
 
-    const output = formatInboxResponse(messages, false);
+    const output = formatInboxResponse(messages);
     expect(output).toContain("| ✅");
   });
 });
