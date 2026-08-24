@@ -767,7 +767,7 @@ export default function (pi: ExtensionAPI) {
     return {
       block: true,
       reason:
-        "Blocked: do not run sleep commands to wait for inbox messages. Stop sleeping and simply end your turn. The system will notify you automatically as soon as a new message arrives. Just say you are waiting and stop.",
+        "Blocked: do not run sleep commands to wait for incoming messages. Stop sleeping and simply end your turn. Messages are delivered to you automatically; the system will notify you as soon as a new one arrives. Just say you are waiting and stop.",
     };
   });
 

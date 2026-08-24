@@ -1,5 +1,12 @@
 # Changelog
 
+## fix(extensions): remove inbox wording from blocked-sleep message (`90d4c11`)
+
+The sleep-command block reason still told teammates to wait for "inbox
+messages", but the direct-delivery refactor removed the agent-facing inbox
+abstraction. The message now states that messages are delivered automatically
+and the system notifies the agent when one arrives, matching the current model.
+
 ## fix(docs): align AGENTS.md and list_teammates field with direct-delivery model (`8de1cb0`)
 
 Follow-up to the inbox-removal refactor (ef8b8aa), addressing findings from an
