@@ -1,6 +1,6 @@
 # Changelog
 
-## fix(docs): align AGENTS.md and list_teammates field with direct-delivery model (`bd8bc95`)
+## fix(docs): align AGENTS.md and list_teammates field with direct-delivery model (`8de1cb0`)
 
 Follow-up to the inbox-removal refactor (ef8b8aa), addressing findings from an
 independent two-reviewer audit. The repo-level AGENTS.md still told teammates
