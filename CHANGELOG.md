@@ -1,5 +1,13 @@
 # Changelog
 
+## fix(extensions): only block sleep commands while a team is online (`e30504f`)
+
+The sleep-command block previously applied to any agent with a team name in
+its environment, even after the team had been shut down. It now also checks
+`teams.teamExists(teamName)`, so standalone pi sessions and shut-down teams
+can use `sleep` normally.
+
+
 ## fix(extensions): block sleep commands for team agents (`c46344b`)
 
 Prompt-level instructions were not enough to stop teammates from issuing

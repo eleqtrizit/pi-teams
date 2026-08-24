@@ -783,7 +783,9 @@ export default function (pi: ExtensionAPI) {
   // tokens and delays responses to the team-lead.
   const SLEEP_COMMAND_PATTERN = /^sleep\s+\d+/;
   pi.on("tool_call", async (event) => {
-    if (!(isTeammate || teamName)) {
+    // Only enforce while a team is online; otherwise this would interfere
+    // with ordinary sleep usage in standalone pi sessions.
+    if (!teamName || !teams.teamExists(teamName)) {
       return;
     }
     if (event.toolName !== "bash") {
