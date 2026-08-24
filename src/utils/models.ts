@@ -32,7 +32,8 @@ export interface InboxMessage {
   subject: string;
   text: string;
   timestamp: string;
-  read: boolean;
+  /** True once the polling loop has delivered this message to the recipient agent as a user message. */
+  delivered: boolean;
   summary?: string;
   color?: string;
 }

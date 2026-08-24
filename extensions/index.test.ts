@@ -3,8 +3,7 @@ import {
   getTopModelMatches,
   clearModelsCache,
   resolveModelWithProvider,
-  unreadInboxSignature,
-  formatInboxResponse,
+  formatDeliveredMessages,
   FollowUpMessageQueue,
   mergeQueuedMessages,
 } from "./index";
@@ -125,9 +124,13 @@ describe("resolveModelWithProvider", () => {
   });
 });
 
-describe("unreadInboxSignature", () => {
-  it("changes when a new unread message is added", () => {
-    const first: InboxMessage[] = [
+describe("formatDeliveredMessages", () => {
+  it("returns an empty string for no messages", () => {
+    expect(formatDeliveredMessages([])).toBe("");
+  });
+
+  it("formats a single message with header fields and body", () => {
+    const messages: InboxMessage[] = [
       {
         id: "aaa11111",
         from: "worker",
@@ -135,25 +138,48 @@ describe("unreadInboxSignature", () => {
         subject: "Status update",
         text: "first report",
         timestamp: "2026-05-28T10:00:00.000Z",
-        read: false,
-        summary: "report",
-      },
-    ];
-    const second: InboxMessage[] = [
-      ...first,
-      {
-        id: "bbb22222",
-        from: "worker",
-        to: "team-lead",
-        subject: "Another update",
-        text: "second report",
-        timestamp: "2026-05-28T10:01:00.000Z",
-        read: false,
+        delivered: true,
         summary: "report",
       },
     ];
 
-    expect(unreadInboxSignature(second)).not.toBe(unreadInboxSignature(first));
+    const output = formatDeliveredMessages(messages);
+    expect(output).toContain("**From:** worker");
+    expect(output).toContain("**To:** team-lead");
+    expect(output).toContain("**Subject:** Status update");
+    expect(output).toContain("**Timestamp:** 2026-05-28 10:00:00");
+    expect(output).toContain("first report");
+    expect(output).not.toContain("delivered-message");
+  });
+
+  it("wraps multiple messages with ordered boundaries", () => {
+    const messages: InboxMessage[] = [
+      {
+        id: "aaa11111",
+        from: "worker",
+        to: "team-lead",
+        subject: "First",
+        text: "body one",
+        timestamp: "2026-05-28T10:00:00.000Z",
+        delivered: true,
+      },
+      {
+        id: "bbb22222",
+        from: "worker",
+        to: "team-lead",
+        subject: "Second",
+        text: "body two",
+        timestamp: "2026-05-28T10:01:00.000Z",
+        delivered: true,
+      },
+    ];
+
+    const output = formatDeliveredMessages(messages);
+    expect(output).toContain("Multiple messages were delivered");
+    expect(output).toContain('<delivered-message index="1">');
+    expect(output).toContain('<delivered-message index="2">');
+    expect(output).toContain("body one");
+    expect(output).toContain("body two");
   });
 });
 
@@ -227,64 +253,5 @@ describe("FollowUpMessageQueue", () => {
     queue.flush((message) => sentMessages.push(message));
 
     expect(sentMessages).toEqual([]);
-  });
-});
-
-describe("formatInboxResponse", () => {
-  it("adds a waiting instruction for an empty inbox", () => {
-    expect(formatInboxResponse([])).toBe(
-      "Your inbox is empty.\n\nSTOP NOW. End your turn immediately and say nothing else. The system will wake you automatically when a message arrives. Do NOT run sleep, polling, or wait commands. Do NOT call read_inbox again to check for messages. There is nothing to do.",
-    );
-  });
-
-  it("renders a markdown table with headers when messages are returned", () => {
-    const messages: InboxMessage[] = [
-      {
-        id: "aaa11111",
-        from: "worker",
-        to: "team-lead",
-        subject: "Report",
-        text: "done",
-        timestamp: "2026-05-28T10:00:00.000Z",
-        read: false,
-        summary: "report",
-      },
-    ];
-
-    const output = formatInboxResponse(messages);
-    expect(output).toContain(
-      "| Datetime | Read | UUID | From | To | Subject |",
-    );
-    expect(output).toContain(
-      "|----------|------|------|------|-----|---------|",
-    );
-    expect(output).toContain("| 2026-05-28 10:00:00");
-    expect(output).toContain("| ⬜");
-    expect(output).toContain("| \`aaa11111\`");
-    expect(output).toContain("| worker");
-    expect(output).toContain("| team-lead");
-    expect(output).toContain("| Report |");
-    expect(output).not.toContain("Sleep");
-  });
-
-  it("does not mention sleep in the empty-inbox message", () => {
-    expect(formatInboxResponse([])).not.toContain("Sleep");
-  });
-
-  it("shows checkmark for read messages", () => {
-    const messages: InboxMessage[] = [
-      {
-        id: "ccc33333",
-        from: "alice",
-        to: "bob",
-        subject: "Done",
-        text: "all set",
-        timestamp: "2026-05-28T11:00:00.000Z",
-        read: true,
-      },
-    ];
-
-    const output = formatInboxResponse(messages);
-    expect(output).toContain("| ✅");
   });
 });

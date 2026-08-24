@@ -35,18 +35,34 @@ export function clearModelsCache(): void {
   modelsCacheTime = 0;
 }
 
-export function unreadInboxSignature(messages: InboxMessage[]): string {
-  return messages
-    .map((message) =>
-      [
-        message.id,
-        message.timestamp,
-        message.from,
-        message.subject,
-        message.text,
-      ].join("\u0000"),
-    )
-    .join("\u0001");
+export function formatDeliveredMessages(messages: InboxMessage[]): string {
+  if (messages.length === 0) return "";
+
+  const formatOne = (m: InboxMessage): string => {
+    const ts = new Date(m.timestamp)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19);
+    return [
+      `**From:** ${m.from}`,
+      `**To:** ${m.to}`,
+      `**Subject:** ${m.subject}`,
+      `**Timestamp:** ${ts}`,
+      "",
+      m.text,
+    ].join("\n");
+  };
+
+  if (messages.length === 1) return formatOne(messages[0]);
+
+  const sections = messages.map(
+    (m, index) =>
+      `<delivered-message index="${index + 1}">\n${formatOne(m)}\n</delivered-message>`,
+  );
+  return [
+    "Multiple messages were delivered. Address all of them:",
+    ...sections,
+  ].join("\n\n");
 }
 
 export function mergeQueuedMessages(messages: readonly string[]): string {
@@ -87,29 +103,6 @@ export class FollowUpMessageQueue {
       send(mergedMessage);
     }
   }
-}
-
-export function formatInboxResponse(messages: InboxMessage[]): string {
-  if (messages.length === 0) {
-    return "Your inbox is empty.\n\nSTOP NOW. End your turn immediately and say nothing else. The system will wake you automatically when a message arrives. Do NOT run sleep, polling, or wait commands. Do NOT call read_inbox again to check for messages. There is nothing to do.";
-  }
-
-  const escapePipe = (v: string): string => v.replace(/\|/g, "\\|");
-
-  const rows = messages.map((m) => {
-    const ts = new Date(m.timestamp)
-      .toISOString()
-      .replace("T", " ")
-      .slice(0, 19);
-    const readStatus = m.read ? "✅" : "⬜";
-    const uuid = m.id.slice(0, 8);
-    return `| ${ts} | ${readStatus} | \`${uuid}\` | ${escapePipe(m.from)} | ${escapePipe(m.to)} | ${escapePipe(m.subject)} |`;
-  });
-
-  const header = "| Datetime | Read | UUID | From | To | Subject |";
-  const separator = "|----------|------|------|------|-----|---------|";
-
-  return [header, separator, ...rows].join("\n");
 }
 
 /**
@@ -566,7 +559,6 @@ export default function (pi: ExtensionAPI) {
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentIdle = true;
   let isAgentRunning = false;
-  let lastNotifiedUnreadInboxSignature: string | null = null;
   let currentContext: ExtensionContext | null = null;
   const pendingInboxNotifications = new FollowUpMessageQueue();
 
@@ -603,12 +595,6 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function resetUnreadInboxNotification(unreadCount: number): void {
-    if (unreadCount === 0) {
-      lastNotifiedUnreadInboxSignature = null;
-    }
-  }
-
   function sendFollowUp(message: string): void {
     // deliverAs: 'followUp' queues the message and delivers it as a user
     // message at the start of the agent's next natural turn boundary.
@@ -617,14 +603,18 @@ export default function (pi: ExtensionAPI) {
     pi.sendUserMessage(message, { deliverAs: "followUp" });
   }
 
-  function sendInboxNotification(message: string): void {
+  /**
+   * Deliver a formatted message body to this agent. While the agent is mid-run,
+   * the message is queued and flushed as a follow-up at the run boundary so it
+   * never interrupts active tool work. When idle, it is sent immediately to
+   * wake the agent for a new turn.
+   */
+  function deliverPendingMessage(message: string): void {
     if (isAgentRunning) {
       pendingInboxNotifications.enqueue(message);
       return;
     }
 
-    // An idle agent has no agent_end event ahead of it, so the first
-    // notification must still be sent immediately to wake it up.
     const trimmedMessage = message.trim();
     if (trimmedMessage) {
       sendFollowUp(trimmedMessage);
@@ -638,12 +628,18 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const unread = await messaging.readInbox(teamName, agentName, true);
-      resetUnreadInboxNotification(unread.length);
+      // Drain undelivered messages and deliver their full bodies as a single
+      // user message. drainUndelivered marks them delivered atomically, so the
+      // same batch is never delivered twice.
+      const toDeliver = await messaging.drainUndelivered(teamName, agentName);
+      if (toDeliver.length > 0) {
+        deliverPendingMessage(formatDeliveredMessages(toDeliver));
+        return;
+      }
 
-      // Failure Mode 3: reminder check in the polling loop covers the case where the
-      // steer delivered at turn_end failed to wake the agent for another turn.
-      // Only fires when the agent is idle so we never interrupt active work.
+      // Reminder fallback: fires only when the agent is idle. Covers the case
+      // where a delivered instruction's follow-up failed to wake the agent for
+      // another turn, or the agent ended its turn without reporting back.
       if (isTeammate && isAgentIdle) {
         const allMsgs = await messaging.readInbox(teamName, agentName, false);
         const teamLeadMsgs = allMsgs.filter((m) => m.from === "team-lead");
@@ -651,52 +647,22 @@ export default function (pi: ExtensionAPI) {
           const latestInstructionTs = Math.max(
             ...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime()),
           );
-          const allInstructionsRead = teamLeadMsgs.every((m) => m.read);
-          const unreadLeadMsgs = teamLeadMsgs.filter((m) => !m.read);
-          const oldestUnreadInstructionTs =
-            unreadLeadMsgs.length > 0
-              ? Math.min(
-                  ...unreadLeadMsgs.map((m) => new Date(m.timestamp).getTime()),
-                )
-              : null;
+          const hasUndelivered = teamLeadMsgs.some((m) => !m.delivered);
           if (
             messaging.needsReminderMessage(
               teamName,
               agentName,
               latestInstructionTs,
-              allInstructionsRead,
-              oldestUnreadInstructionTs,
+              hasUndelivered,
             )
           ) {
             messaging.updateLastReminderTime(teamName, agentName);
-            sendInboxNotification(
+            deliverPendingMessage(
               "Report back to the team-lead with your results.",
             );
-            return;
           }
         }
       }
-
-      if (unread.length === 0) {
-        return;
-      }
-
-      const unreadSignature = unreadInboxSignature(unread);
-      if (unreadSignature === lastNotifiedUnreadInboxSignature) {
-        return;
-      }
-
-      lastNotifiedUnreadInboxSignature = unreadSignature;
-      if (isTeammate) {
-        sendInboxNotification(
-          `I have ${unread.length} new message(s) in my inbox.`,
-        );
-        return;
-      }
-
-      sendInboxNotification(
-        `You have ${unread.length} new message(s) in your inbox from your team. Call read_inbox(team_name="${teamName}") to check them.`,
-      );
     }, 1000);
   }
 
@@ -917,33 +883,21 @@ export default function (pi: ExtensionAPI) {
     isAgentIdle = true;
     setActiveStatus(false);
     if (isTeammate && teamName) {
-      // Single inbox read: check for unread messages (for notification
-      // reset) and determine whether the agent needs a direct steer to
-      // report back after reading all team-lead instructions.
+      // If the agent ended its turn without reporting back after a delivered
+      // team-lead instruction, steer it to do so now.
       const allMsgs = await messaging.readInbox(teamName, agentName, false);
-      const unreadMsgs = allMsgs.filter((m) => !m.read);
-      resetUnreadInboxNotification(unreadMsgs.length);
-
       const teamLeadMsgs = allMsgs.filter((m) => m.from === "team-lead");
       if (teamLeadMsgs.length > 0) {
         const latestInstructionTs = Math.max(
           ...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime()),
         );
-        const allInstructionsRead = teamLeadMsgs.every((m) => m.read);
-        const unreadLeadMsgs = teamLeadMsgs.filter((m) => !m.read);
-        const oldestUnreadInstructionTs =
-          unreadLeadMsgs.length > 0
-            ? Math.min(
-                ...unreadLeadMsgs.map((m) => new Date(m.timestamp).getTime()),
-              )
-            : null;
+        const hasUndelivered = teamLeadMsgs.some((m) => !m.delivered);
         if (
           messaging.needsReminderMessage(
             teamName,
             agentName,
             latestInstructionTs,
-            allInstructionsRead,
-            oldestUnreadInstructionTs,
+            hasUndelivered,
           )
         ) {
           messaging.updateLastReminderTime(teamName, agentName);
@@ -953,9 +907,6 @@ export default function (pi: ExtensionAPI) {
           );
         }
       }
-    } else if (teamName) {
-      const unread = await messaging.readInbox(teamName, agentName, true);
-      resetUnreadInboxNotification(unread.length);
     }
   });
 
@@ -993,13 +944,13 @@ export default function (pi: ExtensionAPI) {
 
       const capabilitiesNote =
         agentType === "readonly-worker"
-          ? "\nYou are limited to reading files (read, grep, find, ls) and messaging tools (send_message, broadcast_message, read_inbox, read_message). You cannot write, edit, or execute commands."
+          ? "\nYou are limited to reading files (read, grep, find, ls) and messaging tools (send_message, broadcast_message). You cannot write, edit, or execute commands."
           : "";
 
       return {
         systemPrompt:
           event.systemPrompt +
-          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nWhen waiting for inbox messages, end your turn and stop. The system will automatically deliver a message when something arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER call read_inbox in a loop to wait for messages.\n- When your work is done or your inbox is empty, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
+          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. When your work is done, end your turn and stop — you will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }
   });
@@ -1331,7 +1282,7 @@ export default function (pi: ExtensionAPI) {
       name: "spawn_readonly_worker",
       label: "Spawn Read-Only Worker",
       description:
-        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. The worker uses the team leader's model by default. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message, read_inbox, read_message) to communicate with the team lead.",
+        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. The worker uses the team leader's model by default. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead.",
       parameters: asPiToolSchema(
         Type.Object({
           team_name: Type.String(),
@@ -1379,7 +1330,7 @@ export default function (pi: ExtensionAPI) {
         await teams.addMember(safeTeamName, member);
 
         const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        const piCmd = `${piBinary} --model ${defaultModel} --tools read,grep,find,ls,send_message,broadcast_message,read_inbox,read_message`;
+        const piCmd = `${piBinary} --model ${defaultModel} --tools read,grep,find,ls,send_message,broadcast_message`;
 
         const env: Record<string, string> = {
           ...process.env,
@@ -1440,7 +1391,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls plus messaging tools (send_message, broadcast_message, read_inbox, read_message).`,
+              text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls plus messaging tools (send_message, broadcast_message).`,
             },
           ],
           details: {
@@ -1453,8 +1404,6 @@ export default function (pi: ExtensionAPI) {
               "ls",
               "send_message",
               "broadcast_message",
-              "read_inbox",
-              "read_message",
             ],
           },
         };
@@ -1596,103 +1545,6 @@ export default function (pi: ExtensionAPI) {
           { type: "text", text: `Message broadcasted to all team members.` },
         ],
         details: {},
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "read_inbox",
-    label: "Read Inbox",
-    description:
-      "Read messages from an agent's inbox. Does not mark messages as read — use read_message to read a specific message and mark it as read.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.Optional(
-          Type.String({ description: "Defaults to your current team." }),
-        ),
-        agent_name: Type.Optional(
-          Type.String({
-            description: "Whose inbox to read. Defaults to your own.",
-          }),
-        ),
-        unread_only: Type.Optional(Type.Boolean({ default: true })),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const resolvedTeam = params.team_name || teamName;
-      if (!resolvedTeam)
-        throw new Error("team_name is required (no team is currently active).");
-      const targetAgent = params.agent_name || agentName;
-      const msgs = await messaging.readInbox(
-        resolvedTeam,
-        targetAgent,
-        params.unread_only ?? true,
-      );
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatInboxResponse(msgs),
-          },
-        ],
-        details: { messages: msgs },
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "read_message",
-    label: "Read Message",
-    description:
-      "Read the full body of a specific message by its ID and mark it as read.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.Optional(
-          Type.String({ description: "Defaults to your current team." }),
-        ),
-        agent_name: Type.Optional(
-          Type.String({
-            description: "Whose inbox the message is in. Defaults to your own.",
-          }),
-        ),
-        message_id: Type.String({
-          description:
-            "The ID of the message to read (the UUID column from read_inbox table).",
-        }),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const resolvedTeam = params.team_name || teamName;
-      if (!resolvedTeam)
-        throw new Error("team_name is required (no team is currently active).");
-      const targetAgent = params.agent_name || agentName;
-      const message = await messaging.readMessage(
-        resolvedTeam,
-        targetAgent,
-        params.message_id,
-      );
-      if (!message) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Message with UUID \`${params.message_id}\` not found in ${targetAgent}'s inbox.`,
-            },
-          ],
-          details: {},
-        };
-      }
-      const body = [
-        `**From:** ${message.from}`,
-        `**To:** ${message.to}`,
-        `**Subject:** ${message.subject}`,
-        `**Timestamp:** ${message.timestamp}`,
-        "",
-        message.text,
-      ].join("\n");
-      return {
-        content: [{ type: "text", text: body }],
-        details: { message },
       };
     },
   });

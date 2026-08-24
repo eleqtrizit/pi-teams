@@ -1,5 +1,17 @@
 # Changelog
 
+## refactor(messaging): deliver message bodies directly instead of via inbox tools (`42a4f84`)
+
+Remove the agent-facing "inbox" abstraction. The polling loop now drains
+undelivered messages and delivers their full bodies (with from/to/subject/
+timestamp header) as user messages, so teammates no longer call `read_inbox`
+and `read_message` tools. The `read` field on `InboxMessage` is renamed to
+`delivered`, `drainUndelivered` atomically reads and marks messages delivered,
+and `needsReminderMessage` is simplified to a delivered-state + timestamp check.
+This cuts a round-trip per message and removes the two-step notify-then-read
+dance that previously drove agents to poll and sleep.
+
+
 ## fix(extensions): only block sleep commands while a team is online (`e30504f`)
 
 The sleep-command block previously applied to any agent with a team name in
