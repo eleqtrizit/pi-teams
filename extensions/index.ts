@@ -1286,13 +1286,28 @@ export default function (pi: ExtensionAPI) {
       name: "spawn_teammate",
       label: "Spawn Teammate",
       description:
-        "Spawn a new teammate in a terminal pane or separate window.",
+        "Spawn a new teammate in a terminal pane or separate window.\n\n" +
+        "Model selection: before spawning, call get_flavored_models to see the " +
+        "configured high/med/fast model lists. Pick a model whose flavor matches " +
+        "the task (high = deep reasoning, med = balanced work, fast = quick " +
+        "lookups/simple edits), and prefer spreading teammates across different " +
+        "providers unless the user names specific models. If no flavors are " +
+        "configured, spawn the same model as yours (the team lead's).\n\n" +
+        "If you pass a model explicitly, it must be fully qualified as " +
+        "provider/model. Use resolve_model first if you only know a model name.",
       parameters: asPiToolSchema(
         Type.Object({
           team_name: Type.String(),
           name: Type.String(),
           cwd: Type.String(),
-          model: Type.Optional(Type.String()),
+          model: Type.Optional(
+            Type.String({
+              description:
+                "Fully-qualified provider/model. Omit to follow the " +
+                "get_flavored_models guidance (flavor-matched, provider-diverse, " +
+                "falling back to the team lead's model).",
+            }),
+          ),
           thinking: Type.Optional(
             StringEnum(["off", "minimal", "low", "medium", "high"]),
           ),
@@ -1486,12 +1501,24 @@ export default function (pi: ExtensionAPI) {
       name: "spawn_readonly_worker",
       label: "Spawn Read-Only Worker",
       description:
-        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. The worker uses the team leader's model by default. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead.",
+        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead.\n\n" +
+        "Model selection: before spawning, call get_flavored_models and spawn a " +
+        "model from the flavor that matches the task (usually fast or med for " +
+        "read-only research). Prefer spreading workers across different providers " +
+        "unless the user names specific models. If no flavors are configured, " +
+        "spawn the same model as yours (the team lead's).",
       parameters: asPiToolSchema(
         Type.Object({
           team_name: Type.String(),
           name: Type.String(),
           cwd: Type.String(),
+          model: Type.Optional(
+            Type.String({
+              description:
+                "Fully-qualified provider/model, e.g. from the " +
+                "get_flavored_models lists. Omit to use the team lead's model.",
+            }),
+          ),
         }),
       ) as any,
       async execute(toolCallId, params: any, signal, onUpdate, ctx) {
@@ -1508,14 +1535,29 @@ export default function (pi: ExtensionAPI) {
 
         const teamConfig = await teams.readConfig(safeTeamName);
 
-        // Use the team-leader\'s model
+        // Use the requested model if fully qualified, else the team lead's model
+        let chosenModel: string | null = null;
+        const requested = params.model?.trim();
+        if (requested && !/default/i.test(requested)) {
+          if (!requested.includes("/")) {
+            throw new Error(
+              `Model '${requested}' is not fully qualified. ` +
+                `Use resolve_model(model_name="${requested}") first, then pass ` +
+                `the returned provider/model value.`,
+            );
+          }
+          chosenModel = requested;
+        }
         const defaultModel = ctx.model
           ? `${ctx.model.provider}/${ctx.model.id}`
           : null;
-        if (!defaultModel) {
+        if (!chosenModel) {
+          chosenModel = defaultModel;
+        }
+        if (!chosenModel) {
           throw new Error(
             "Cannot spawn read-only worker: no model configured. " +
-              "Ensure the team-leader has a model configured.",
+              "Ensure the team-leader has a model configured or pass model explicitly.",
           );
         }
 
@@ -1523,7 +1565,7 @@ export default function (pi: ExtensionAPI) {
           agentId: `${safeName}@${safeTeamName}`,
           name: safeName,
           agentType: "readonly-worker",
-          model: defaultModel,
+          model: chosenModel,
           joinedAt: Date.now(),
           tmuxPaneId: "",
           cwd: params.cwd,
@@ -1534,7 +1576,7 @@ export default function (pi: ExtensionAPI) {
         await teams.addMember(safeTeamName, member);
 
         const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        const piCmd = `${piBinary} --model ${defaultModel} --tools read,grep,find,ls,send_message,broadcast_message`;
+        const piCmd = `${piBinary} --model ${chosenModel} --tools read,grep,find,ls,send_message,broadcast_message`;
 
         const env: Record<string, string> = {
           ...process.env,

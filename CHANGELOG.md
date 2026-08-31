@@ -1,5 +1,15 @@
 # Changelog
 
+## feat(extensions): guide spawn tools to flavor-matched model selection (f3b5b58)
+
+The team lead was not using the flavored-models data when spawning teammates.
+The `spawn_teammate` and `spawn_readonly_worker` descriptions now instruct the
+lead to call `get_flavored_models` first, pick a flavor matching the task,
+spread teammates across providers, and fall back to the lead's own model when
+no flavors are configured. `spawn_readonly_worker` gains an optional `model`
+parameter so the guidance is actionable; it previously hardwired the lead's
+model.
+
 ## feat(models): port flavored-models extension into pi-teams (`365b90e`)
 
 Move the standalone `~/.pi/agent/extensions/flavored-models.ts` extension into
