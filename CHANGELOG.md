@@ -1,5 +1,15 @@
 # Changelog
 
+## feat(models): port flavored-models extension into pi-teams (`365b90e`)
+
+Move the standalone `~/.pi/agent/extensions/flavored-models.ts` extension into
+the package so the feature ships with pi-teams. The settings I/O and flavor
+logic live in a new testable `src/utils/flavoredModels.ts` module (9 tests),
+and the extensions entry point registers a `get_flavored_models` tool plus an
+interactive `/flavored-models` command in team-lead sessions only. The
+standalone extension file was deleted; existing settings.json flavor keys are
+unchanged.
+
 ## fix(extensions): remove inbox wording from blocked-sleep message (`90d4c11`)
 
 The sleep-command block reason still told teammates to wait for "inbox

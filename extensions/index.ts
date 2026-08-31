@@ -9,6 +9,14 @@ import {
   createWriteTool,
   type WriteToolInput,
 } from "@mariozechner/pi-coding-agent";
+import {
+  Container,
+  type SettingItem,
+  SettingsList,
+  type SettingsListTheme,
+  Spacer,
+  Text,
+} from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -17,6 +25,14 @@ import { Iterm2Adapter } from "../src/adapters/iterm2-adapter";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
 import { updateLastAwokenTime } from "../src/utils/messaging";
+import * as flavoredModels from "../src/utils/flavoredModels";
+import {
+  FLAVOR_VALUES,
+  type FlavorKey,
+  type FlavorValue,
+  type FlavoredModelsResult,
+  type ModelFlavor,
+} from "../src/utils/flavoredModels";
 import { InboxMessage, Member } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
 import * as teams from "../src/utils/teams";
@@ -546,6 +562,194 @@ export function getTopModelMatches(
  */
 function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
   return schema as TSchemaLike;
+}
+
+// ── Flavored models ─────────────────────────────────────────────────────────
+
+const FLAVOR_LABELS: Record<FlavorKey, string> = {
+  high: "High Quality",
+  med: "Medium",
+  fast: "Fast",
+};
+
+const FLAVOR_BULLET: Record<FlavorKey, string> = {
+  high: "\u25C6",
+  med: "\u25CF",
+  fast: "\u25B8",
+};
+
+/**
+ * Theme for the flavored-models SettingsList.
+ *
+ * @param theme - The TUI theme object for applying color functions
+ * @returns A fully-configured SettingsListTheme
+ */
+function buildSettingsListTheme(theme: {
+  fg: (color: string, text: string) => string;
+}): SettingsListTheme {
+  return {
+    label: (text: string, selected: boolean) =>
+      selected ? theme.fg("accent", text) : text,
+    value: (text: string, selected: boolean) =>
+      selected ? theme.fg("warning", text) : theme.fg("muted", text),
+    description: (text: string) => theme.fg("dim", text),
+    cursor: theme.fg("accent", "\u2192"),
+    hint: (text: string) => theme.fg("dim", text),
+  };
+}
+
+/**
+ * Execute the get-flavored-models tool: read flavor-categorized models from
+ * pi settings.json and return three lists (high/med/fast).
+ *
+ * @returns Tool result content plus flavor details
+ * @throws If the settings file cannot be read or parsed
+ */
+function executeGetFlavoredModels(): {
+  content: { type: "text"; text: string }[];
+  details: FlavoredModelsResult;
+} {
+  const flavors = flavoredModels.readFlavoredModels();
+
+  const sections = (["high", "med", "fast"] as const).flatMap((flavor) => {
+    const items = flavors[flavor];
+    return [
+      `## ${FLAVOR_LABELS[flavor]} Models`,
+      ...(items.length > 0
+        ? items.map((m) => `  - ${m}`)
+        : ["  (none configured)"]),
+      "",
+    ];
+  });
+
+  return {
+    content: [{ type: "text", text: sections.join("\n") }],
+    details: flavors,
+  };
+}
+
+/**
+ * Handler for the /flavored-models command.
+ *
+ * Opens an interactive SettingsList UI that lets the user assign each
+ * enabled model to a flavor (high/med/fast/none). Changes are saved to
+ * settings.json when the dialog closes.
+ *
+ * @param ctx - The extension context providing the UI interface
+ */
+async function handleFlavoredModelsCommand(
+  ctx: ExtensionContext,
+): Promise<void> {
+  // ── Phase 1: Read current state ───────────────────────────────────────────
+
+  let enabledModels: string[];
+  try {
+    enabledModels = flavoredModels.readEnabledModels();
+  } catch (err) {
+    ctx.ui.notify(
+      `Failed to read settings: ${err instanceof Error ? err.message : String(err)}`,
+      "error",
+    );
+    return;
+  }
+
+  let flavors: FlavoredModelsResult;
+  try {
+    flavors = flavoredModels.readFlavoredModels();
+  } catch (err) {
+    ctx.ui.notify(
+      `Failed to read flavors: ${err instanceof Error ? err.message : String(err)}`,
+      "error",
+    );
+    return;
+  }
+
+  // Build in-memory flavor state
+  const modelFlavors: ModelFlavor[] = flavoredModels.buildModelFlavors(
+    enabledModels,
+    flavors,
+  );
+
+  // ── Phase 2: Open interactive UI ──────────────────────────────────────────
+
+  await ctx.ui.custom<void>(
+    (tui: any, theme: any, _kb: unknown, done: (result?: void) => void) => {
+    // Build SettingItems from current state
+    const items: SettingItem[] = modelFlavors.map((mf) => ({
+      id: mf.id,
+      label: mf.id,
+      currentValue: mf.flavor,
+      values: [...FLAVOR_VALUES],
+    }));
+
+    const container = new Container();
+
+    // Header
+    container.addChild(
+      new Text(theme.fg("accent", theme.bold("Flavored Model Configuration"))),
+    );
+    container.addChild(new Spacer());
+
+    // SettingsList
+    const settingsTheme = buildSettingsListTheme(theme);
+    const maxVisible = Math.min(items.length + 2, 15);
+
+    const settingsList = new SettingsList(
+      items,
+      maxVisible,
+      settingsTheme,
+      (id: string, newValue: string) => {
+        // Update in-memory state (no disk write yet)
+        const mf = modelFlavors.find((f) => f.id === id);
+        if (mf) {
+          mf.flavor = newValue as FlavorValue;
+        }
+      },
+      () => {
+        // Cancel: discard changes, close dialog
+        done(undefined);
+      },
+    );
+
+    container.addChild(settingsList);
+    container.addChild(new Spacer());
+
+    // Footer hint
+    const summary = flavoredModels.buildFooterSummary(modelFlavors);
+    container.addChild(
+      new Text(theme.fg("dim", `Enter/Space to cycle \u2022 Esc to cancel`)),
+    );
+    container.addChild(new Text(theme.fg("muted", summary)));
+
+    return {
+      render(width: number): string[] {
+        return container.render(width);
+      },
+      invalidate(): void {
+        container.invalidate();
+      },
+      handleInput(data: string): void {
+        settingsList.handleInput(data);
+        tui.requestRender();
+      },
+    };
+    },
+  );
+
+  // ── Phase 3: Save on close ────────────────────────────────────────────────
+
+  try {
+    flavoredModels.writeFlavorsToSettings(modelFlavors);
+    ctx.ui.notify(
+      `Flavored models saved (${flavoredModels.buildFooterSummary(modelFlavors)})`,
+      "info",
+    );
+  } catch (err) {
+    ctx.ui.notify(
+      `Failed to save flavored-models config: ${err instanceof Error ? err.message : String(err)}`,
+      "error",
+    );
+  }
 }
 
 export default function (pi: ExtensionAPI) {
@@ -1649,6 +1853,67 @@ export default function (pi: ExtensionAPI) {
           details: {},
         };
       },
+    });
+
+    // Flavored models: tool + interactive command
+    pi.registerTool({
+      name: "get_flavored_models",
+      label: "Get Flavored Models",
+      description:
+        "Read flavor-categorized models from pi settings.json and return three " +
+        "lists: high (high-quality/deep reasoning), med (balanced performance), " +
+        "and fast (quick responses).",
+      parameters: asPiToolSchema(Type.Object({})) as any,
+      async execute() {
+        try {
+          return executeGetFlavoredModels();
+        } catch (e) {
+          throw new Error(`Failed to read flavored models: ${e}`);
+        }
+      },
+      renderCall(_args: any, theme: any): any {
+        const text = new Text("", 0, 0);
+        text.setText(theme.fg("toolTitle", theme.bold("get_flavored_models")));
+        return text;
+      },
+      renderResult(
+        result: any,
+        _options: { expanded: boolean },
+        theme: any,
+      ): any {
+        const text = new Text("", 0, 0);
+        const details = result.details as FlavoredModelsResult | undefined;
+        if (!details) {
+          text.setText(theme.fg("error", "[no result]"));
+          return text;
+        }
+
+        const lines = (["high", "med", "fast"] as FlavorKey[]).flatMap((key) => {
+          const items = details[key];
+          const color =
+            key === "high" ? "accent" : key === "med" ? "success" : "warning";
+          const modelLines =
+            items.length > 0
+              ? items.map((m) => `  ${theme.fg(color, FLAVOR_BULLET[key])} ${m}`)
+              : [theme.fg("dim", "  (none configured)")];
+          return [
+            theme.fg("toolTitle", theme.bold(`${FLAVOR_LABELS[key]} Models`)),
+            ...modelLines,
+            "",
+          ];
+        });
+
+        text.setText(lines.join("\n"));
+        return text;
+      },
+    });
+
+    pi.registerCommand("flavored-models", {
+      description: "Configure model flavor assignments (high/med/fast/none)",
+      handler: (
+        _args: string,
+        ctx: ExtensionContext,
+      ) => handleFlavoredModelsCommand(ctx),
     });
   }
 }
