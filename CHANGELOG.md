@@ -1,5 +1,14 @@
 # Changelog
 
+## feat(extensions): port get-models extension into pi-teams (`9a7ee56`)
+
+Move the standalone `~/.pi/agent/extensions/get-models.ts` extension into the
+package so the tool ships with pi-teams. A new `get_models` tool (team-lead
+sessions only) reads `enabledModels` from pi settings.json and returns OSS and
+frontier (GPT/Claude) lists. Classification lives in an exported, unit-tested
+`classifyModel` and the shared `flavoredModels.readEnabledModels` reader; the
+standalone extension file was deleted. README documents the tool.
+
 ## feat(extensions): guide spawn tools to flavor-matched model selection (f3b5b58)
 
 The team lead was not using the flavored-models data when spawning teammates.

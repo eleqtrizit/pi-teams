@@ -65,12 +65,21 @@ Read the inbox of security-bot.
 - **`spawn_teammate`** - Launch agent in terminal pane or separate OS window
   - Supports custom model and thinking level (off/minimal/low/medium/high)
   - Can spawn in separate windows for better isolation
+  - Follows flavored-model guidance (see Flavored Models below)
 - **`spawn_readonly_worker`** - Launch a read-only worker restricted to `read`, `grep`, `find`, `ls`
   - No `bash`, `write`, or `edit` access — safe for code review, auditing, exploration
-  - Uses the team leader's model automatically
-  - Lighter than `spawn_teammate`; no model or thinking parameters needed
+  - Can still message the team lead via `send_message`/`broadcast_message`
+  - Accepts an optional `model` parameter; defaults to the team leader's model
 - **`spawn_lead_window`** - Open team lead in a separate OS window
 - **`process_shutdown_approved`** - Gracefully shut down individual teammate
+
+### Flavored Models
+
+### Model Categorization
+
+- **`get_models`** - Read enabled models from pi settings.json, split into OSS and frontier (GPT/Claude) lists
+- **`get_flavored_models`** - Read flavor-categorized model lists from pi settings.json
+- **`/flavored-models`** - Interactive command to assign each enabled model to a flavor
 
 ### Messaging System
 
@@ -119,6 +128,12 @@ Read the inbox of security-bot.
 - Thread-safe operations with file-based locking
 - Automatic stale lock cleanup (60s timeout)
 - Race condition protection for multi-agent operations
+
+### 🍦 Flavored Models
+- Categorize your enabled models into flavors: `high` (deep reasoning), `med` (balanced), `fast` (quick responses)
+- Configured in `~/.pi/agent/settings.json` via `enabledModelsHigh`, `enabledModelsMed`, and `enabledModelsFast`
+- `/flavored-models` opens an interactive settings UI (team-lead sessions only)
+- Spawn tools follow flavor guidance: match the flavor to the task, spread teammates across providers, and fall back to the team lead's model when no flavors are set
 
 ### 📊 Model Resolution
 - Smart provider selection with priority-based matching
@@ -241,6 +256,35 @@ resolve_model(model_name="qwen3-coder")
 resolve_model(model_name="claude-3.5")
 # Returns: "anthropic/claude-3.5-sonnet"
 ```
+
+### Flavored Model Selection
+
+When flavor lists are configured, the team lead uses them to choose models
+when spawning teammates:
+
+1. Before spawning, the lead calls `get_flavored_models` to read the lists
+2. It picks a model whose flavor matches the task: `high` for deep reasoning,
+   `med` for balanced work, `fast` for lookups and simple edits (read-only
+   research usually gets `fast` or `med`)
+3. It prefers spreading teammates across different providers unless the user
+   names specific models
+4. If no flavors are configured, it spawns the same model as the team lead
+
+```json
+// ~/.pi/agent/settings.json
+{
+  "enabledModels": [
+    "anthropic/claude-opus-4",
+    "anthropic/claude-3.5-haiku",
+    "google/gemini-2.5-flash"
+  ],
+  "enabledModelsHigh": ["anthropic/claude-opus-4"],
+  "enabledModelsMed": ["google/gemini-2.5-flash"],
+  "enabledModelsFast": ["anthropic/claude-3.5-haiku"]
+}
+```
+
+Run `/flavored-models` in a team-lead session to edit these lists interactively.
 
 ## Requirements
 

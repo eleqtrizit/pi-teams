@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
   getTopModelMatches,
   clearModelsCache,
@@ -6,8 +6,57 @@ import {
   formatDeliveredMessages,
   FollowUpMessageQueue,
   mergeQueuedMessages,
+  classifyModel,
+  executeGetModels,
 } from "./index";
 import type { InboxMessage } from "../src/utils/models";
+import * as flavoredModels from "../src/utils/flavoredModels";
+
+describe("classifyModel", () => {
+  it('classifies GPT and Claude models as "frontier" (case-insensitive)', () => {
+    expect(classifyModel("openai-codex/gpt-5.5")).toBe("frontier");
+    expect(classifyModel("anthropic/claude-sonnet-4.5")).toBe("frontier");
+    expect(classifyModel("openai/GPT-4o-mini")).toBe("frontier");
+  });
+
+  it('classifies other models as "oss"', () => {
+    expect(classifyModel("bighank/Qwen35Coder-35B-NoThinking")).toBe("oss");
+    expect(classifyModel("deepseek/deepseek-v3")).toBe("oss");
+    expect(classifyModel("nvidia/nemotron-70b")).toBe("oss");
+  });
+});
+
+describe("executeGetModels", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("partitions enabled models into oss and frontier lists", () => {
+    vi.spyOn(flavoredModels, "readEnabledModels").mockReturnValue([
+      "openai-codex/gpt-5.5",
+      "bighank/Qwen35Coder-35B-NoThinking",
+      "anthropic/claude-sonnet-4.5",
+    ]);
+
+    const result = executeGetModels();
+
+    expect(result.details).toEqual({
+      oss: ["bighank/Qwen35Coder-35B-NoThinking"],
+      frontier: ["openai-codex/gpt-5.5", "anthropic/claude-sonnet-4.5"],
+    });
+    expect(result.content[0].text).toContain("## OSS Models");
+    expect(result.content[0].text).toContain("## Frontier Models");
+  });
+
+  it("renders (none) placeholders for an empty list", () => {
+    vi.spyOn(flavoredModels, "readEnabledModels").mockReturnValue([]);
+
+    const result = executeGetModels();
+
+    expect(result.details).toEqual({ oss: [], frontier: [] });
+    expect(result.content[0].text).toContain("(none)");
+  });
+});
 
 describe("getTopModelMatches", () => {
   beforeEach(() => {

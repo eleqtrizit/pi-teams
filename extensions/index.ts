@@ -564,6 +564,14 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
   return schema as TSchemaLike;
 }
 
+// ── Model categorization ───────────────────────────────────────────────────
+
+/** Categorized enabled-model lists returned by the get_models tool. */
+export interface GetModelsResult {
+  oss: string[];
+  frontier: string[];
+}
+
 // ── Flavored models ─────────────────────────────────────────────────────────
 
 const FLAVOR_LABELS: Record<FlavorKey, string> = {
@@ -577,6 +585,49 @@ const FLAVOR_BULLET: Record<FlavorKey, string> = {
   med: "\u25CF",
   fast: "\u25B8",
 };
+
+/**
+ * Classify a model identifier as frontier (GPT/Claude) or OSS.
+ *
+ * @param modelId - The full model identifier (e.g. "openai-codex/gpt-5.5")
+ * @return "frontier" if the model id contains "gpt" or "claude" (case-insensitive), "oss" otherwise
+ */
+export function classifyModel(modelId: string): "frontier" | "oss" {
+  const lower = modelId.toLowerCase();
+  return lower.includes("gpt") || lower.includes("claude") ? "frontier" : "oss";
+}
+
+/**
+ * Execute the get_models tool: read enabled models from pi settings.json and
+ * return two lists: OSS (non-frontier) and frontier (GPT/Claude).
+ *
+ * @return Tool result content plus categorized model details
+ * @throws If the settings file cannot be read or parsed
+ */
+export function executeGetModels(): {
+  content: { type: "text"; text: string }[];
+  details: GetModelsResult;
+} {
+  const models = flavoredModels.readEnabledModels();
+
+  const oss = models.filter((m) => classifyModel(m) === "oss");
+  const frontier = models.filter((m) => classifyModel(m) === "frontier");
+
+  const output = [
+    "## OSS Models",
+    ...(oss.length > 0 ? oss.map((m) => `  - ${m}`) : ["  (none)"]),
+    "",
+    "## Frontier Models",
+    ...(frontier.length > 0
+      ? frontier.map((m) => `  - ${m}`)
+      : ["  (none)"]),
+  ].join("\n");
+
+  return {
+    content: [{ type: "text", text: output }],
+    details: { oss, frontier },
+  };
+}
 
 /**
  * Theme for the flavored-models SettingsList.
@@ -1946,6 +1997,65 @@ export default function (pi: ExtensionAPI) {
         });
 
         text.setText(lines.join("\n"));
+        return text;
+      },
+    });
+
+    pi.registerTool({
+      name: "get_models",
+      label: "Get Models",
+      description:
+        "Read enabled models from pi settings.json and return two lists: " +
+        'OSS (models not containing "gpt" or "claude", e.g. Qwen, DeepSeek, ' +
+        'Nemotron) and frontier (models containing "gpt" or "claude", e.g. ' +
+        "GPT-5.x, Claude Sonnet).",
+      parameters: asPiToolSchema(Type.Object({})) as any,
+      async execute() {
+        try {
+          return executeGetModels();
+        } catch (e) {
+          throw new Error(`Failed to read enabled models: ${e}`);
+        }
+      },
+      renderCall(_args: any, theme: any): any {
+        const text = new Text("", 0, 0);
+        text.setText(theme.fg("toolTitle", theme.bold("get_models")));
+        return text;
+      },
+      renderResult(
+        result: any,
+        _options: { expanded: boolean },
+        theme: any,
+      ): any {
+        const text = new Text("", 0, 0);
+        const details = result.details as GetModelsResult | undefined;
+        if (!details) {
+          text.setText(theme.fg("error", "[no result]"));
+          return text;
+        }
+
+        const ossList =
+          details.oss.length > 0
+            ? details.oss
+                .map((m) => `  ${theme.fg("success", "\u25CF")} ${m}`)
+                .join("\n")
+            : theme.fg("dim", "  (none)");
+        const frontierList =
+          details.frontier.length > 0
+            ? details.frontier
+                .map((m) => `  ${theme.fg("accent", "\u25C6")} ${m}`)
+                .join("\n")
+            : theme.fg("dim", "  (none)");
+
+        text.setText(
+          [
+            theme.fg("toolTitle", theme.bold("OSS Models")),
+            ossList,
+            "",
+            theme.fg("toolTitle", theme.bold("Frontier Models")),
+            frontierList,
+          ].join("\n"),
+        );
         return text;
       },
     });
