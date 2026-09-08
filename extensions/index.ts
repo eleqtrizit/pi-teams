@@ -4,12 +4,6 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import {
-  createEditTool,
-  type EditToolInput,
-  createWriteTool,
-  type WriteToolInput,
-} from "@mariozechner/pi-coding-agent";
-import {
   Container,
   type SettingItem,
   SettingsList,
@@ -920,83 +914,6 @@ export default function (pi: ExtensionAPI) {
       }
     }, 1000);
   }
-
-  pi.registerTool({
-    name: "edit",
-    label: "Edit",
-    description: "Edit a single file using exact text replacement.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        path: Type.String({ description: "Path to the file to edit" }),
-        oldText: Type.String({ description: "Exact text to replace" }),
-        newText: Type.String({ description: "Replacement text" }),
-        description: Type.String({
-          description:
-            "Plain English description of the edit being made.  Specifically call out function/class names, imports or top level enum/globals, etc",
-        }),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const builtinEdit = createEditTool(ctx.cwd);
-      const result = await builtinEdit.execute(
-        toolCallId,
-        {
-          path: params.path,
-          edits: [{ oldText: params.oldText, newText: params.newText }],
-        } as unknown as EditToolInput,
-        signal,
-        onUpdate,
-      );
-      const logFile = path.join(ctx.cwd, ".pi", "tool.log");
-      const timestamp = new Date().toISOString();
-      fs.appendFileSync(
-        logFile,
-        `${timestamp}\tINFO\tedit\t${params.path}\t${params.description}\n`,
-      );
-      return result;
-    },
-  });
-
-  pi.registerTool({
-    name: "write",
-    label: "Write",
-    description:
-      "Write content to a file. Creates the file if it does not exist, overwrites if it does.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        path: Type.String({ description: "Path to the file to write" }),
-        content: Type.String({
-          description: "Full content to write to the file",
-        }),
-        description: Type.String({
-          description: "Plain English description of the write being made",
-        }),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const builtinWrite = createWriteTool(ctx.cwd);
-      const result = await builtinWrite.execute(
-        toolCallId,
-        {
-          path: params.path,
-          content: params.content,
-        } as unknown as WriteToolInput,
-        signal,
-        onUpdate,
-      );
-      const logFile = path.join(ctx.cwd, ".pi", "tool.log");
-      const timestamp = new Date().toISOString();
-      fs.appendFileSync(
-        logFile,
-        `${timestamp}\tINFO\twrite\t${params.path}\t${params.description}\n`,
-      );
-      return result;
-    },
-  });
-
-  // Override built-in edit and write with logged wrappers
-  // Registering a tool with the same name as a built-in automatically overrides it.
-  // No need to manually filter or call setActiveTools.
 
   // Block "sleep N" bash commands for agents that participate in a team.
   // Waiting agents must end their turn; the inbox polling loop wakes them

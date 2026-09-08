@@ -1,5 +1,15 @@
 # Changelog
 
+## refactor(extensions): move journalled edit/write tools to pi-journal
+
+Remove the `edit` and `write` tool overrides from `extensions/index.ts`. They
+existed only to append a `.pi/tool.log` audit record on top of pi's built-in
+tools, which is not a team concern. Both tools, the log format and the
+`/journal` command now live in the standalone `pi-journal` extension; install it
+separately to keep the audit trail. With pi-journal absent, pi's unmodified
+built-in `edit`/`write` tools apply. The blocked-sleep `tool_call` gate is
+unrelated and stays.
+
 ## feat(extensions): port get-models extension into pi-teams (`9a7ee56`)
 
 Move the standalone `~/.pi/agent/extensions/get-models.ts` extension into the

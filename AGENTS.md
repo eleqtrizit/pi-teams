@@ -41,7 +41,7 @@ A reminder can fire from two places (belt-and-suspenders): the `turn_end` handle
 
 ## Logs
 
-- **`.pi/tool.log`** (per workspace) — tab-separated audit of every `edit`/`write` tool call. Columns: ISO timestamp, level, tool, path, description. Written by `extensions/index.ts`.
+- **`.pi/tool.log`** (per workspace) — no longer written here. The `edit`/`write` audit trail moved to the separate `pi-journal` extension.
 - **Team state files** under `~/.pi/teams/<team>/` — one file per piece of state (inboxes, pid, activation markers). Written by `src/utils/messaging.ts` and `extensions/index.ts`.
 
 ## Model Resolution
