@@ -13,7 +13,6 @@ import {
 } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Iterm2Adapter } from "../src/adapters/iterm2-adapter";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
@@ -351,18 +350,6 @@ function tokenizeQuery(value: string): string[] {
     .trim()
     .split(" ")
     .filter((t) => t.length > 0 && !STOP_WORDS.has(t));
-}
-
-/**
- * Check if a query token appears as a substring in a collapsed candidate string.
- * Pure substring matching — no splitting or fuzzy logic.
- *
- * :param token: A single query token (e.g., "qwen3", "35b", "bighank")
- * :param collapsed: The collapsed candidate string
- * :return: true if the token is a substring of the collapsed string
- */
-function tokenFoundIn(token: string, collapsed: string): boolean {
-  return collapsed.includes(token);
 }
 
 /**
@@ -808,7 +795,6 @@ export default function (pi: ExtensionAPI) {
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentIdle = true;
   let isAgentRunning = false;
-  let currentContext: ExtensionContext | null = null;
   const pendingInboxNotifications = new FollowUpMessageQueue();
 
   function clearInboxCheckInterval(): void {
@@ -944,7 +930,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    currentContext = ctx;
     isAgentRunning = false;
     pendingInboxNotifications.clear();
     paths.ensureDirs();
@@ -1031,7 +1016,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("turn_start", async (_event, ctx) => {
-    currentContext = ctx;
     isAgentIdle = false;
     setActiveStatus(true);
     if (isTeammate) {
@@ -1050,8 +1034,7 @@ export default function (pi: ExtensionAPI) {
     pendingInboxNotifications.flush(sendFollowUp);
   });
 
-  pi.on("turn_end", async (_event, ctx) => {
-    currentContext = ctx;
+  pi.on("turn_end", async () => {
     isAgentIdle = true;
     setActiveStatus(false);
     if (isTeammate && teamName) {

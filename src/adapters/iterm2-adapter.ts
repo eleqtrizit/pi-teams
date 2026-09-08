@@ -5,7 +5,7 @@
  * Uses AppleScript for all operations.
  */
 
-import { TerminalAdapter, SpawnOptions, execCommand } from "../utils/terminal-adapter";
+import { TerminalAdapter, SpawnOptions } from "../utils/terminal-adapter";
 import { spawnSync } from "node:child_process";
 
 /**
