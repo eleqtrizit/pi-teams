@@ -63,62 +63,11 @@ export function getTerminalAdapter(): TerminalAdapter | null {
 }
 
 /**
- * Get a specific terminal adapter by name.
- *
- * @param name - The adapter name (e.g., "Orca", "tmux", "iTerm2", "zellij", "WezTerm")
- * @returns The adapter instance, or undefined if not found
- */
-export function getAdapterByName(name: string): TerminalAdapter | undefined {
-  return adapters.find(a => a.name === name);
-}
-
-/**
- * Get all available adapters.
- * 
- * @returns Array of all registered adapters
- */
-export function getAllAdapters(): TerminalAdapter[] {
-  return [...adapters];
-}
-
-/**
- * Clear the cached adapter (useful for testing or environment changes)
- */
-export function clearAdapterCache(): void {
-  cachedAdapter = null;
-}
-
-/**
- * Set a specific adapter (useful for testing or forced selection)
- */
-export function setAdapter(adapter: TerminalAdapter): void {
-  cachedAdapter = adapter;
-}
-
-/**
- * Check if any terminal adapter is available.
- * 
- * @returns true if a terminal adapter was detected
- */
-export function hasTerminalAdapter(): boolean {
-  return getTerminalAdapter() !== null;
-}
-
-/**
  * Check if the current terminal supports spawning separate OS windows.
- * 
+ *
  * @returns true if the detected terminal supports windows (iTerm2, WezTerm)
  */
 export function supportsWindows(): boolean {
   const adapter = getTerminalAdapter();
   return adapter?.supportsWindows() ?? false;
-}
-
-/**
- * Get the name of the currently detected terminal adapter.
- * 
- * @returns The adapter name, or null if none detected
- */
-export function getTerminalName(): string | null {
-  return getTerminalAdapter()?.name ?? null;
 }
