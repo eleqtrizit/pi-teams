@@ -17,6 +17,30 @@ export function nowIso(): string {
 }
 
 /**
+ * Read a millisecond timestamp written by one of the update*Time helpers.
+ * @param p Absolute path of the timestamp file
+ * @returns The timestamp in milliseconds, or null when the file is absent or unparseable
+ */
+function readTimestamp(p: string): number | null {
+  if (!fs.existsSync(p)) return null;
+  try {
+    const content = fs.readFileSync(p, "utf-8").trim();
+    const timestamp = parseInt(content, 10);
+    return Number.isNaN(timestamp) ? null : timestamp;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stamp a file with the current wall-clock time in milliseconds.
+ * @param p Absolute path of the timestamp file
+ */
+function writeNow(p: string): void {
+  fs.writeFileSync(p, Date.now().toString());
+}
+
+/**
  * Get the timestamp of the last message sent by this agent.
  * @param teamName The name of the team
  * @param agentName The name of the agent
@@ -26,15 +50,7 @@ export function getLastMessageTime(
   teamName: string,
   agentName: string,
 ): number | null {
-  const p = lastMessagePath(teamName, agentName);
-  if (!fs.existsSync(p)) return null;
-  try {
-    const content = fs.readFileSync(p, "utf-8").trim();
-    const timestamp = parseInt(content, 10);
-    return isNaN(timestamp) ? null : timestamp;
-  } catch {
-    return null;
-  }
+  return readTimestamp(lastMessagePath(teamName, agentName));
 }
 
 /**
@@ -46,29 +62,7 @@ export function updateLastMessageTime(
   teamName: string,
   agentName: string,
 ): void {
-  const p = lastMessagePath(teamName, agentName);
-  fs.writeFileSync(p, Date.now().toString());
-}
-
-/**
- * Get the timestamp when the agent last went from inactive to active.
- * @param teamName The name of the team
- * @param agentName The name of the agent
- * @returns The timestamp in milliseconds, or null if the agent has never been active
- */
-export function getLastAwokenTime(
-  teamName: string,
-  agentName: string,
-): number | null {
-  const p = lastAwokenPath(teamName, agentName);
-  if (!fs.existsSync(p)) return null;
-  try {
-    const content = fs.readFileSync(p, "utf-8").trim();
-    const timestamp = parseInt(content, 10);
-    return isNaN(timestamp) ? null : timestamp;
-  } catch {
-    return null;
-  }
+  writeNow(lastMessagePath(teamName, agentName));
 }
 
 /**
@@ -80,8 +74,7 @@ export function updateLastAwokenTime(
   teamName: string,
   agentName: string,
 ): void {
-  const p = lastAwokenPath(teamName, agentName);
-  fs.writeFileSync(p, Date.now().toString());
+  writeNow(lastAwokenPath(teamName, agentName));
 }
 
 /**
@@ -94,15 +87,7 @@ export function getLastReminderTime(
   teamName: string,
   agentName: string,
 ): number | null {
-  const p = lastReminderPath(teamName, agentName);
-  if (!fs.existsSync(p)) return null;
-  try {
-    const content = fs.readFileSync(p, "utf-8").trim();
-    const timestamp = parseInt(content, 10);
-    return isNaN(timestamp) ? null : timestamp;
-  } catch {
-    return null;
-  }
+  return readTimestamp(lastReminderPath(teamName, agentName));
 }
 
 /**
@@ -114,8 +99,7 @@ export function updateLastReminderTime(
   teamName: string,
   agentName: string,
 ): void {
-  const p = lastReminderPath(teamName, agentName);
-  fs.writeFileSync(p, Date.now().toString());
+  writeNow(lastReminderPath(teamName, agentName));
 }
 
 /**
@@ -128,15 +112,7 @@ export function getLastReportTime(
   teamName: string,
   agentName: string,
 ): number | null {
-  const p = lastReportPath(teamName, agentName);
-  if (!fs.existsSync(p)) return null;
-  try {
-    const content = fs.readFileSync(p, "utf-8").trim();
-    const timestamp = parseInt(content, 10);
-    return isNaN(timestamp) ? null : timestamp;
-  } catch {
-    return null;
-  }
+  return readTimestamp(lastReportPath(teamName, agentName));
 }
 
 /**
@@ -148,8 +124,7 @@ export function updateLastReportTime(
   teamName: string,
   agentName: string,
 ): void {
-  const p = lastReportPath(teamName, agentName);
-  fs.writeFileSync(p, Date.now().toString());
+  writeNow(lastReportPath(teamName, agentName));
 }
 
 /** Minimum delay between repeated report reminders for the same instruction. */
