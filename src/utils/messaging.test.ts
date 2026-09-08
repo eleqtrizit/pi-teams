@@ -388,7 +388,7 @@ describe("Messaging Utilities", () => {
       expect(result).toBe(true);
     });
 
-    it("should return false when a reminder was sent recently", () => {
+    it("should return false when a reminder was already sent for the latest instruction", () => {
       const instructionTs = Date.now() - 60_000;
       updateLastReminderTime("test-team", "worker");
 
@@ -401,13 +401,16 @@ describe("Messaging Utilities", () => {
       expect(result).toBe(false);
     });
 
-    it("should return true when a reminder was sent but the worker still has not reported", () => {
+    it("should return false when a reminder was sent long ago but after the latest instruction", () => {
       const instructionTs = Date.now() - 120_000;
       const lastReminderFilePath = (paths as any).lastReminderPath(
         "test-team",
         "worker",
       );
-      fs.writeFileSync(lastReminderFilePath, (Date.now() - 60_000).toString());
+      fs.writeFileSync(
+        lastReminderFilePath,
+        (instructionTs + 60_000).toString(),
+      );
 
       const result = needsReminderMessage(
         "test-team",
@@ -415,7 +418,7 @@ describe("Messaging Utilities", () => {
         instructionTs,
         false,
       );
-      expect(result).toBe(true);
+      expect(result).toBe(false);
     });
 
     it("should return true after new instructions arrive (beyond previous reminder cycle)", () => {

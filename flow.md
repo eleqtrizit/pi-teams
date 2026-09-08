@@ -3,16 +3,17 @@
 ## Purpose
 
 When a team member finishes work without sending a message to the team-lead,
-steer them to report, repeating after a short cooldown until they send a
-message to the team-lead.
+steer them to report — once per instruction, until they send a
+message to the team-lead. Mid-run reminders are queued and flushed at the run
+boundary so they never inject midstream.
 
 ## Actors
 
-| Actor | Role |
-|-------|------|
+| Actor                                                     | Role                                                                                                                  |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | **Polling loop** (`setInterval` in `extensions/index.ts`) | Runs every 1 s while the agent is idle. Checks whether the worker still needs to report, then sends a steer reminder. |
-| **`needsReminderMessage`** (`messaging.ts`) | Pure decision function — compares timestamps to answer "should we remind?" |
-| **`sendPlainMessage`** (`messaging.ts`) | Records `lastReportTime` when the sender sends a message to `team-lead`. |
+| **`needsReminderMessage`** (`messaging.ts`)               | Pure decision function — compares timestamps to answer "should we remind?"                                            |
+| **`sendPlainMessage`** (`messaging.ts`)                   | Records `lastReportTime` when the sender sends a message to `team-lead`.                                              |
 
 ## Current (Broken) Flow — `lastAwokenTime` comparison
 
@@ -58,7 +59,7 @@ needsReminderMessage returns true when:
   2. All team-lead messages are read (agent had a chance to respond)
   3. lastReportTime is null OR lastReportTime < latestInstructionTimestamp
   4. No unread system reminder already exists
-  5. No reminder sent within the short cooldown window
+  5. No reminder already sent after the latest instruction
 ```
 
 ### Why this works

@@ -17,9 +17,9 @@ Team members sit idle until a message is delivered to them. A programmatic loop 
 
 If a team member receives a team-lead instruction but finishes its turn without reporting back, a reminder is sent automatically:
 
-> "Report back to the team-lead with your results."
+> "Report back to the team-lead with your results, if you haven't already done so."
 
-A reminder can fire from two places (belt-and-suspenders): the `turn_end` handler steers the agent immediately if it ended a turn without responding, and the polling loop re-fires the reminder after a 30-second cooldown if the agent is still idle and unresponsive. Reminders re-fire every cooldown period until the agent sends a message to the team-lead, so a permanently stuck agent is nudged repeatedly rather than only once. The logic lives in `needsReminderMessage` (`src/utils/messaging.ts`) and keys off the `delivered` flag on instructions plus `lastReportTime`/`lastReminderTime` timestamps — never off agent read state.
+A reminder can fire from two places (belt-and-suspenders): the `turn_end` handler steers the agent immediately if it ended a turn without responding (queued for the run boundary when the agent is still running, so it never injects midstream), and the polling loop fires the reminder if the agent is still idle and unresponsive. At most one reminder fires per instruction: reminders do not re-fire on a timer, so a permanently stuck agent gets exactly one nudge per team-lead message. The logic lives in `needsReminderMessage` (`src/utils/messaging.ts`) and keys off the `delivered` flag on instructions plus `lastReportTime`/`lastReminderTime` timestamps — never off agent read state.
 
 **Important:** Delivery and reminders are fully automated — they do NOT involve LLM cycles for the polling itself. The system handles draining, marking delivered, and sending reminders programmatically.
 
@@ -32,7 +32,7 @@ A reminder can fire from two places (belt-and-suspenders): the `turn_end` handle
 
 - Idle state is managed via event-driven timers with a shared mutable context object.
 - When an undelivered message is found, the polling loop drains and delivers it as a user message, which wakes the idle agent for a new turn.
-- The reminder steer at `turn_end` (and its cooldown-gated re-fire in the poller) covers the case where an agent ended its turn without reporting back to the team-lead.
+- The reminder steer at `turn_end` (queued to run boundary while the agent is still running) covers the case where an agent ended its turn without reporting back to the team-lead.
 
 ## Team Shutdown
 

@@ -599,9 +599,7 @@ export function executeGetModels(): {
     ...(oss.length > 0 ? oss.map((m) => `  - ${m}`) : ["  (none)"]),
     "",
     "## Frontier Models",
-    ...(frontier.length > 0
-      ? frontier.map((m) => `  - ${m}`)
-      : ["  (none)"]),
+    ...(frontier.length > 0 ? frontier.map((m) => `  - ${m}`) : ["  (none)"]),
   ].join("\n");
 
   return {
@@ -706,65 +704,67 @@ async function handleFlavoredModelsCommand(
 
   await ctx.ui.custom<void>(
     (tui: any, theme: any, _kb: unknown, done: (result?: void) => void) => {
-    // Build SettingItems from current state
-    const items: SettingItem[] = modelFlavors.map((mf) => ({
-      id: mf.id,
-      label: mf.id,
-      currentValue: mf.flavor,
-      values: [...FLAVOR_VALUES],
-    }));
+      // Build SettingItems from current state
+      const items: SettingItem[] = modelFlavors.map((mf) => ({
+        id: mf.id,
+        label: mf.id,
+        currentValue: mf.flavor,
+        values: [...FLAVOR_VALUES],
+      }));
 
-    const container = new Container();
+      const container = new Container();
 
-    // Header
-    container.addChild(
-      new Text(theme.fg("accent", theme.bold("Flavored Model Configuration"))),
-    );
-    container.addChild(new Spacer());
+      // Header
+      container.addChild(
+        new Text(
+          theme.fg("accent", theme.bold("Flavored Model Configuration")),
+        ),
+      );
+      container.addChild(new Spacer());
 
-    // SettingsList
-    const settingsTheme = buildSettingsListTheme(theme);
-    const maxVisible = Math.min(items.length + 2, 15);
+      // SettingsList
+      const settingsTheme = buildSettingsListTheme(theme);
+      const maxVisible = Math.min(items.length + 2, 15);
 
-    const settingsList = new SettingsList(
-      items,
-      maxVisible,
-      settingsTheme,
-      (id: string, newValue: string) => {
-        // Update in-memory state (no disk write yet)
-        const mf = modelFlavors.find((f) => f.id === id);
-        if (mf) {
-          mf.flavor = newValue as FlavorValue;
-        }
-      },
-      () => {
-        // Cancel: discard changes, close dialog
-        done(undefined);
-      },
-    );
+      const settingsList = new SettingsList(
+        items,
+        maxVisible,
+        settingsTheme,
+        (id: string, newValue: string) => {
+          // Update in-memory state (no disk write yet)
+          const mf = modelFlavors.find((f) => f.id === id);
+          if (mf) {
+            mf.flavor = newValue as FlavorValue;
+          }
+        },
+        () => {
+          // Cancel: discard changes, close dialog
+          done(undefined);
+        },
+      );
 
-    container.addChild(settingsList);
-    container.addChild(new Spacer());
+      container.addChild(settingsList);
+      container.addChild(new Spacer());
 
-    // Footer hint
-    const summary = flavoredModels.buildFooterSummary(modelFlavors);
-    container.addChild(
-      new Text(theme.fg("dim", `Enter/Space to cycle \u2022 Esc to cancel`)),
-    );
-    container.addChild(new Text(theme.fg("muted", summary)));
+      // Footer hint
+      const summary = flavoredModels.buildFooterSummary(modelFlavors);
+      container.addChild(
+        new Text(theme.fg("dim", `Enter/Space to cycle \u2022 Esc to cancel`)),
+      );
+      container.addChild(new Text(theme.fg("muted", summary)));
 
-    return {
-      render(width: number): string[] {
-        return container.render(width);
-      },
-      invalidate(): void {
-        container.invalidate();
-      },
-      handleInput(data: string): void {
-        settingsList.handleInput(data);
-        tui.requestRender();
-      },
-    };
+      return {
+        render(width: number): string[] {
+          return container.render(width);
+        },
+        invalidate(): void {
+          container.invalidate();
+        },
+        handleInput(data: string): void {
+          settingsList.handleInput(data);
+          tui.requestRender();
+        },
+      };
     },
   );
 
@@ -893,7 +893,7 @@ export default function (pi: ExtensionAPI) {
           ) {
             messaging.updateLastReminderTime(teamName, agentName);
             deliverPendingMessage(
-              "Report back to the team-lead with your results.",
+              "Report back to the team-lead with your results, if you haven't already done so.",
             );
           }
         }
@@ -1056,10 +1056,15 @@ export default function (pi: ExtensionAPI) {
           )
         ) {
           messaging.updateLastReminderTime(teamName, agentName);
-          pi.sendUserMessage(
-            "Report back to the team-lead with your results.",
-            { deliverAs: "steer" },
-          );
+          const reminder =
+            "Report back to the team-lead with your results, if you haven't already done so.";
+          // Mid-run, queue for the run boundary so it never injects midstream;
+          // when the run has actually ended, steer immediately.
+          if (isAgentRunning) {
+            pendingInboxNotifications.enqueue(reminder);
+          } else {
+            pi.sendUserMessage(reminder, { deliverAs: "steer" });
+          }
         }
       }
     }
@@ -1881,20 +1886,24 @@ export default function (pi: ExtensionAPI) {
           return text;
         }
 
-        const lines = (["high", "med", "fast"] as FlavorKey[]).flatMap((key) => {
-          const items = details[key];
-          const color =
-            key === "high" ? "accent" : key === "med" ? "success" : "warning";
-          const modelLines =
-            items.length > 0
-              ? items.map((m) => `  ${theme.fg(color, FLAVOR_BULLET[key])} ${m}`)
-              : [theme.fg("dim", "  (none configured)")];
-          return [
-            theme.fg("toolTitle", theme.bold(`${FLAVOR_LABELS[key]} Models`)),
-            ...modelLines,
-            "",
-          ];
-        });
+        const lines = (["high", "med", "fast"] as FlavorKey[]).flatMap(
+          (key) => {
+            const items = details[key];
+            const color =
+              key === "high" ? "accent" : key === "med" ? "success" : "warning";
+            const modelLines =
+              items.length > 0
+                ? items.map(
+                    (m) => `  ${theme.fg(color, FLAVOR_BULLET[key])} ${m}`,
+                  )
+                : [theme.fg("dim", "  (none configured)")];
+            return [
+              theme.fg("toolTitle", theme.bold(`${FLAVOR_LABELS[key]} Models`)),
+              ...modelLines,
+              "",
+            ];
+          },
+        );
 
         text.setText(lines.join("\n"));
         return text;
@@ -1962,10 +1971,8 @@ export default function (pi: ExtensionAPI) {
 
     pi.registerCommand("flavored-models", {
       description: "Configure model flavor assignments (high/med/fast/none)",
-      handler: (
-        _args: string,
-        ctx: ExtensionContext,
-      ) => handleFlavoredModelsCommand(ctx),
+      handler: (_args: string, ctx: ExtensionContext) =>
+        handleFlavoredModelsCommand(ctx),
     });
   }
 }

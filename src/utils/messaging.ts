@@ -127,9 +127,6 @@ export function updateLastReportTime(
   writeNow(lastReportPath(teamName, agentName));
 }
 
-/** Minimum delay between repeated report reminders for the same instruction. */
-const REMINDER_COOLDOWN_MS = 30 * 1000;
-
 /**
  * Determine whether the agent needs a reminder to report back to the team-lead.
  *
@@ -138,6 +135,10 @@ const REMINDER_COOLDOWN_MS = 30 * 1000;
  * moment it arrives. So the only signal we need is: the agent received a
  * team-lead instruction (delivered) but has not sent a report back to the
  * team-lead since.
+ *
+ * At most one reminder fires per instruction: once a reminder has been sent
+ * after the latest team-lead message, no further reminders fire until a newer
+ * instruction arrives.
  *
  * @param teamName The name of the team
  * @param agentName The name of the agent
@@ -158,11 +159,7 @@ export function needsReminderMessage(
     return false;
 
   const lastReminderTime = getLastReminderTime(teamName, agentName);
-  if (
-    lastReminderTime !== null &&
-    lastReminderTime >= latestInstructionTs &&
-    Date.now() - lastReminderTime < REMINDER_COOLDOWN_MS
-  )
+  if (lastReminderTime !== null && lastReminderTime >= latestInstructionTs)
     return false;
 
   // If instructions have not been delivered yet, let the polling loop deliver
