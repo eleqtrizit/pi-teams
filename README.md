@@ -199,6 +199,17 @@ Each teammate receives a custom system prompt including:
 - Model and thinking level information
 - Team environment guidelines
 
+### Non-Interactive Sessions (Run Hold)
+
+When the team-lead runs with `pi -p` (or `--mode json`), pi normally exits as soon as the lead's run settles, leaving spawned workers stranded. The extension holds the run open while the team is active:
+
+1. The lead spawns workers and ends its turn. The `agent_end` handler parks the run with no LLM activity.
+2. Worker messages arrive through the normal 1-second inbox poller and are queued as follow-ups.
+3. A queued message releases the hold and continues the run, waking the lead with the results.
+4. When every worker has reported back, the lead calls `team_shutdown` and the session exits normally.
+
+Worker boot also failed historically when the lead ran pi-teams from the repo itself: the spawned worker re-discovered a second pi-teams copy and exited on duplicate tool registration. Spawned workers now receive `"-ne -e <extension entry>"` and load exactly the parent session's copy. The hold releases when the team directory is removed, when the team has no workers, when no worker has been alive for three consecutive liveness checks, or when a follow-up is queued. Liveness uses the worker's pid file as the primary signal with pane probes as fallbacks. Decision logic lives in `src/utils/hold.ts`.
+
 ## Data Storage
 
 All team data is stored in `~/.pi/`:

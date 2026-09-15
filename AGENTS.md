@@ -23,6 +23,18 @@ A reminder can fire from two places (belt-and-suspenders): the `turn_end` handle
 
 **Important:** Delivery and reminders are fully automated — they do NOT involve LLM cycles for the polling itself. The system handles draining, marking delivered, and sending reminders programmatically.
 
+## Non-Interactive Sessions (Run Hold)
+
+When the team-lead runs with `pi -p` (or `--mode json`), pi exits as soon as the lead's run settles, which would strand spawned workers in their panes. The extension holds the run open instead:
+
+- While the team has live workers, the `agent_end` handler parks the run. No LLM activity happens while parked; worker messages arrive through the normal 1-second inbox poller and are queued as follow-ups. Sleeping is not involved — the hold happens in the extension, not in bash commands.
+- A queued worker message releases the hold and continues the run, waking the lead with the results.
+- The hold releases when the team directory is removed (`team_shutdown`), when the team has no workers, when no worker has been alive for three consecutive liveness checks (workers need a moment to boot), or when a follow-up is queued.
+- Idle workers do not release the hold. Completion is the lead's decision, made by calling `team_shutdown` when every teammate has reported back; the run then settles and the session exits normally.
+- Worker liveness uses the worker's pid file (written at its `session_start`, before its first turn) as the primary signal, with pane/window probes and the activity marker as fallbacks. Spawned workers load exactly the parent session's pi-teams copy via `"-ne -e <path>"`, which prevents duplicate tool registration when the lead runs pi-teams from a project-local package.
+
+The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `countLiveWorkers`, `shouldReleaseRun`, all unit-tested). Message polls run every second; worker liveness checks run every 5 seconds because terminal liveness probes shell out to the terminal multiplexer.
+
 ## Worker Types
 
 - **Regular workers** — full agents spawned by the team-lead with access to all tools.

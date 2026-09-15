@@ -14,6 +14,7 @@ import {
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Iterm2Adapter } from "../src/adapters/iterm2-adapter";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
@@ -26,6 +27,7 @@ import {
   type FlavoredModelsResult,
   type ModelFlavor,
 } from "../src/utils/flavoredModels";
+import * as holdRun from "../src/utils/hold";
 import { InboxMessage, Member } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
 import * as teams from "../src/utils/teams";
@@ -35,6 +37,28 @@ let availableModelsCache: Array<{ provider: string; model: string }> | null =
   null;
 let modelsCacheTime = 0;
 const MODELS_CACHE_TTL = 60000; // 1 minute
+
+// Absolute path of the pi-teams extension entry loaded into THIS session.
+// jiti provides __filename (and resolves import.meta.url) to the real module
+// file whether pi-teams runs from a git checkout, a package install, or a
+// standalone file. Spawned agents load exactly this entry with "-ne -e <path>"
+// so they share the parent session's pi-teams copy instead of re-discovering
+// it, which would double-register tools and fail to load.
+const EXTENSION_ENTRY: string =
+  typeof __filename !== "undefined" && __filename
+    ? __filename
+    : // @ts-expect-error: jiti resolves import.meta.url to the real module
+      // file at runtime; tsc rejects it because the package builds into CJS.
+      fileURLToPath(import.meta.url);
+
+/**
+ * CLI flags that make a spawned agent load exactly this extension instance.
+ * Discovery is disabled so no other pi-teams copy (settings package or
+ * project-local package) can register the same tools alongside it.
+ */
+function extensionLoadFlags(): string {
+  return `-ne -e "${EXTENSION_ENTRY}"`;
+}
 
 /**
  * Clear the available models cache. Useful for testing.
@@ -795,6 +819,10 @@ export default function (pi: ExtensionAPI) {
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentIdle = true;
   let isAgentRunning = false;
+  // Increments once a follow-up message has actually reached the agent's
+  // followUp queue. The agent_end hold loop watches this counter to decide
+  // when the run should continue with queued worker results.
+  let followUpEpoch = 0;
   const pendingInboxNotifications = new FollowUpMessageQueue();
 
   function clearInboxCheckInterval(): void {
@@ -835,7 +863,19 @@ export default function (pi: ExtensionAPI) {
     // message at the start of the agent's next natural turn boundary.
     // This avoids interrupting mid-turn operations while still providing
     // real-time context before the agent begins new work.
-    pi.sendUserMessage(message, { deliverAs: "followUp" });
+    void (async () => {
+      try {
+        // Increment only after the promise resolves: the agent_end hold loop
+        // must not observe the epoch change before the message has actually
+        // reached the agent's followUp queue.
+        await pi.sendUserMessage(message, { deliverAs: "followUp" });
+        followUpEpoch++;
+      } catch (_err) {
+        // A transient failure (for example compaction in progress) must not
+        // lose the message. Re-queue it so the next agent_end flush retries.
+        pendingInboxNotifications.enqueue(message);
+      }
+    })();
   }
 
   /**
@@ -1024,14 +1064,142 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  /**
+   * Resolve after the given delay.
+   *
+   * @param ms - Delay in milliseconds
+   */
+  function wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Decide liveness for one teammate. The pid file written at the member's
+   * session_start is the most reliable signal: it needs only a filesystem
+   * read plus a signal-0 probe, and it appears before the member's first
+   * turn so booting workers count as alive. Pane and window probes and the
+   * fresh activity marker remain as fallbacks.
+   *
+   * @param team - Name of the team the member belongs to
+   * @param member - Team member to evaluate
+   * @returns True when the member can still produce work or messages
+   */
+  function isMemberAlive(team: string, member: Member): boolean {
+    if (isProcessAlive(path.join(paths.teamDir(team), `${member.name}.pid`))) {
+      return true;
+    }
+    if (member.windowId && terminal?.isWindowAlive(member.windowId)) return true;
+    if (member.tmuxPaneId && terminal?.isAlive(member.tmuxPaneId)) return true;
+    return isAgentActive(team, member.name);
+  }
+
+  /**
+   * Check whether the process named by a pid file is still running.
+   *
+   * @param pidPath - Path to the pid file to probe
+   * @returns True when the process is alive
+   */
+  function isProcessAlive(pidPath: string): boolean {
+    if (!fs.existsSync(pidPath)) return false;
+    try {
+      const pid = parseInt(fs.readFileSync(pidPath, "utf-8").trim(), 10);
+      if (!Number.isFinite(pid)) return false;
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      // EPERM means the process exists but is owned by another user, which
+      // still counts as running.
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  /**
+   * Capture what the hold loop needs to know about a team's state. A config
+   * read error returns null so a transient file-lock wait never releases the
+   * run by mistake.
+   *
+   * @param team - Name of the team to evaluate
+   * @returns Team-liveness snapshot, or null when the config cannot be read
+   */
+  async function teamLivenessSnapshot(
+    team: string,
+  ): Promise<holdRun.TeamLivenessSnapshot | null> {
+    if (!teams.teamExists(team)) {
+      return { teamExists: false, workerCount: 0, liveWorkerCount: 0 };
+    }
+    try {
+      const config = await teams.readConfig(team);
+      const workers = config.members.filter((m) => m.name !== "team-lead");
+      return {
+        teamExists: true,
+        workerCount: workers.length,
+        liveWorkerCount: holdRun.countLiveWorkers(config, (member) =>
+          isMemberAlive(team, member),
+        ),
+      };
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  /**
+   * Hold the agent run open while the team is active so the host process does
+   * not exit before workers report back.
+   *
+   * In print-like host modes pi exits as soon as the run settles, which would
+   * strand spawned workers. Parking inside the agent_end handler keeps the run
+   * alive with no LLM activity between worker updates. When a worker message
+   * is queued as a followUp, the epoch counter changes, the hold releases, and
+   * agent.continue() wakes the lead with the queued results.
+   *
+   * @param ctx - Extension context providing the run mode and abort signal
+   * @param epochAtEntry - followUpEpoch value captured before pending inbox
+   *   notifications were flushed
+   */
+  async function holdRunOpenForActiveTeam(
+    ctx: ExtensionContext,
+    epochAtEntry: number,
+  ): Promise<void> {
+    if (
+      !holdRun.shouldHoldWhileTeamActive({
+        hasUI: ctx.hasUI,
+        isTeammate,
+        teamName,
+      })
+    ) {
+      return;
+    }
+    const activeTeam = teamName;
+    if (!activeTeam) return;
+
+    let livenessFailures = 0;
+    for (let poll = 0; ; poll++) {
+      if (followUpEpoch !== epochAtEntry) return;
+      if (poll % holdRun.RUN_HOLD_LIVENESS_POLL_EVERY === 0) {
+        const snapshot = await teamLivenessSnapshot(activeTeam);
+        if (snapshot !== null) {
+          livenessFailures =
+            snapshot.liveWorkerCount > 0 ? 0 : livenessFailures + 1;
+          if (holdRun.shouldReleaseRun(snapshot, livenessFailures)) return;
+        }
+      }
+      await wait(holdRun.RUN_HOLD_MESSAGE_POLL_MS);
+    }
+  }
+
   pi.on("agent_start", async () => {
     isAgentRunning = true;
     pendingInboxNotifications.clear();
   });
 
-  pi.on("agent_end", async () => {
+  pi.on("agent_end", async (_event, ctx) => {
     isAgentRunning = false;
+    // Capture before the flush: messages queued by the flush advance the
+    // epoch, so the hold releases immediately and the run continues with the
+    // queued worker results instead of batching them while parked.
+    const epochAtEntry = followUpEpoch;
     pendingInboxNotifications.flush(sendFollowUp);
+    await holdRunOpenForActiveTeam(ctx, epochAtEntry);
   });
 
   pi.on("turn_end", async () => {
@@ -1079,6 +1247,17 @@ export default function (pi: ExtensionAPI) {
 
   let firstTurn = true;
   pi.on("before_agent_start", async (event, ctx) => {
+    // Lead running in an auto-exit host mode: the extension holds the run open
+    // while the team is active. Tell the lead so it ends its turn instead of
+    // polling, and releases the session through team_shutdown when done.
+    if (!isTeammate && holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })) {
+      return {
+        systemPrompt:
+          event.systemPrompt +
+          `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call team_shutdown with the team name; the team closes and the session exits normally.`,
+      };
+    }
+
     if (isTeammate && firstTurn) {
       firstTurn = false;
 
@@ -1350,17 +1529,20 @@ export default function (pi: ExtensionAPI) {
         await teams.addMember(safeTeamName, member);
 
         const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        let piCmd = piBinary;
+        // Spawned agents must load exactly the pi-teams copy running in this
+        // session: without -ne they would re-discover it (settings package and
+        // project-local package) and fail to load on duplicate tool registration.
+        let piCmd = `${piBinary} ${extensionLoadFlags()}`;
 
         if (chosenModel) {
           // Use the combined --model provider/model:thinking format
           if (params.thinking) {
-            piCmd = `${piBinary} --model ${chosenModel}:${params.thinking}`;
+            piCmd = `${piCmd} --model ${chosenModel}:${params.thinking}`;
           } else {
-            piCmd = `${piBinary} --model ${chosenModel}`;
+            piCmd = `${piCmd} --model ${chosenModel}`;
           }
         } else if (params.thinking) {
-          piCmd = `${piBinary} --thinking ${params.thinking}`;
+          piCmd = `${piCmd} --thinking ${params.thinking}`;
         }
 
         const env: Record<string, string> = {
@@ -1532,7 +1714,7 @@ export default function (pi: ExtensionAPI) {
         await teams.addMember(safeTeamName, member);
 
         const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        const piCmd = `${piBinary} --model ${chosenModel} --tools read,grep,find,ls,send_message,broadcast_message`;
+        const piCmd = `${piBinary} ${extensionLoadFlags()} --model ${chosenModel} --tools read,grep,find,ls,send_message,broadcast_message`;
 
         const env: Record<string, string> = {
           ...process.env,
@@ -1634,10 +1816,10 @@ export default function (pi: ExtensionAPI) {
         const teamConfig = await teams.readConfig(safeTeamName);
         const cwd = params.cwd || process.cwd();
         const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        let piCmd = piBinary;
+        let piCmd = `${piBinary} ${extensionLoadFlags()}`;
         if (teamConfig.defaultModel) {
           // Use the combined --model provider/model format
-          piCmd = `${piBinary} --model ${teamConfig.defaultModel}`;
+          piCmd = `${piCmd} --model ${teamConfig.defaultModel}`;
         }
 
         const env = {
