@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Iterm2Adapter } from "../src/adapters/iterm2-adapter";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
+import { shQuote, type TerminalAdapter } from "../src/utils/terminal-adapter";
 import * as messaging from "../src/utils/messaging";
 import { updateLastAwokenTime } from "../src/utils/messaging";
 import * as flavoredModels from "../src/utils/flavoredModels";
@@ -203,12 +204,45 @@ function getProviderPriority(provider: string): number {
 }
 
 /**
- * Find the best matching provider for a given model name.
- * Returns the full provider/model string or null if not found.
+ * Compare two registry entries by provider priority, then provider name.
+ */
+function byProviderPriority(
+  a: { provider: string; model: string },
+  b: { provider: string; model: string },
+): number {
+  return (
+    getProviderPriority(a.provider) - getProviderPriority(b.provider) ||
+    a.provider.localeCompare(b.provider)
+  );
+}
+
+/**
+ * Resolve a model request to provider/model.
+ *
+ * Provider-prefixed requests resolve strictly within the named provider. Bare
+ * names walk a priority ladder: the flavored models from pi settings first
+ * (high/med/fast), then the session's scoped models (pi --models flag, or the
+ * enabledModels list when the flag is absent), then the entire registry. The
+ * fuzzy match runs only against the first non-empty group, so a configured
+ * group always wins: a flavored model is returned when any flavored model is
+ * set, and a scoped model is returned when any scoped model is set.
+ *
+ * @param modelName - The user's model request, bare or provider-prefixed
+ * @param modelRegistry - Registry providing available models
+ * @param scope - Ladder group overrides; groups are read from pi settings and
+ * the pi argv when omitted. Passing a group's key with an empty list means the
+ * group is unset and the tier is skipped.
+ * @returns The full provider/model string or null if not found
  */
 export function resolveModelWithProvider(
   modelName: string,
   modelRegistry: ModelRegistryLike,
+  scope?: {
+    /** Overrides the flavored-model group ids; pi settings are read when omitted */
+    flavoredModelIds?: string[];
+    /** Overrides the scoped-model patterns; pi's scope is read when omitted */
+    scopedPatterns?: string[];
+  },
 ): string | null {
   const availableModels = getAvailableModels(modelRegistry);
   if (availableModels.length === 0) {
@@ -250,43 +284,230 @@ export function resolveModelWithProvider(
 
   const lowerModelName = modelName.toLowerCase();
 
-  // Find all exact matches (case-insensitive) and sort by provider priority
-  const exactMatches = availableModels.filter(
-    (m) => m.model.toLowerCase() === lowerModelName,
-  );
+  // Resolution ladder: flavored models first, then the session's scoped
+  // models, then the entire registry. Each group resolves with exact,
+  // partial-token, and fuzzy matching; the first non-empty group wins and is
+  // never bypassed. Group overrides act as testing hooks: an empty list means
+  // the group is unset and pi settings are not consulted.
+  const groups: Array<Array<{ provider: string; model: string }>> = [
+    scope?.flavoredModelIds
+      ? buildFlavoredModelGroup(availableModels, scope.flavoredModelIds)
+      : getFlavoredModelGroup(availableModels),
+    scope?.scopedPatterns
+      ? buildScopedModelGroup(availableModels, scope.scopedPatterns)
+      : getScopedModelGroup(availableModels),
+    availableModels,
+  ];
+  for (const group of groups) {
+    if (group.length === 0) {
+      continue;
+    }
 
-  if (exactMatches.length > 0) {
-    // Sort by provider priority (lower index = higher priority)
-    exactMatches.sort((a, b) => {
-      return (
-        getProviderPriority(a.provider) - getProviderPriority(b.provider) ||
-        a.provider.localeCompare(b.provider)
-      );
-    });
-    return `${exactMatches[0].provider}/${exactMatches[0].model}`;
-  }
-
-  const queryTokens = tokenizeForSearch(modelName);
-
-  // Try partial/token match (model name contains all query tokens)
-  const partialMatches = availableModels
-    .filter((m) => {
-      const normalizedModel = normalizeForSearch(m.model);
-      return queryTokens.every((token) => normalizedModel.includes(token));
-    })
-    .sort(
-      (a, b) =>
-        getProviderPriority(a.provider) - getProviderPriority(b.provider) ||
-        a.provider.localeCompare(b.provider),
+    // Find exact matches (case-insensitive) and sort by provider priority
+    const exactMatches = group.filter(
+      (m) => m.model.toLowerCase() === lowerModelName,
     );
+    if (exactMatches.length > 0) {
+      exactMatches.sort(byProviderPriority);
+      return `${exactMatches[0].provider}/${exactMatches[0].model}`;
+    }
 
-  if (partialMatches.length > 0) {
-    return `${partialMatches[0].provider}/${partialMatches[0].model}`;
+    const queryTokens = tokenizeForSearch(modelName);
+
+    // Try partial/token match (model name contains all query tokens)
+    const partialMatches = group
+      .filter((m) => {
+        const normalizedModel = normalizeForSearch(m.model);
+        return queryTokens.every((token) => normalizedModel.includes(token));
+      })
+      .sort(byProviderPriority);
+    if (partialMatches.length > 0) {
+      return `${partialMatches[0].provider}/${partialMatches[0].model}`;
+    }
+
+    // Fall back to composite-aware token matching within this group only
+    const topMatches = getTopModelsFromList(group, modelName, 1);
+    if (topMatches.length > 0) {
+      return topMatches[0].model;
+    }
   }
+  return null;
+}
 
-  // Fall back to composite-aware token matching via getTopModelMatches
-  const topMatches = getTopModelMatches(modelName, modelRegistry, 1);
-  return topMatches.length > 0 ? topMatches[0].model : null;
+/**
+ * Map flavored model ids to registry-available models.
+ *
+ * Flavored ids are pi settings' high/med/fast entries; each id matches either
+ * the "provider/modelId" pair or the bare model id, case-insensitively.
+ *
+ * @param availableModels - Registry-available models
+ * @param flavoredIds - Flavored model ids from pi settings
+ * @returns The registry-available flavored models, deduplicated
+ */
+export function buildFlavoredModelGroup(
+  availableModels: Array<{ provider: string; model: string }>,
+  flavoredIds: string[],
+): Array<{ provider: string; model: string }> {
+  const flavored = new Set(
+    flavoredIds.map((id) => id.toLowerCase()).filter(Boolean),
+  );
+  if (flavored.size === 0) {
+    return [];
+  }
+  const group: Array<{ provider: string; model: string }> = [];
+  const seen = new Set<string>();
+  for (const entry of availableModels) {
+    const fullId = `${entry.provider}/${entry.model}`.toLowerCase();
+    if (!flavored.has(fullId) && !flavored.has(entry.model.toLowerCase())) {
+      continue;
+    }
+    if (seen.has(fullId)) {
+      continue;
+    }
+    seen.add(fullId);
+    group.push(entry);
+  }
+  return group;
+}
+
+/**
+ * Match a scoped-model pattern against a registry entry.
+ *
+ * Patterns are case-insensitive, support * and ? globs, and may end in a
+ * ":thinking-level" suffix which is ignored for matching. pi's own
+ * minimatch-based scope additionally supports char classes; this matcher
+ * compares those characters literally.
+ *
+ * @param pattern - Scoped-model pattern from the pi session
+ * @param entry - Registry entry to match
+ * @returns True when the pattern matches the entry
+ */
+export function scopedPatternMatches(
+  pattern: string,
+  entry: { provider: string; model: string },
+): boolean {
+  let core = pattern;
+  const colonIdx = core.lastIndexOf(":");
+  if (colonIdx !== -1) {
+    const suffix = core.substring(colonIdx + 1).toLowerCase();
+    if (["off", "minimal", "low", "medium", "high"].includes(suffix)) {
+      core = core.substring(0, colonIdx);
+    }
+  }
+  const lowerCore = core.toLowerCase();
+  const fullId = `${entry.provider}/${entry.model}`.toLowerCase();
+  const modelId = entry.model.toLowerCase();
+  if (lowerCore.includes("*") || lowerCore.includes("?")) {
+    return (
+      globMatchesPattern(lowerCore, fullId) ||
+      globMatchesPattern(lowerCore, modelId)
+    );
+  }
+  return fullId === lowerCore || modelId === lowerCore;
+}
+
+/** Convert a glob pattern with * and ? wildcards into a matcher function. */
+function globMatchesPattern(pattern: string, value: string): boolean {
+  const regex = new RegExp(
+    `^${pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".")}$`,
+  );
+  return regex.test(value);
+}
+
+/**
+ * Map scoped-model patterns to registry-available models.
+ *
+ * @param availableModels - Registry-available models
+ * @param patterns - Scoped-model patterns from the pi session
+ * @returns The registry-available scoped models, deduplicated
+ */
+export function buildScopedModelGroup(
+  availableModels: Array<{ provider: string; model: string }>,
+  patterns: string[],
+): Array<{ provider: string; model: string }> {
+  if (patterns.length === 0) {
+    return [];
+  }
+  const group: Array<{ provider: string; model: string }> = [];
+  const seen = new Set<string>();
+  for (const entry of availableModels) {
+    if (!patterns.some((pattern) => scopedPatternMatches(pattern, entry))) {
+      continue;
+    }
+    const key = `${entry.provider}/${entry.model}`.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    group.push(entry);
+  }
+  return group;
+}
+
+/**
+ * Build the flavored-model group: the high/med/fast flavor lists from pi
+ * settings.json mapped to registry-available models.
+ *
+ * @param availableModels - Registry-available models
+ * @returns Group models, or an empty group when no flavors are set
+ */
+function getFlavoredModelGroup(
+  availableModels: Array<{ provider: string; model: string }>,
+): Array<{ provider: string; model: string }> {
+  try {
+    const flavors = flavoredModels.readFlavoredModels();
+    return buildFlavoredModelGroup(availableModels, [
+      ...flavors.high,
+      ...flavors.med,
+      ...flavors.fast,
+    ]);
+  } catch (_e) {
+    // Malformed settings leave the group empty and the ladder falls through.
+    return [];
+  }
+}
+
+/**
+ * Build the scoped-model group: the pi session's scoped models mapped to
+ * registry-available models.
+ *
+ * @param availableModels - Registry-available models
+ * @returns Group models, or an empty group when no scoped models are set
+ */
+function getScopedModelGroup(
+  availableModels: Array<{ provider: string; model: string }>,
+): Array<{ provider: string; model: string }> {
+  return buildScopedModelGroup(availableModels, getScopedModelPatterns());
+}
+
+/**
+ * Read the pi session's scoped model patterns.
+ *
+ * The scope always exists: pi resolves --models patterns when the session was
+ * launched with the flag, and otherwise falls back to the enabledModels list
+ * from pi settings.json.
+ *
+ * @returns The scoped-model patterns, or an empty array when none are configured
+ */
+function getScopedModelPatterns(): string[] {
+  const argv = process.argv;
+  for (let index = 0; index < argv.length; index++) {
+    if (argv[index] === "--models" && index + 1 < argv.length) {
+      return argv[index + 1]
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
+  }
+  try {
+    return flavoredModels.readEnabledModels();
+  } catch (_e) {
+    // Missing or malformed enabledModels leaves the scope empty.
+    return [];
+  }
 }
 
 /**
@@ -484,29 +705,29 @@ function matchQuality(queryTokens: string[], collapsed: string): number {
 }
 
 /**
- * Find top model matches by substring relevance and Levenshtein distance.
+ * Find top model matches from an explicit model list by substring relevance
+ * and Levenshtein distance.
  *
  * Matching is done by collapsing "provider/model" into a single lowercase
  * alphanumeric string and checking whether each query token appears as a
  * substring. Tokens that are composites like "35b" or "qwen3" are also
  * split on letter/number boundaries so their parts can match individually.
  *
- * :param modelName: The user's free-form query string
- * :param modelRegistry: Registry providing available models
- * :param limit: Maximum number of results to return
- * :return: Array of { model, distance } sorted by relevance
+ * @param models - The models to search
+ * @param modelName - The user's free-form query string
+ * @param limit - Maximum number of results to return
+ * @returns Array of { model, distance } sorted by relevance
  */
-export function getTopModelMatches(
+function getTopModelsFromList(
+  models: Array<{ provider: string; model: string }>,
   modelName: string,
-  modelRegistry: ModelRegistryLike,
   limit = 5,
 ): Array<{ model: string; distance: number }> {
   const query = modelName.trim().toLowerCase();
   const queryTokens = tokenizeQuery(query);
   const normalizedQuery = normalizeForSearch(query);
-  const available = getAvailableModels(modelRegistry);
 
-  return available
+  return models
     .map((m) => {
       const fullId = `${m.provider}/${m.model}`;
       const collapsedFull = collapse(fullId);
@@ -551,6 +772,26 @@ export function getTopModelMatches(
     )
     .map(({ model, distance }) => ({ model, distance }))
     .slice(0, limit);
+}
+
+/**
+ * Find top model matches by substring relevance and Levenshtein distance.
+ *
+ * @param modelName - The user's free-form query string
+ * @param modelRegistry - Registry providing available models
+ * @param limit - Maximum number of results to return
+ * @returns Array of { model, distance } sorted by relevance
+ */
+export function getTopModelMatches(
+  modelName: string,
+  modelRegistry: ModelRegistryLike,
+  limit = 5,
+): Array<{ model: string; distance: number }> {
+  return getTopModelsFromList(
+    getAvailableModels(modelRegistry),
+    modelName,
+    limit,
+  );
 }
 
 /**
@@ -808,6 +1049,302 @@ async function handleFlavoredModelsCommand(
   }
 }
 
+/** Closing instruction appended to every insta-worker task prompt. */
+export const INSTA_WORKER_INSTRUCTION =
+  "When done, send message to the team-lead reporting back your results. Then, run close_myself tool to signal you are finished.";
+
+/** Name prefix shared by insta teams and insta workers. */
+export const INSTA_NAME_PREFIX = "insta-";
+
+/** Tools granted to read-only workers at spawn and reported in spawn results. */
+export const READONLY_WORKER_TOOLS = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "send_message",
+  "broadcast_message",
+  "close_myself",
+] as const;
+
+/**
+ * Split an insta-worker command's arguments into the model request and the
+ * task prompt. The model request is the first whitespace-separated token;
+ * everything after it is the prompt.
+ *
+ * @param args - Raw command argument string
+ * @returns The model request and prompt, or null when args are empty
+ */
+export function parseInstaWorkerArgs(
+  args: string,
+): { modelRequest: string; prompt: string } | null {
+  const trimmed = args.trim();
+  if (!trimmed) return null;
+  const spaceIndex = trimmed.indexOf(" ");
+  if (spaceIndex === -1) {
+    return { modelRequest: trimmed, prompt: "" };
+  }
+  return {
+    modelRequest: trimmed.slice(0, spaceIndex),
+    prompt: trimmed.slice(spaceIndex + 1).trim(),
+  };
+}
+
+/**
+ * Derive a message subject from a task prompt: its first line, capped at 60
+ * characters.
+ *
+ * @param prompt - Raw task prompt text
+ * @returns The first prompt line, truncated to 60 characters when longer
+ */
+export function instaWorkerSubject(prompt: string): string {
+  const line = prompt.split("\n")[0].trim();
+  return line.length > 60 ? line.slice(0, 60) : line;
+}
+
+/**
+ * Derive a unique worker name inside a team from an insta stamp.
+ *
+ * @param taken - Names already used by team members
+ * @param now - Current timestamp used to stamp the name
+ * @returns A worker name that is not present in taken
+ */
+export function uniqueInstaWorkerName(
+  taken: Set<string>,
+  now: number = Date.now(),
+): string {
+  const base = `${INSTA_NAME_PREFIX}${now.toString(36)}`;
+  let name = base;
+  let suffix = 0;
+  while (taken.has(name)) {
+    suffix++;
+    name = `${base}-${suffix}`;
+  }
+  return name;
+}
+
+/**
+ * Decide the team for an insta-worker run.
+ *
+ * Reuses the session's active team when it still exists so every insta worker
+ * reports into the team the lead polls; otherwise produces a fresh unique
+ * team name for creation.
+ *
+ * @param currentTeam - The session's current team name, or undefined
+ * @param teamExists - Predicate for whether a team exists on disk
+ * @param now - Current timestamp used to stamp a fresh team name
+ * @returns The team to use and whether it still needs to be created
+ */
+export function resolveInstaTeam(
+  currentTeam: string | undefined,
+  teamExists: (team: string) => boolean,
+  now: number = Date.now(),
+): { team: string; created: boolean } {
+  if (currentTeam && teamExists(currentTeam)) {
+    return { team: currentTeam, created: false };
+  }
+  return { team: `${INSTA_NAME_PREFIX}${now.toString(36)}`, created: true };
+}
+
+/**
+ * Resolve an insta-worker's model request to provider/model.
+ *
+ * A request matching "default" passes through; the spawn path resolves it to
+ * the team-lead's current model. Any other bare name resolves through the
+ * resolveModelWithProvider ladder: flavored models first, then the session's
+ * scoped models, then the entire registry. The best matches are returned
+ * alongside the resolved model for caller messaging.
+ *
+ * @param modelRequest - Raw model input from the command
+ * @param modelRegistry - Registry providing available models
+ * @param scope - Ladder group overrides passed through to the resolver
+ * @returns The resolved provider/model (null when unresolvable) and best matches
+ */
+export function resolveInstaModel(
+  modelRequest: string,
+  modelRegistry: ModelRegistryLike,
+  scope?: Parameters<typeof resolveModelWithProvider>[2],
+): { resolved: string | null; matches: string[] } {
+  if (/default/i.test(modelRequest)) {
+    return { resolved: modelRequest, matches: [] };
+  }
+  return {
+    resolved: resolveModelWithProvider(modelRequest, modelRegistry, scope),
+    matches: getTopModelMatches(modelRequest, modelRegistry, 5).map(
+      (m) => m.model,
+    ),
+  };
+}
+
+/**
+ * Resolve the worker's model from raw spawn input.
+ *
+ * An undefined request or one matching "default" falls back to the team-lead's
+ * current model. Any other request must be fully qualified as provider/model
+ * and present in the model registry.
+ *
+ * @param ctx - Extension context providing the current model and registry
+ * @param modelRequest - Raw model input from the caller, or undefined
+ * @returns The fully qualified provider/model for the worker
+ * @throws If no model resolves or the request is not registry-qualified
+ */
+export function resolveSpawnModel(
+  ctx: ExtensionContext,
+  modelRequest: string | undefined,
+): string {
+  const defaultModel = ctx.model
+    ? `${ctx.model.provider}/${ctx.model.id}`
+    : null;
+  let chosenModel = modelRequest?.trim();
+  if (!chosenModel || /default/i.test(chosenModel)) {
+    chosenModel = defaultModel ?? undefined;
+  }
+  if (!chosenModel) {
+    throw new Error(
+      "No model is available for the worker. Pass an explicit model or " +
+        "ensure the team-lead has a model configured.",
+    );
+  }
+  if (!chosenModel.includes("/")) {
+    throw new Error(
+      `Model '${chosenModel}' is not fully qualified. ` +
+        `Use resolve_model(model_name="${chosenModel}") first, then pass ` +
+        `the returned provider/model value.`,
+    );
+  }
+  const slashIndex = chosenModel.indexOf("/");
+  const provider = chosenModel.slice(0, slashIndex).toLowerCase();
+  const modelId = chosenModel.slice(slashIndex + 1).toLowerCase();
+  const isAvailable = getAvailableModels(ctx.modelRegistry).some(
+    (m) =>
+      m.provider.toLowerCase() === provider &&
+      m.model.toLowerCase() === modelId,
+  );
+  if (!isAvailable) {
+    throw new Error(
+      `Model '${chosenModel}' is not available in the current registry. ` +
+        `Use resolve_model(model_name="...") to find a valid provider/model value.`,
+    );
+  }
+  return chosenModel;
+}
+
+/**
+ * Build the pi launch command and member identity for a spawned worker.
+ *
+ * Read-only workers receive the restricted tool list; teammates honor the
+ * thinking level in the combined --model provider/model:thinking form.
+ *
+ * @param goals - Worker goals including readonlyWorker and thinking
+ * @param chosenModel - Fully qualified provider/model resolved for the worker
+ * @returns The launch command and the member agent type
+ */
+function buildWorkerCommand(
+  goals: {
+    readonlyWorker: boolean;
+    thinking?: "off" | "minimal" | "low" | "medium" | "high";
+  },
+  chosenModel: string,
+): { piCmd: string; agentType: "teammate" | "readonly-worker" } {
+  const agentType = goals.readonlyWorker ? "readonly-worker" : "teammate";
+  // Spawned agents must load exactly the pi-teams copy running in this
+  // session: without -ne they would re-discover it (settings package and
+  // project-local package) and fail to load on duplicate tool registration.
+  // Use the combined --model provider/model:thinking format.
+  const piBinary = process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
+  let piCmd = `${piBinary} ${extensionLoadFlags()} --model ${shQuote(chosenModel)}`;
+  if (!goals.readonlyWorker && goals.thinking) {
+    piCmd = `${piCmd}:${goals.thinking}`;
+  }
+  if (goals.readonlyWorker) {
+    piCmd = `${piCmd} --tools ${READONLY_WORKER_TOOLS.join(",")}`;
+  }
+  return { piCmd, agentType };
+}
+
+/**
+ * Launch a worker process through the terminal adapter.
+ *
+ * Spawns a separate OS window when requested; otherwise spawns a pane next to
+ * the last matching teammate pane in iTerm2.
+ *
+ * @param terminal - Detected terminal adapter
+ * @param args - Launch details: sanitized names, command, environment, and team members
+ * @returns The spawned terminal id (a window id or a pane id)
+ */
+function spawnWorkerProcess(
+  terminal: TerminalAdapter,
+  args: {
+    teamName: string;
+    name: string;
+    cwd: string;
+    piCmd: string;
+    env: Record<string, string>;
+    members: Member[];
+    useSeparateWindow: boolean;
+    readonlyWorker: boolean;
+  },
+): string {
+  if (args.useSeparateWindow) {
+    return terminal.spawnWindow({
+      name: args.name,
+      cwd: args.cwd,
+      command: args.piCmd,
+      env: args.env,
+      teamName: args.teamName,
+    });
+  }
+  if (terminal instanceof Iterm2Adapter) {
+    // iTerm2 panes spawn next to the last teammate pane; read-only workers
+    // also follow teammates.
+    const candidates = args.members.filter(
+      (m) =>
+        m.tmuxPaneId.startsWith("iterm_") &&
+        (args.readonlyWorker || m.agentType === "teammate"),
+    );
+    const lastCandidate =
+      candidates.length > 0 ? candidates[candidates.length - 1] : null;
+    terminal.setSpawnContext(
+      lastCandidate?.tmuxPaneId
+        ? { lastSessionId: lastCandidate.tmuxPaneId.replace("iterm_", "") }
+        : {},
+    );
+  }
+  return terminal.spawn({
+    name: args.name,
+    cwd: args.cwd,
+    command: args.piCmd,
+    env: args.env,
+  });
+}
+
+/**
+ * Pre-seed a worker's state files before its terminal process starts.
+ *
+ * Stamping the first-activation file makes the worker's session_start skip the
+ * inbox-deletion cleanup, so messages delivered to the worker before or during
+ * its boot are preserved.
+ *
+ * @param safeTeamName - Sanitized team name
+ * @param safeName - Sanitized worker name
+ */
+function seedWorkerStateFiles(safeTeamName: string, safeName: string): void {
+  const firstActivationFile = paths.firstActivationPath(
+    safeTeamName,
+    safeName,
+  );
+  const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
+  const lastReportFile = paths.lastReportPath(safeTeamName, safeName);
+  const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
+  const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
+  if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
+  if (fs.existsSync(lastReportFile)) fs.unlinkSync(lastReportFile);
+  if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
+  if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
+  fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
+  fs.writeFileSync(firstActivationFile, Date.now().toString());
+}
+
 export default function (pi: ExtensionAPI) {
   const isTeammate = !!process.env.PI_AGENT_NAME;
   const agentType = process.env.PI_AGENT_TYPE || "lead";
@@ -823,6 +1360,101 @@ export default function (pi: ExtensionAPI) {
   const isWorker =
     (agentType === "teammate" || agentType === "readonly-worker") &&
     agentName !== "team-lead";
+
+  // ── Spawn plumbing ────────────────────────────────────────────────────
+  // spawn_teammate, spawn_readonly_worker, and the insta-worker commands all
+  // share this path: model resolution, member record, state pre-seed, then
+  // launch through the terminal adapter.
+
+  interface SpawnWorkerGoals {
+    team: string;
+    name: string;
+    cwd: string;
+    /** Raw model input: undefined or "default" resolves to the lead's model */
+    modelRequest?: string;
+    thinking?: "off" | "minimal" | "low" | "medium" | "high";
+    separateWindow?: boolean;
+    readonlyWorker: boolean;
+  }
+
+  interface SpawnedWorker {
+    member: Member;
+    terminalId: string;
+    isWindow: boolean;
+    model: string;
+  }
+
+  async function spawnTeamWorker(
+    ctx: ExtensionContext,
+    goals: SpawnWorkerGoals,
+  ): Promise<SpawnedWorker> {
+    const safeName = paths.sanitizeName(goals.name);
+    const safeTeamName = paths.sanitizeName(goals.team);
+    if (!teams.teamExists(safeTeamName)) {
+      throw new Error(`Team ${goals.team} does not exist`);
+    }
+    if (!terminal) {
+      throw new Error("No terminal adapter detected.");
+    }
+    const teamConfig = await teams.readConfig(safeTeamName);
+    const model = resolveSpawnModel(ctx, goals.modelRequest);
+    const useSeparateWindow =
+      !goals.readonlyWorker &&
+      (goals.separateWindow ?? teamConfig.separateWindows ?? false);
+    if (useSeparateWindow && !terminal.supportsWindows()) {
+      throw new Error(
+        `Separate windows mode is not supported in ${terminal.name}.`,
+      );
+    }
+
+    const { piCmd, agentType } = buildWorkerCommand(goals, model);
+    const member: Member = {
+      agentId: `${safeName}@${safeTeamName}`,
+      name: safeName,
+      agentType,
+      model,
+      joinedAt: Date.now(),
+      tmuxPaneId: "",
+      cwd: goals.cwd,
+      subscriptions: [],
+      color: goals.readonlyWorker ? "green" : "blue",
+      thinking: goals.readonlyWorker ? undefined : goals.thinking,
+    };
+    await teams.addMember(safeTeamName, member);
+
+    const env: Record<string, string> = {
+      ...process.env,
+      PI_TEAM_NAME: safeTeamName,
+      PI_AGENT_NAME: safeName,
+      PI_AGENT_TYPE: agentType,
+    };
+    seedWorkerStateFiles(safeTeamName, safeName);
+
+    let terminalId = "";
+    try {
+      terminalId = spawnWorkerProcess(terminal, {
+        teamName: safeTeamName,
+        name: safeName,
+        cwd: goals.cwd,
+        piCmd,
+        env,
+        members: teamConfig.members,
+        useSeparateWindow,
+        readonlyWorker: goals.readonlyWorker,
+      });
+    } catch (e) {
+      throw new Error(
+        `Failed to spawn ${terminal.name} ${useSeparateWindow ? "window" : "pane"}: ${e}`,
+      );
+    }
+    await teams.updateMember(
+      safeTeamName,
+      safeName,
+      useSeparateWindow ? { windowId: terminalId } : { tmuxPaneId: terminalId },
+    );
+
+    return { member, terminalId, isWindow: useSeparateWindow, model };
+  }
 
   const terminal = getTerminalAdapter();
   let inboxCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -1355,7 +1987,7 @@ export default function (pi: ExtensionAPI) {
       description:
         'Resolve a provider/model name for use in spawn_teammate. ALWAYS provide the full <provider>/<model> format (e.g., "anthropic/claude-sonnet-4-20250514", "bighank/Qwen35Coder-35B-NoThinking"). ' +
         'To find what provider/model pairs are available: call get_available_models() or use "DEFAULT MODEL" which is the team-leader\'s own model. ' +
-        "This tool ONLY searches within the specified provider when a provider prefix is given. If no match is found, try a different provider or use DEFAULT MODEL.",
+        "This tool ONLY searches within the specified provider when a provider prefix is given. Bare names resolve through a priority ladder: flavored models from pi settings first, then the scoped models (pi --models flag or the enabledModels list), then the full registry. If no match is found, try a different provider or use DEFAULT MODEL.",
       parameters: asPiToolSchema(
         Type.Object({
           model_name: Type.String(),
@@ -1440,185 +2072,27 @@ export default function (pi: ExtensionAPI) {
         }),
       ) as any,
       async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-        const safeName = paths.sanitizeName(params.name);
-        const safeTeamName = paths.sanitizeName(params.team_name);
-
-        if (!teams.teamExists(safeTeamName)) {
-          throw new Error(`Team ${params.team_name} does not exist`);
-        }
-
-        if (!terminal) {
-          throw new Error("No terminal adapter detected.");
-        }
-
-        const teamConfig = await teams.readConfig(safeTeamName);
-        let chosenModel = params.model?.trim();
-
-        // If model is not provided or contains "default" (case-insensitive), use the team-leader's model from context
-        if (!chosenModel || /default/i.test(chosenModel)) {
-          const defaultModel = ctx.model
-            ? `${ctx.model.provider}/${ctx.model.id}`
-            : null;
-          if (defaultModel) {
-            chosenModel = defaultModel;
-          }
-        }
-
-        if (!chosenModel) {
-          throw new Error(
-            "spawn_teammate requires a model. " +
-              "Either provide one explicitly or ensure the team-leader has a model configured.",
-          );
-        }
-
-        // Spawn tool only accepts fully-qualified provider/model values.
-        // Use resolve_model first to resolve aliases like "haiku".
-        if (!chosenModel.includes("/")) {
-          throw new Error(
-            `Model '${chosenModel}' is not fully qualified. ` +
-              `Use resolve_model(model_name="${chosenModel}") and pass the returned provider/model value to spawn_teammate.`,
-          );
-        }
-
-        const slashIndex = chosenModel.indexOf("/");
-        const provider = chosenModel.slice(0, slashIndex).toLowerCase();
-        const modelId = chosenModel.slice(slashIndex + 1).toLowerCase();
-        const isAvailable = getAvailableModels(ctx.modelRegistry).some(
-          (m) =>
-            m.provider.toLowerCase() === provider &&
-            m.model.toLowerCase() === modelId,
-        );
-        if (!isAvailable) {
-          throw new Error(
-            `Model '${chosenModel}' is not available in the current registry. ` +
-              `Use resolve_model(model_name="...") to find a valid provider/model value.`,
-          );
-        }
-
-        const useSeparateWindow =
-          params.separate_window ?? teamConfig.separateWindows ?? false;
-        if (useSeparateWindow && !terminal.supportsWindows()) {
-          throw new Error(
-            `Separate windows mode is not supported in ${terminal.name}.`,
-          );
-        }
-
-        const member: Member = {
-          agentId: `${safeName}@${safeTeamName}`,
-          name: safeName,
-          agentType: "teammate",
-          model: chosenModel,
-          joinedAt: Date.now(),
-          tmuxPaneId: "",
+        const spawned = await spawnTeamWorker(ctx, {
+          team: params.team_name,
+          name: params.name,
           cwd: params.cwd,
-          subscriptions: [],
-          color: "blue",
+          modelRequest: params.model,
           thinking: params.thinking,
-        };
-
-        await teams.addMember(safeTeamName, member);
-
-        const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        // Spawned agents must load exactly the pi-teams copy running in this
-        // session: without -ne they would re-discover it (settings package and
-        // project-local package) and fail to load on duplicate tool registration.
-        let piCmd = `${piBinary} ${extensionLoadFlags()}`;
-
-        if (chosenModel) {
-          // Use the combined --model provider/model:thinking format
-          if (params.thinking) {
-            piCmd = `${piCmd} --model ${chosenModel}:${params.thinking}`;
-          } else {
-            piCmd = `${piCmd} --model ${chosenModel}`;
-          }
-        } else if (params.thinking) {
-          piCmd = `${piCmd} --thinking ${params.thinking}`;
-        }
-
-        const env: Record<string, string> = {
-          ...process.env,
-          PI_TEAM_NAME: safeTeamName,
-          PI_AGENT_NAME: safeName,
-          PI_AGENT_TYPE: "teammate",
-        };
-
-        // Stamp firstActivationFile and clear stale state files BEFORE spawning
-        // the terminal process.  This guarantees session_start sees the file and
-        // skips the inbox-deletion cleanup even if the team-lead sends a message
-        // between spawn_teammate returning and the worker's session_start firing.
-        const firstActivationFile = paths.firstActivationPath(
-          safeTeamName,
-          safeName,
-        );
-        const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
-        const lastReportFile = paths.lastReportPath(safeTeamName, safeName);
-        const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
-        const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
-        if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
-        if (fs.existsSync(lastReportFile)) fs.unlinkSync(lastReportFile);
-        if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
-        if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
-        fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
-        fs.writeFileSync(firstActivationFile, Date.now().toString());
-
-        let terminalId = "";
-        let isWindow = false;
-
-        try {
-          if (useSeparateWindow) {
-            isWindow = true;
-            terminalId = terminal.spawnWindow({
-              name: safeName,
-              cwd: params.cwd,
-              command: piCmd,
-              env: env,
-              teamName: safeTeamName,
-            });
-            await teams.updateMember(safeTeamName, safeName, {
-              windowId: terminalId,
-            });
-          } else {
-            if (terminal instanceof Iterm2Adapter) {
-              const teammates = teamConfig.members.filter(
-                (m) =>
-                  m.agentType === "teammate" &&
-                  m.tmuxPaneId.startsWith("iterm_"),
-              );
-              const lastTeammate =
-                teammates.length > 0 ? teammates[teammates.length - 1] : null;
-              if (lastTeammate?.tmuxPaneId) {
-                terminal.setSpawnContext({
-                  lastSessionId: lastTeammate.tmuxPaneId.replace("iterm_", ""),
-                });
-              } else {
-                terminal.setSpawnContext({});
-              }
-            }
-
-            terminalId = terminal.spawn({
-              name: safeName,
-              cwd: params.cwd,
-              command: piCmd,
-              env: env,
-            });
-            await teams.updateMember(safeTeamName, safeName, {
-              tmuxPaneId: terminalId,
-            });
-          }
-        } catch (e) {
-          throw new Error(
-            `Failed to spawn ${terminal.name} ${isWindow ? "window" : "pane"}: ${e}`,
-          );
-        }
-
+          separateWindow: params.separate_window,
+          readonlyWorker: false,
+        });
         return {
           content: [
             {
               type: "text",
-              text: `Teammate ${params.name} spawned in ${isWindow ? "window" : "pane"} ${terminalId}.`,
+              text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId}.`,
             },
           ],
-          details: { agentId: member.agentId, terminalId, isWindow },
+          details: {
+            agentId: spawned.member.agentId,
+            terminalId: spawned.terminalId,
+            isWindow: spawned.isWindow,
+          },
         };
       },
     });
@@ -1650,136 +2124,24 @@ export default function (pi: ExtensionAPI) {
         }),
       ) as any,
       async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-        const safeName = paths.sanitizeName(params.name);
-        const safeTeamName = paths.sanitizeName(params.team_name);
-
-        if (!teams.teamExists(safeTeamName)) {
-          throw new Error(`Team ${params.team_name} does not exist`);
-        }
-
-        if (!terminal) {
-          throw new Error("No terminal adapter detected.");
-        }
-
-        const teamConfig = await teams.readConfig(safeTeamName);
-
-        // Use the requested model if fully qualified, else the team lead's model
-        let chosenModel: string | null = null;
-        const requested = params.model?.trim();
-        if (requested && !/default/i.test(requested)) {
-          if (!requested.includes("/")) {
-            throw new Error(
-              `Model '${requested}' is not fully qualified. ` +
-                `Use resolve_model(model_name="${requested}") first, then pass ` +
-                `the returned provider/model value.`,
-            );
-          }
-          chosenModel = requested;
-        }
-        const defaultModel = ctx.model
-          ? `${ctx.model.provider}/${ctx.model.id}`
-          : null;
-        if (!chosenModel) {
-          chosenModel = defaultModel;
-        }
-        if (!chosenModel) {
-          throw new Error(
-            "Cannot spawn read-only worker: no model configured. " +
-              "Ensure the team-leader has a model configured or pass model explicitly.",
-          );
-        }
-
-        const member: Member = {
-          agentId: `${safeName}@${safeTeamName}`,
-          name: safeName,
-          agentType: "readonly-worker",
-          model: chosenModel,
-          joinedAt: Date.now(),
-          tmuxPaneId: "",
+        const spawned = await spawnTeamWorker(ctx, {
+          team: params.team_name,
+          name: params.name,
           cwd: params.cwd,
-          subscriptions: [],
-          color: "green",
-        };
-
-        await teams.addMember(safeTeamName, member);
-
-        const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        const piCmd = `${piBinary} ${extensionLoadFlags()} --model ${chosenModel} --tools read,grep,find,ls,send_message,broadcast_message,close_myself`;
-
-        const env: Record<string, string> = {
-          ...process.env,
-          PI_TEAM_NAME: safeTeamName,
-          PI_AGENT_NAME: safeName,
-          PI_AGENT_TYPE: "readonly-worker",
-        };
-
-        // Stamp firstActivationFile and clear stale state files BEFORE spawning
-        const firstActivationFile = paths.firstActivationPath(
-          safeTeamName,
-          safeName,
-        );
-        const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
-        const lastReportFile = paths.lastReportPath(safeTeamName, safeName);
-        const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
-        const lastReminderFile = paths.lastReminderPath(safeTeamName, safeName);
-        if (fs.existsSync(lastMessageFile)) fs.unlinkSync(lastMessageFile);
-        if (fs.existsSync(lastReportFile)) fs.unlinkSync(lastReportFile);
-        if (fs.existsSync(lastAwokenFile)) fs.unlinkSync(lastAwokenFile);
-        if (fs.existsSync(lastReminderFile)) fs.unlinkSync(lastReminderFile);
-        fs.mkdirSync(path.dirname(firstActivationFile), { recursive: true });
-        fs.writeFileSync(firstActivationFile, Date.now().toString());
-
-        let terminalId = "";
-
-        try {
-          if (terminal instanceof Iterm2Adapter) {
-            const teammates = teamConfig.members.filter(
-              (m) =>
-                m.agentType === "teammate" || m.agentType === "readonly-worker",
-            );
-            const lastTeammate =
-              teammates.length > 0 ? teammates[teammates.length - 1] : null;
-            if (lastTeammate?.tmuxPaneId) {
-              terminal.setSpawnContext({
-                lastSessionId: lastTeammate.tmuxPaneId.replace("iterm_", ""),
-              });
-            } else {
-              terminal.setSpawnContext({});
-            }
-          }
-
-          terminalId = terminal.spawn({
-            name: safeName,
-            cwd: params.cwd,
-            command: piCmd,
-            env: env,
-          });
-          await teams.updateMember(safeTeamName, safeName, {
-            tmuxPaneId: terminalId,
-          });
-        } catch (e) {
-          throw new Error(`Failed to spawn ${terminal.name} pane: ${e}`);
-        }
-
+          modelRequest: params.model,
+          readonlyWorker: true,
+        });
         return {
           content: [
             {
               type: "text",
-              text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls, messaging (send_message, broadcast_message), and close_myself.`,
+              text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId}. Restricted to: read, grep, find, ls, messaging (send_message, broadcast_message), and close_myself.`,
             },
           ],
           details: {
-            agentId: member.agentId,
-            terminalId,
-            tools: [
-              "read",
-              "grep",
-              "find",
-              "ls",
-              "send_message",
-              "broadcast_message",
-              "close_myself",
-            ],
+            agentId: spawned.member.agentId,
+            terminalId: spawned.terminalId,
+            tools: [...READONLY_WORKER_TOOLS],
           },
         };
       },
@@ -2027,6 +2389,133 @@ export default function (pi: ExtensionAPI) {
       description: "Configure model flavor assignments (high/med/fast/none)",
       handler: (_args: string, ctx: ExtensionContext) =>
         handleFlavoredModelsCommand(ctx),
+    });
+
+    // Insta workers: create (or reuse) the session's team, fire off a worker,
+    // and deliver the task prompt straight into the worker's inbox.
+
+    /**
+     * Show a command notification in UI sessions; log to the console in
+     * print-like sessions where ctx.ui.notify does nothing.
+     *
+     * @param ctx - Command context with the UI availability flag
+     * @param message - The message to show or log
+     * @param level - Notification level
+     */
+    function instaNotify(
+      ctx: ExtensionContext,
+      message: string,
+      level: "info" | "error",
+    ): void {
+      if (ctx.hasUI) {
+        ctx.ui.notify(message, level);
+      } else {
+        (level === "error" ? console.error : console.log)(message);
+      }
+    }
+
+    async function runInstaWorkerCommand(
+      args: string,
+      ctx: ExtensionContext,
+      readonlyWorker: boolean,
+    ): Promise<void> {
+      const commandName = readonlyWorker ? "insta-worker-ro" : "insta-worker";
+      try {
+        const parsed = parseInstaWorkerArgs(args);
+        if (!parsed) {
+          instaNotify(
+            ctx,
+            `Usage: /${commandName} <model name> <prompt ...>`,
+            "error",
+          );
+          return;
+        }
+        const { modelRequest, prompt } = parsed;
+        if (!prompt) {
+          instaNotify(
+            ctx,
+            "A task prompt is required after the model name.",
+            "error",
+          );
+          return;
+        }
+
+        const { resolved, matches } = resolveInstaModel(
+          modelRequest,
+          ctx.modelRegistry,
+        );
+        if (!resolved) {
+          instaNotify(
+            ctx,
+            `Could not resolve model '${modelRequest}'. Best matches: ${matches.join(", ")}`,
+            "error",
+          );
+          return;
+        }
+
+        const { team: activeTeam, created } = resolveInstaTeam(
+          teamName,
+          teams.teamExists,
+        );
+        if (created) {
+          teams.createTeam(
+            activeTeam,
+            "local-session",
+            "lead-agent",
+            "Insta worker team",
+          );
+          teamName = activeTeam;
+          process.env.PI_TEAM_NAME = activeTeam;
+        }
+
+        const config = await teams.readConfig(activeTeam);
+        const workerName = uniqueInstaWorkerName(
+          new Set(config.members.map((m) => m.name)),
+        );
+
+        const spawned = await spawnTeamWorker(ctx, {
+          team: activeTeam,
+          name: workerName,
+          cwd: ctx.cwd,
+          modelRequest: resolved,
+          readonlyWorker,
+        });
+
+        const content = `${prompt}\n\n${INSTA_WORKER_INSTRUCTION}`;
+        await messaging.sendPlainMessage(
+          activeTeam,
+          agentName,
+          workerName,
+          instaWorkerSubject(prompt),
+          content,
+          "Insta worker task",
+        );
+        instaNotify(
+          ctx,
+          `Spawned ${workerName} in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId} on team ${activeTeam} (${spawned.model}); task prompt delivered.`,
+          "info",
+        );
+      } catch (e) {
+        instaNotify(
+          ctx,
+          `${commandName} failed: ${e instanceof Error ? e.message : String(e)}`,
+          "error",
+        );
+      }
+    }
+
+    pi.registerCommand("insta-worker", {
+      description:
+        "Spawn a teammate and deliver a task prompt to it. Usage: /insta-worker <model name> <prompt ...>",
+      handler: (args: string, ctx: ExtensionContext) =>
+        runInstaWorkerCommand(args, ctx, false),
+    });
+
+    pi.registerCommand("insta-worker-ro", {
+      description:
+        "Spawn a read-only teammate and deliver a task prompt to it. Usage: /insta-worker-ro <model name> <prompt ...>",
+      handler: (args: string, ctx: ExtensionContext) =>
+        runInstaWorkerCommand(args, ctx, true),
     });
   }
 

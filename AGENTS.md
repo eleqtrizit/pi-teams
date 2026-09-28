@@ -28,6 +28,8 @@ All 13 tools are registered in `extensions/index.ts`, split by session identity 
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
 
+The `/insta-worker` and `/insta-worker-ro` slash commands are also registered with the team-lead tools: they create the session's team when none exists, spawn a worker on the requested model (bare names resolve through the same matching as `resolve_model`), and deliver the task prompt plus a report-back-and-close instruction into the worker's inbox. All three spawn surfaces run through one shared `spawnTeamWorker` path in `extensions/index.ts`, which also owns the state pre-seed (`seedWorkerStateFiles`).
+
 Read-only workers are additionally filtered by pi's `--tools` set at spawn, so they effectively see `read`, `grep`, `find`, `ls`, `send_message`, `broadcast_message`, and `close_myself` only.
 
 ## Messaging
@@ -84,6 +86,8 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 
 ## Model Resolution
 
+- `resolveModel` walks a priority ladder for bare-name requests: flavored models from pi settings high/med/fast first, then the scoped models (pi `--models` flag, or the enabledModels list when the flag is absent), then the entire registry. The fuzzy match runs only against the first non-empty group, so a configured group always wins.
+- Provider-prefixed requests still resolve strictly within the named provider.
 - Model resolution uses a smart priority system that handles OAuth provider precedence.
 - Models can be specified at the team level and overridden per teammate.
 - Thinking level (reasoning effort) can also be customized per teammate.

@@ -128,3 +128,16 @@ export function execCommand(command: string, args: string[]): { stdout: string; 
     status: result.status,
   };
 }
+
+/**
+ * Quote a value for safe inclusion in a POSIX shell command string.
+ *
+ * Wraps the value in single quotes and escapes embedded single quotes, so
+ * shell metacharacters in the value cannot change the command's meaning.
+ *
+ * @param value - The value to quote
+ * @returns The shell-quoted value
+ */
+export function shQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}

@@ -79,6 +79,12 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - **`spawn_lead_window`** - Open team lead in a separate OS window
 - **`close_worker`** - Close one teammate: remove it from the team config, clean up its state, and terminate its process and pane
 
+### Insta worker commands
+
+- **`/insta-worker`** - Spawn a teammate and deliver a task prompt to it in one step. Usage: `/insta-worker <model name> <prompt ...>`; a bare model name resolves automatically
+- **`/insta-worker-ro`** - Same, but the worker is read-only (`read`, `grep`, `find`, `ls`, messaging, `close_myself`)
+- Both create the session's team when none exists, spawn a worker on the resolved model, and inject the prompt plus a report-back-and-close instruction into the worker's inbox
+
 ### Model Categorization
 
 - **`get_models`** - Read enabled models from pi settings.json, split into OSS and frontier (GPT/Claude) lists

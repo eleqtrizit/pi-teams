@@ -89,3 +89,42 @@ describe("tool registration by identity", () => {
     expect(names.has("close_myself")).toBe(false);
   });
 });
+
+describe("command registration by identity", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("registers the insta-worker commands for lead sessions", () => {
+    vi.stubEnv("PI_AGENT_NAME", "");
+    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_TEAM_NAME", "");
+
+    const commands: string[] = [];
+    theExtension({
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand: (name: string) => commands.push(name),
+      sendUserMessage: vi.fn(),
+    } as any);
+    expect(commands).toContain("insta-worker");
+    expect(commands).toContain("insta-worker-ro");
+    expect(commands).toContain("flavored-models");
+  });
+
+  it("registers no commands for a teammate", () => {
+    vi.stubEnv("PI_AGENT_NAME", "worker-1");
+    vi.stubEnv("PI_AGENT_TYPE", "teammate");
+    vi.stubEnv("PI_TEAM_NAME", "some-team");
+
+    const commands: string[] = [];
+    theExtension({
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerCommand: (name: string) => commands.push(name),
+      sendUserMessage: vi.fn(),
+    } as any);
+    expect(commands).toEqual([]);
+  });
+});

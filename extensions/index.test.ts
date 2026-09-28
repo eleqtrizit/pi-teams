@@ -3,6 +3,7 @@ import {
   getTopModelMatches,
   clearModelsCache,
   resolveModelWithProvider,
+  scopedPatternMatches,
   formatDeliveredMessages,
   FollowUpMessageQueue,
   mergeQueuedMessages,
@@ -139,6 +140,7 @@ describe("resolveModelWithProvider", () => {
     const resolved = resolveModelWithProvider(
       "bighank/qwen3coder-35b",
       modelRegistry,
+      { flavoredModelIds: [], scopedPatterns: [] },
     );
     expect(resolved).toBeNull();
   });
@@ -154,6 +156,7 @@ describe("resolveModelWithProvider", () => {
     const resolved = resolveModelWithProvider(
       "bighank/Qwen35 35b",
       modelRegistry,
+      { flavoredModelIds: [], scopedPatterns: [] },
     );
     expect(resolved).toBe("bighank/qwen3coder-35b");
   });
@@ -168,8 +171,69 @@ describe("resolveModelWithProvider", () => {
     const resolved = resolveModelWithProvider(
       "bighank/qwen3coder-35b",
       modelRegistry,
+      { flavoredModelIds: [], scopedPatterns: [] },
     );
     expect(resolved).toBe("bighank/qwen3coder-35b");
+  });
+});
+
+describe("resolveModelWithProvider resolution ladder", () => {
+  beforeEach(() => {
+    clearModelsCache();
+  });
+
+  const registry = {
+    getAvailable: () => [
+      { provider: "anthropic", id: "claude-sonnet-4-5" },
+      { provider: "bighank", id: "Qwen35Coder-35B" },
+      { provider: "openai", id: "gpt-5" },
+    ],
+  };
+
+  it("returns a flavored model even when the request names a non-flavored model", () => {
+    const resolved = resolveModelWithProvider("Qwen35Coder-35B", registry, {
+      flavoredModelIds: ["anthropic/claude-sonnet-4-5"],
+      scopedPatterns: [],
+    });
+    expect(resolved).toBe("anthropic/claude-sonnet-4-5");
+  });
+
+  it("returns a scoped model when no flavored models are set", () => {
+    const resolved = resolveModelWithProvider("gpt-5", registry, {
+      flavoredModelIds: [],
+      scopedPatterns: ["bighank/*"],
+    });
+    expect(resolved).toBe("bighank/Qwen35Coder-35B");
+  });
+
+  it("fuzzy-matches the entire registry when neither group is set", () => {
+    const resolved = resolveModelWithProvider("gpt5", registry, {
+      flavoredModelIds: [],
+      scopedPatterns: [],
+    });
+    expect(resolved).toBe("openai/gpt-5");
+  });
+});
+
+describe("scopedPatternMatches", () => {
+  const entry = { provider: "github-copilot", model: "gpt-4o" };
+
+  it("matches provider-prefixed patterns case-insensitively", () => {
+    expect(scopedPatternMatches("github-copilot/gpt-4o", entry)).toBe(true);
+    expect(scopedPatternMatches("GITHUB-COPILOT/GPT-4O", entry)).toBe(true);
+    expect(scopedPatternMatches("openai/gpt-4o", entry)).toBe(false);
+  });
+
+  it("supports * and ? globs against the pair and the bare id", () => {
+    expect(scopedPatternMatches("github-copilot/*", entry)).toBe(true);
+    expect(scopedPatternMatches("*gpt-4o", entry)).toBe(true);
+    expect(scopedPatternMatches("github-copilot/gpt-?o", entry)).toBe(true);
+    expect(scopedPatternMatches("github-copilot/gpt-?x", entry)).toBe(false);
+  });
+
+  it("ignores a :thinking-level suffix while matching", () => {
+    expect(scopedPatternMatches("github-copilot/gpt-4o:high", entry)).toBe(true);
+    expect(scopedPatternMatches("github-copilot/gpt-4o:xhigh", entry)).toBe(false);
   });
 });
 
