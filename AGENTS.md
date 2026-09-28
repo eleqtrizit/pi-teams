@@ -6,6 +6,30 @@ The team-lead is the coordinator. The team-leader spawns team members (agents) t
 
 Team members sit idle until a message is delivered to them. A programmatic loop polls each agent's inbox file every second; when undelivered messages are found, it drains them (atomically marking them delivered under a file lock) and injects their full bodies as user messages, waking the agent for a new turn. Active agents are interrupted via `abort_current_tool` when a delivery arrives, ensuring responsiveness.
 
+## Tools
+
+All 13 tools are registered in `extensions/index.ts`, split by session identity into three sections: team-lead tools under `if (isLead)`, shared tools for every session, and worker tools under `if (isWorker)`. `isLead` is true when `PI_AGENT_TYPE` is unset or `"lead"`; `isWorker` is true for `PI_AGENT_TYPE` `"teammate"` or `"readonly-worker"` when the agent is not named `team-lead`.
+
+| Tool | Section | What it does | Supporting files |
+|---|---|---|---|
+| `team_create` | lead | Create a team with seeded config and task directory | `src/utils/teams.ts` |
+| `resolve_model` | lead | Resolve a provider/model name for spawn calls | `extensions/index.ts` |
+| `spawn_teammate` | lead | Spawn a worker in a pane or separate window | `src/adapters/*`, `src/utils/teams.ts`, `src/utils/paths.ts` |
+| `spawn_readonly_worker` | lead | Spawn a read-only worker with a restricted tool list | same as `spawn_teammate` |
+| `spawn_lead_window` | lead | Open the team-lead in its own OS window | `src/adapters/*`, `src/utils/teams.ts` |
+| `team_shutdown` | lead | Remove every member, then wipe the team directory | `src/utils/teams.ts` (`removeAgent`) |
+| `close_worker` | lead | Close one teammate | `src/utils/teams.ts` (`removeAgent`) |
+| `get_flavored_models` | lead | Show the high/med/fast model lists | `src/utils/flavoredModels.ts` |
+| `get_models` | lead | Show OSS and frontier model lists | `src/utils/flavoredModels.ts` |
+| `send_message` | shared | Deliver a message to one agent | `src/utils/messaging.ts`, `src/utils/paths.ts` |
+| `broadcast_message` | shared | Deliver a message to every member | `src/utils/messaging.ts` |
+| `list_teammates` | shared | Show members with status and undelivered counts | `src/utils/teams.ts`, `src/utils/messaging.ts` |
+| `close_myself` | worker | Terminate the calling agent | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
+
+The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
+
+Read-only workers are additionally filtered by pi's `--tools` set at spawn, so they effectively see `read`, `grep`, `find`, `ls`, `send_message`, `broadcast_message`, and `close_myself` only.
+
 ## Messaging
 
 - **Messages have UUIDs** — each message has a unique ID, a subject line, a sender identity, a recipient, and a body.
@@ -37,8 +61,8 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 
 ## Worker Types
 
-- **Regular workers** — full agents spawned by the team-lead with access to all tools.
-- **Read-only workers** — spawned via `spawn_readonly_worker`. These have restricted tool access (read, grep, find, ls) plus messaging (send_message, broadcast_message) for team communication. Useful for research/investigation tasks.
+- **Regular workers** - full agents with the shared tools plus `close_myself`; they never see the team-lead tools.
+- **Read-only workers** - spawned via `spawn_readonly_worker`. pi's `--tools` filter at spawn leaves them `read`, `grep`, `find`, `ls`, the messaging tools, and `close_myself`. Useful for research and investigation tasks.
 
 ## Agent Lifecycle
 
@@ -48,8 +72,10 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 
 ## Team Shutdown
 
-- A `shutdown_team` command cleanly terminates all team processes.
-- A `list_teammates` command shows active teammates and their status.
+- `team_shutdown` removes every member and wipes the team directory; the run then settles.
+- `close_worker` (lead) and `close_myself` (worker) close one agent each.
+- All three paths run the shared removal in `removeAgent` (`src/utils/teams.ts`).
+- `list_teammates` shows members with their status and undelivered message counts.
 
 ## Logs
 
@@ -61,3 +87,42 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 - Model resolution uses a smart priority system that handles OAuth provider precedence.
 - Models can be specified at the team level and overridden per teammate.
 - Thinking level (reasoning effort) can also be customized per teammate.
+
+## File hierarchy
+
+```
+pi-teams/
+├── extensions/                       # pi extension entry and lifecycle handlers
+│   ├── index.ts                      # tool registration (lead/shared/worker), pollers, spawn commands
+│   ├── index.test.ts                 # tests for pure helpers: formatting and model matching
+│   ├── close-myself.test.ts          # close_myself registration and execute tests
+│   └── tool-registration.test.ts     # registration-by-identity contract tests
+├── src/
+│   ├── adapters/                     # one TerminalAdapter implementation per terminal multiplexer
+│   │   ├── terminal-registry.ts      # picks the adapter for the current environment
+│   │   ├── tmux-adapter.ts           # plus iterm2-, zellij-, wezterm-, orca-adapter.ts
+│   │   └── *.test.ts                 # adapter unit tests
+│   └── utils/                        # all state mutation and decision logic
+│       ├── terminal-adapter.ts       # TerminalAdapter interface that the adapters implement
+│       ├── teams.ts                  # team config CRUD and the shared removeAgent removal path
+│       ├── messaging.ts              # inboxes, delivery, reminders, needsReminderMessage
+│       ├── paths.ts                  # ~/.pi/teams path builders and sanitizeName
+│       ├── lock.ts                   # withLock locking for concurrent config and inbox writes
+│       ├── hold.ts                   # run-hold decisions for non-interactive lead sessions
+│       ├── models.ts                 # Member, TeamConfig, InboxMessage types
+│       └── flavoredModels.ts         # high/med/fast flavor lists in pi settings.json
+├── docs/                             # terminal research and release notes
+├── AGENTS.md                         # this file
+├── README.md                         # user-facing documentation
+└── package.json                      # pi-package manifest: extension entry points
+```
+
+## How the parts fit together
+
+- **Load:** every pi session runs `extensions/index.ts`. It picks a terminal adapter (`src/adapters/terminal-registry.ts`), computes `isLead` and `isWorker` from `PI_AGENT_TYPE` and `PI_AGENT_NAME`, registers tools by identity, and installs lifecycle handlers.
+- **Spawn:** the lead's spawn tools build a member record (`src/utils/teams.ts`), pre-seed state files through `src/utils/paths.ts`, and launch a child pi process through the adapter. `-ne -e <entry>` pins the worker to this extension copy; `PI_TEAM_NAME`, `PI_AGENT_NAME`, and `PI_AGENT_TYPE` drive its identity.
+- **Delivery:** `extensions/index.ts` polls inbox files once per second. `src/utils/messaging.ts` drains undelivered messages, and the extension injects their full bodies as user messages. Reminders travel through the same path.
+- **Concurrency:** config reads and writes and inbox appends pass through `withLock` (`src/utils/lock.ts`), so two sessions never clobber the same file.
+- **Removal:** every shutdown path (`close_myself`, `close_worker`, `team_shutdown`) runs `removeAgent` (`src/utils/teams.ts`): config removal, state-file cleanup, pane or window close through the adapter, then SIGKILL by pid.
+- **Run hold:** `src/utils/hold.ts` decides when a non-interactive lead's run stays parked, using pid files and pane probes for worker liveness.
+- **State on disk:** team state lives under `~/.pi/teams/<team>/`: `config.json`, `inboxes/<agent>.json`, and one marker file per agent (pid, activity, timestamps). Team tasks live under `~/.pi/tasks/<team>/`.
