@@ -54,11 +54,17 @@ Read the inbox of security-bot.
 
 ## Core Tools
 
+Tool registration follows each session's identity: sessions spawned with `PI_AGENT_TYPE` `teammate` or `readonly-worker` are workers, and every other session, including a lead window, is the team-lead. Worker tools contain only `close_myself`; messaging and status tools are shared; the rest are lead-only.
+
 ### Team Management
 
 - **`team_create`** - Create new agent team with custom name, description, default model, and window mode
 - **`team_shutdown`** - Shutdown entire team and close all panes/windows
 - **`list_teammates`** - List all teammates with their status (alive, active, unread count)
+- **`close_myself`** - Let an agent close itself
+  - Removes the agent from the team config, cleans up its pid and activity markers, and terminates its own process and terminal pane or window
+  - Available to teammates only; the lead closes the whole team with `team_shutdown`
+  - Do not run this unless your instructions told you to run it
 
 ### Agent Spawning
 
@@ -71,9 +77,7 @@ Read the inbox of security-bot.
   - Can still message the team lead via `send_message`/`broadcast_message`
   - Accepts an optional `model` parameter; defaults to the team leader's model
 - **`spawn_lead_window`** - Open team lead in a separate OS window
-- **`process_shutdown_approved`** - Gracefully shut down individual teammate
-
-### Flavored Models
+- **`close_worker`** - Close one teammate: remove it from the team config, clean up its state, and terminate its process and pane
 
 ### Model Categorization
 
@@ -85,7 +89,6 @@ Read the inbox of security-bot.
 
 - **`send_message`** - Send direct message to specific teammate
 - **`broadcast_message`** - Broadcast message to all team members (with optional color)
-- **`read_inbox`** - Read messages from an agent's inbox (unread-only or all)
 
 ### Model Resolution
 

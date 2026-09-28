@@ -814,6 +814,16 @@ export default function (pi: ExtensionAPI) {
   const agentName = process.env.PI_AGENT_NAME || "team-lead";
   let teamName = process.env.PI_TEAM_NAME;
 
+  // Tool identity: spawned workers carry PI_AGENT_TYPE "teammate" or
+  // "readonly-worker"; every other session (the interactive lead or a lead
+  // window) is the team-lead. A worker named "team-lead" is excluded from
+  // worker tools because removeAgent refuses to remove any agent with that
+  // name, so a close_myself call would silently leave it running.
+  const isLead = agentType === "lead";
+  const isWorker =
+    (agentType === "teammate" || agentType === "readonly-worker") &&
+    agentName !== "team-lead";
+
   const terminal = getTerminalAdapter();
   let inboxCheckInterval: ReturnType<typeof setInterval> | null = null;
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
@@ -1283,7 +1293,7 @@ export default function (pi: ExtensionAPI) {
 
       const capabilitiesNote =
         agentType === "readonly-worker"
-          ? "\nYou are limited to reading files (read, grep, find, ls) and messaging tools (send_message, broadcast_message). You cannot write, edit, or execute commands."
+          ? "\nYou are limited to reading files (read, grep, find, ls), messaging tools (send_message, broadcast_message), and close_myself. You cannot write, edit, or execute commands. Close yourself with close_myself only when your instructions tell you to."
           : "";
 
       return {
@@ -1294,31 +1304,11 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  async function killTeammate(teamName: string, member: Member) {
-    if (member.name === "team-lead") return;
+  // ── Team-lead tools ─────────────────────────────────────────────────────
+  // Everything a lead session needs to build, staff, inspect, and disband a
+  // team. Registered for any session that is not a spawned worker.
 
-    const pidFile = path.join(paths.teamDir(teamName), `${member.name}.pid`);
-    if (fs.existsSync(pidFile)) {
-      try {
-        const pid = fs.readFileSync(pidFile, "utf-8").trim();
-        process.kill(parseInt(pid), "SIGKILL");
-        fs.unlinkSync(pidFile);
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    if (member.windowId && terminal) {
-      terminal.killWindow(member.windowId);
-    }
-
-    if (member.tmuxPaneId && terminal) {
-      terminal.kill(member.tmuxPaneId);
-    }
-  }
-
-  // Tools
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
       name: "team_create",
       label: "Create Team",
@@ -1358,7 +1348,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
       name: "resolve_model",
       label: "Resolve Model",
@@ -1416,7 +1406,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
       name: "spawn_teammate",
       label: "Spawn Teammate",
@@ -1634,12 +1624,12 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
       name: "spawn_readonly_worker",
       label: "Spawn Read-Only Worker",
       description:
-        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead.\n\n" +
+        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
         "Model selection: before spawning, call get_flavored_models and spawn a " +
         "model from the flavor that matches the task (usually fast or med for " +
         "read-only research). Prefer spreading workers across different providers " +
@@ -1714,7 +1704,7 @@ export default function (pi: ExtensionAPI) {
         await teams.addMember(safeTeamName, member);
 
         const piBinary = process.argv[1] ? `node ${process.argv[1]}` : "pi";
-        const piCmd = `${piBinary} ${extensionLoadFlags()} --model ${chosenModel} --tools read,grep,find,ls,send_message,broadcast_message`;
+        const piCmd = `${piBinary} ${extensionLoadFlags()} --model ${chosenModel} --tools read,grep,find,ls,send_message,broadcast_message,close_myself`;
 
         const env: Record<string, string> = {
           ...process.env,
@@ -1775,7 +1765,7 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls plus messaging tools (send_message, broadcast_message).`,
+              text: `Read-only worker ${params.name} spawned in pane ${terminalId}. Restricted to: read, grep, find, ls, messaging (send_message, broadcast_message), and close_myself.`,
             },
           ],
           details: {
@@ -1788,6 +1778,7 @@ export default function (pi: ExtensionAPI) {
               "ls",
               "send_message",
               "broadcast_message",
+              "close_myself",
             ],
           },
         };
@@ -1795,7 +1786,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
       name: "spawn_lead_window",
       label: "Spawn Lead Window",
@@ -1849,91 +1840,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  pi.registerTool({
-    name: "send_message",
-    label: "Send Message",
-    description: "Send a message to a teammate.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.Optional(
-          Type.String({ description: "Defaults to your current team." }),
-        ),
-        recipient: Type.String(),
-        subject: Type.String({
-          description: "Short subject line for the message.",
-        }),
-        content: Type.String({ description: "Full message body." }),
-        summary: Type.Optional(
-          Type.String({ description: "Optional brief summary." }),
-        ),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const resolvedTeam = params.team_name || teamName;
-      if (!resolvedTeam)
-        throw new Error("team_name is required (no team is currently active).");
-      await messaging.sendPlainMessage(
-        resolvedTeam,
-        agentName,
-        params.recipient,
-        params.subject,
-        params.content,
-        params.summary,
-      );
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Message sent to ${params.recipient}.\n\n${params.content}`,
-          },
-        ],
-        details: {},
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "broadcast_message",
-    label: "Broadcast Message",
-    description:
-      "Broadcast a message to all team members.  Do not use this just to respond to the team-lead.  Use send_message instead.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.Optional(
-          Type.String({ description: "Defaults to your current team." }),
-        ),
-        subject: Type.String({
-          description: "Short subject line for the broadcast.",
-        }),
-        content: Type.String({ description: "Full message body." }),
-        summary: Type.Optional(
-          Type.String({ description: "Optional brief summary." }),
-        ),
-        color: Type.Optional(Type.String()),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const resolvedTeam = params.team_name || teamName;
-      if (!resolvedTeam)
-        throw new Error("team_name is required (no team is currently active).");
-      await messaging.broadcastMessage(
-        resolvedTeam,
-        agentName,
-        params.subject,
-        params.content,
-        params.summary,
-        params.color,
-      );
-      return {
-        content: [
-          { type: "text", text: `Message broadcasted to all team members.` },
-        ],
-        details: {},
-      };
-    },
-  });
-
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
       name: "team_shutdown",
       label: "Shutdown Team",
@@ -1948,7 +1855,11 @@ export default function (pi: ExtensionAPI) {
         try {
           const config = await teams.readConfig(teamName);
           for (const member of config.members) {
-            await killTeammate(teamName, member);
+            await teams.removeAgent({
+              team: teamName,
+              agentName: member.name,
+              terminal,
+            });
           }
           const dir = paths.teamDir(teamName);
           if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
@@ -1963,52 +1874,10 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  pi.registerTool({
-    name: "list_teammates",
-    label: "List Teammates",
-    description: "List all teammates in a team with their status.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.String(),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const config = await teams.readConfig(params.team_name);
-      const teammates = await Promise.all(
-        config.members.map(async (m) => {
-          let alive = false;
-          if (m.name === "team-lead" && !isTeammate) {
-            alive = true;
-          } else if (m.windowId && terminal) {
-            alive = terminal.isWindowAlive(m.windowId);
-          } else if (m.tmuxPaneId && terminal) {
-            alive = terminal.isAlive(m.tmuxPaneId);
-          }
-          const undeliveredCount = (
-            await messaging.readInbox(params.team_name, m.name, true)
-          ).length;
-          const active = isAgentActive(params.team_name, m.name);
-          return {
-            name: m.name,
-            agentType: m.agentType,
-            model: m.model,
-            alive,
-            active,
-            undeliveredCount,
-          };
-        }),
-      );
-      return {
-        content: [{ type: "text", text: JSON.stringify(teammates, null, 2) }],
-        details: { teammates },
-      };
-    },
-  });
-
-  if (!isTeammate) {
+  if (isLead) {
     pi.registerTool({
-      name: "process_shutdown_approved",
-      label: "Process Shutdown Approved",
+      name: "close_worker",
+      label: "Close Worker",
       description: "Process a teammate's shutdown.",
       parameters: asPiToolSchema(
         Type.Object({
@@ -2021,8 +1890,11 @@ export default function (pi: ExtensionAPI) {
         const member = config.members.find((m) => m.name === params.agent_name);
         if (!member) throw new Error(`Teammate ${params.agent_name} not found`);
 
-        await killTeammate(params.team_name, member);
-        await teams.removeMember(params.team_name, params.agent_name);
+        await teams.removeAgent({
+          team: params.team_name,
+          agentName: params.agent_name,
+          terminal,
+        });
         return {
           content: [
             {
@@ -2155,6 +2027,179 @@ export default function (pi: ExtensionAPI) {
       description: "Configure model flavor assignments (high/med/fast/none)",
       handler: (_args: string, ctx: ExtensionContext) =>
         handleFlavoredModelsCommand(ctx),
+    });
+  }
+
+  // ── Shared tools ─────────────────────────────────────────────────────────
+  // Messaging and team status. Available to the team-lead and to workers.
+
+  pi.registerTool({
+    name: "send_message",
+    label: "Send Message",
+    description: "Send a message to a teammate.",
+    parameters: asPiToolSchema(
+      Type.Object({
+        team_name: Type.Optional(
+          Type.String({ description: "Defaults to your current team." }),
+        ),
+        recipient: Type.String(),
+        subject: Type.String({
+          description: "Short subject line for the message.",
+        }),
+        content: Type.String({ description: "Full message body." }),
+        summary: Type.Optional(
+          Type.String({ description: "Optional brief summary." }),
+        ),
+      }),
+    ) as any,
+    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+      const resolvedTeam = params.team_name || teamName;
+      if (!resolvedTeam)
+        throw new Error("team_name is required (no team is currently active).");
+      await messaging.sendPlainMessage(
+        resolvedTeam,
+        agentName,
+        params.recipient,
+        params.subject,
+        params.content,
+        params.summary,
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Message sent to ${params.recipient}.\n\n${params.content}`,
+          },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "broadcast_message",
+    label: "Broadcast Message",
+    description:
+      "Broadcast a message to all team members.  Do not use this just to respond to the team-lead.  Use send_message instead.",
+    parameters: asPiToolSchema(
+      Type.Object({
+        team_name: Type.Optional(
+          Type.String({ description: "Defaults to your current team." }),
+        ),
+        subject: Type.String({
+          description: "Short subject line for the broadcast.",
+        }),
+        content: Type.String({ description: "Full message body." }),
+        summary: Type.Optional(
+          Type.String({ description: "Optional brief summary." }),
+        ),
+        color: Type.Optional(Type.String()),
+      }),
+    ) as any,
+    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+      const resolvedTeam = params.team_name || teamName;
+      if (!resolvedTeam)
+        throw new Error("team_name is required (no team is currently active).");
+      await messaging.broadcastMessage(
+        resolvedTeam,
+        agentName,
+        params.subject,
+        params.content,
+        params.summary,
+        params.color,
+      );
+      return {
+        content: [
+          { type: "text", text: `Message broadcasted to all team members.` },
+        ],
+        details: {},
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "list_teammates",
+    label: "List Teammates",
+    description: "List all teammates in a team with their status.",
+    parameters: asPiToolSchema(
+      Type.Object({
+        team_name: Type.String(),
+      }),
+    ) as any,
+    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
+      const config = await teams.readConfig(params.team_name);
+      const teammates = await Promise.all(
+        config.members.map(async (m) => {
+          let alive = false;
+          if (m.name === "team-lead" && !isTeammate) {
+            alive = true;
+          } else if (m.windowId && terminal) {
+            alive = terminal.isWindowAlive(m.windowId);
+          } else if (m.tmuxPaneId && terminal) {
+            alive = terminal.isAlive(m.tmuxPaneId);
+          }
+          const undeliveredCount = (
+            await messaging.readInbox(params.team_name, m.name, true)
+          ).length;
+          const active = isAgentActive(params.team_name, m.name);
+          return {
+            name: m.name,
+            agentType: m.agentType,
+            model: m.model,
+            alive,
+            active,
+            undeliveredCount,
+          };
+        }),
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(teammates, null, 2) }],
+        details: { teammates },
+      };
+    },
+  });
+
+  // ── Worker tools ─────────────────────────────────────────────────────────
+  // Tools for spawned workers only. The gate mirrors what removeAgent can
+  // remove: any spawned worker, never the team-lead, never the interactive
+  // lead session.
+
+  if (isWorker) {
+    pi.registerTool({
+      name: "close_myself",
+      label: "Close Myself",
+      description:
+        "Close this agent: remove yourself from the team config, clean up your state files, and terminate your own process and terminal pane or window. " +
+        "Do not run this unless your instructions told you to run it. When the team-lead tells you to close yourself, call this tool instead of ending your turn or running kill commands.",
+      parameters: asPiToolSchema(Type.Object({})) as any,
+      async execute() {
+        const activeTeam = teamName;
+        if (!activeTeam) {
+          throw new Error(
+            "No team is active for this agent, so there is nothing to close.",
+          );
+        }
+
+        // removeAgent removes this member from the team config, deletes every
+        // state file for this agent, closes the pane or window hosting this
+        // process, and SIGKILLs this process. The result is never delivered;
+        // the agent terminates mid-execute.
+        await teams.removeAgent({
+          team: activeTeam,
+          agentName,
+          ownPid: process.pid,
+          terminal,
+        });
+
+        // Unreachable at runtime: removeAgent terminated this process, but the
+        // tool contract requires a result to satisfy the type system.
+        return {
+          content: [
+            { type: "text", text: `Agent ${agentName} closed itself.` },
+          ],
+          details: {},
+        };
+      },
     });
   }
 }
