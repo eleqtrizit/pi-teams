@@ -30,6 +30,8 @@ The `flavored-models` slash command is registered with the team-lead tools. It o
 
 The `/insta-worker` and `/insta-worker-ro` slash commands are also registered with the team-lead tools: they create the session's team when none exists, spawn a worker on the requested model (bare names resolve through the same matching as `resolve_model`), and deliver the task prompt plus a report-back-and-close instruction into the worker's inbox. All three spawn surfaces run through one shared `spawnTeamWorker` path in `extensions/index.ts`, which also owns the state pre-seed (`seedWorkerStateFiles`).
 
+The `/sub` slash command is registered with the team-lead tools: `/sub <model name> <prompt...>` fuzzy-matches the requested model through `resolveModelWithProvider`, switches the session to it with `pi.setModel`, runs exactly one turn via `pi.sendUserMessage`, waits for idle, then restores the original model (restoration runs in a `finally` block, so an error or abort still restores). Parsing and orchestration live in the exported `parseSubCommandArgs` and `executeSubTurn` helpers in `extensions/index.ts`.
+
 Read-only workers are additionally filtered by pi's `--tools` set at spawn, so they effectively see `read`, `grep`, `find`, `ls`, `send_message`, `broadcast_message`, and `close_myself` only.
 
 ## Messaging

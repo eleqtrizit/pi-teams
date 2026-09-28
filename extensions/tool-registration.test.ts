@@ -111,6 +111,7 @@ describe("command registration by identity", () => {
     expect(commands).toContain("insta-worker");
     expect(commands).toContain("insta-worker-ro");
     expect(commands).toContain("flavored-models");
+    expect(commands).toContain("sub");
   });
 
   it("registers no commands for a teammate", () => {

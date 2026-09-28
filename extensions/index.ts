@@ -1,6 +1,7 @@
 import { StringEnum } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import {
@@ -59,6 +60,98 @@ const EXTENSION_ENTRY: string =
  */
 function extensionLoadFlags(): string {
   return `-ne -e "${EXTENSION_ENTRY}"`;
+}
+
+/** A resolved model reference: full "provider/model" string split in two. */
+export interface SubModelRef {
+  provider: string;
+  model: string;
+}
+
+/** Parsed arguments of the /sub command. */
+export interface SubCommandArgs {
+  modelRequest: string;
+  prompt: string;
+}
+
+/**
+ * Parse "/sub <model name> <prompt...>" input.
+ *
+ * @param args - Raw argument string the user typed after /sub
+ * @returns The model request and prompt, or null when either part is missing
+ */
+export function parseSubCommandArgs(args: string): SubCommandArgs | null {
+  const trimmed = args.trim();
+  const firstSpace = trimmed.search(/\s/);
+  if (firstSpace === -1) {
+    return null;
+  }
+  const modelRequest = trimmed.slice(0, firstSpace);
+  const prompt = trimmed.slice(firstSpace).trim();
+  if (!prompt) {
+    return null;
+  }
+  return { modelRequest, prompt };
+}
+
+/** Injected collaborators of executeSubTurn, kept minimal for testability. */
+export interface SubTurnDeps {
+  /** Model the session ran with before the substitution */
+  originalModel: SubModelRef;
+  /** Resolves the user's model request, or null when nothing matches */
+  resolve: (modelRequest: string) => SubModelRef | null;
+  /** Activates a model; resolves false when the provider is not authenticated */
+  setModel: (model: SubModelRef) => Promise<boolean>;
+  /** Sends the prompt to the agent for one turn */
+  runPrompt: (prompt: string) => Promise<void>;
+  /** Resolves when the agent is idle again after the turn */
+  waitForIdle: () => Promise<void>;
+  /** Shows a status or error message to the user */
+  notify: (message: string, level: "info" | "error") => void;
+}
+
+/**
+ * Run one turn with a substitute model, then restore the original model.
+ *
+ * The original model is restored even when the prompt run or the idle wait
+ * throws, so the session never stays pinned to the substitute model.
+ *
+ * @param deps - Collaborators for resolution, model switching, prompting
+ * @param modelRequest - The user's model request, bare or provider-prefixed
+ * @param prompt - The prompt text to run with the substitute model
+ */
+export async function executeSubTurn(
+  deps: SubTurnDeps,
+  modelRequest: string,
+  prompt: string,
+): Promise<void> {
+  const substitute = deps.resolve(modelRequest);
+  if (!substitute) {
+    deps.notify("Could not resolve the substitute model.", "error");
+    return;
+  }
+  const switchResult = await deps.setModel(substitute);
+  if (!switchResult) {
+    deps.notify(
+      `Provider "${substitute.provider}" is not authenticated; no model switch was made.`,
+      "error",
+    );
+    return;
+  }
+  try {
+    deps.notify(
+      `Running one turn with ${substitute.provider}/${substitute.model}.`,
+      "info",
+    );
+    await deps.runPrompt(prompt);
+    await deps.waitForIdle();
+  } finally {
+    deps.notify(
+      `Substitute turn done; restoring ${deps.originalModel.provider}/${deps.originalModel.model}.`,
+      "info",
+    );
+    await deps.setModel(deps.originalModel);
+  }
 }
 
 /**
@@ -1461,6 +1554,10 @@ export default function (pi: ExtensionAPI) {
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentIdle = true;
   let isAgentRunning = false;
+  // Captured from the first context that carries a model registry, so the
+  // /sub argument completion can list available models before its handler
+  // has ever run.
+  let subModelRegistry: ModelRegistryLike | null = null;
   // Increments once a follow-up message has actually reached the agent's
   // followUp queue. The agent_end hold loop watches this counter to decide
   // when the run should continue with queued worker results.
@@ -1613,6 +1710,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     isAgentRunning = false;
+    subModelRegistry ??= ctx.modelRegistry;
     pendingInboxNotifications.clear();
     paths.ensureDirs();
     if (isTeammate) {
@@ -2390,6 +2488,110 @@ export default function (pi: ExtensionAPI) {
       handler: (_args: string, ctx: ExtensionContext) =>
         handleFlavoredModelsCommand(ctx),
     });
+
+    pi.registerCommand("sub", {
+      description:
+        "Run one turn with a substitute model, then restore the current model " +
+        "(/sub <model name> <prompt...>)",
+      getArgumentCompletions: (argumentPrefix: string) => {
+        if (!subModelRegistry) return null;
+        const prefixParts = argumentPrefix.split("/", 2);
+        const providerPrefix =
+          prefixParts.length === 2 ? prefixParts[0].toLowerCase() : null;
+        const namePrefix = (
+          prefixParts.length === 2 ? prefixParts[1] : argumentPrefix
+        ).toLowerCase();
+        const items = getAvailableModels(subModelRegistry)
+          .filter(
+            (m) =>
+              (providerPrefix === null ||
+                m.provider.toLowerCase() === providerPrefix) &&
+              (namePrefix === "" ||
+                m.model.toLowerCase().includes(namePrefix) ||
+                m.provider.toLowerCase().includes(namePrefix)),
+          )
+          .slice(0, 12)
+          .map((m) => ({
+            label: `${m.provider}/${m.model}`,
+            value: `${m.provider}/${m.model}`,
+          }));
+        return items.length > 0 ? items : null;
+      },
+      handler: (args: string, ctx: ExtensionCommandContext) =>
+        runSubCommand(args, ctx),
+    });
+
+    /**
+     * Handle /sub: switch to a fuzzy-matched substitute model for exactly one
+     * turn, run the prompt, and restore the original model afterwards.
+     *
+     * @param args - Raw argument string: "<model name> <prompt...>"
+     * @param ctx - Command context for the current session
+     */
+    async function runSubCommand(
+      args: string,
+      ctx: ExtensionCommandContext,
+    ): Promise<void> {
+      const parsed = parseSubCommandArgs(args);
+      if (!parsed) {
+        instaNotify(
+          ctx,
+          "Usage: /sub <model name> <prompt...>",
+          "error",
+        );
+        return;
+      }
+      if (!ctx.isIdle()) {
+        instaNotify(
+          ctx,
+          "/sub needs an idle agent; wait for the current run to finish.",
+          "error",
+        );
+        return;
+      }
+      const original = ctx.model;
+      if (!original) {
+        instaNotify(ctx, "No model is active in this session.", "error");
+        return;
+      }
+      await executeSubTurn(
+        {
+          originalModel: { provider: original.provider, model: original.id },
+          resolve: (modelRequest) => {
+            const full = resolveModelWithProvider(
+              modelRequest,
+              ctx.modelRegistry,
+            );
+            if (!full) {
+              return null;
+            }
+            const slashIndex = full.indexOf("/");
+            const found = ctx.modelRegistry.find(
+              full.slice(0, slashIndex),
+              full.slice(slashIndex + 1),
+            );
+            return found
+              ? { provider: found.provider, model: found.id }
+              : null;
+          },
+          setModel: async (ref) => {
+            const found = ctx.modelRegistry.find(ref.provider, ref.model);
+            if (!found) {
+              return false;
+            }
+            return pi.setModel(found);
+          },
+          runPrompt: (prompt) => {
+            pi.sendUserMessage(prompt);
+            return Promise.resolve();
+          },
+          waitForIdle: () => ctx.waitForIdle(),
+          notify: (message, level) => instaNotify(ctx, message, level),
+        },
+        parsed.modelRequest,
+        parsed.prompt,
+      );
+    }
 
     // Insta workers: create (or reuse) the session's team, fire off a worker,
     // and deliver the task prompt straight into the worker's inbox.

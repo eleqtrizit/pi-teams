@@ -91,6 +91,10 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - **`get_flavored_models`** - Read flavor-categorized model lists from pi settings.json
 - **`/flavored-models`** - Interactive command to assign each enabled model to a flavor
 
+### Model Substitution
+
+- **`/sub`** - Run one turn with a different model, then restore the original. Usage: `/sub <model name> <prompt ...>`; the model name is fuzzy-matched the same way as `resolve_model`
+
 ### Messaging System
 
 - **`send_message`** - Send direct message to specific teammate
