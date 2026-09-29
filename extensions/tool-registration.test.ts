@@ -108,10 +108,10 @@ describe("command registration by identity", () => {
       registerCommand: (name: string) => commands.push(name),
       sendUserMessage: vi.fn(),
     } as any);
-    expect(commands).toContain("insta-worker");
-    expect(commands).toContain("insta-worker-ro");
     expect(commands).toContain("flavored-models");
-    expect(commands).toContain("sub");
+    expect(commands).not.toContain("sub");
+    expect(commands).not.toContain("insta-worker");
+    expect(commands).not.toContain("insta-worker-ro");
   });
 
   it("registers no commands for a teammate", () => {
@@ -127,5 +127,42 @@ describe("command registration by identity", () => {
       sendUserMessage: vi.fn(),
     } as any);
     expect(commands).toEqual([]);
+  });
+});
+
+describe("bang-model input handling by identity", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("registers an input handler for lead sessions", () => {
+    vi.stubEnv("PI_AGENT_NAME", "");
+    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_TEAM_NAME", "");
+
+    const events: string[] = [];
+    theExtension({
+      on: (event: string) => events.push(event),
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as any);
+    expect(events).toContain("input");
+  });
+
+  it("registers no input handler for a teammate", () => {
+    vi.stubEnv("PI_AGENT_NAME", "worker-1");
+    vi.stubEnv("PI_AGENT_TYPE", "teammate");
+    vi.stubEnv("PI_TEAM_NAME", "some-team");
+
+    const events: string[] = [];
+    theExtension({
+      on: (event: string) => events.push(event),
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as any);
+    expect(events).not.toContain("input");
   });
 });

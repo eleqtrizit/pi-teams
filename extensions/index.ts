@@ -1,7 +1,6 @@
 import { StringEnum } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
-  ExtensionCommandContext,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import {
@@ -68,16 +67,67 @@ export interface SubModelRef {
   model: string;
 }
 
-/** Parsed arguments of the /sub command. */
+/** Parsed arguments of the substitute-model command. */
 export interface SubCommandArgs {
   modelRequest: string;
   prompt: string;
 }
 
+/** Which bang-model command a `$`-prefixed input maps to. */
+export type BangModelCommandKind = "sub" | "worker" | "readonly-worker";
+
+/** Parsed `$`-prefixed model command input. */
+export interface BangModelCommandArgs {
+  /** One `$` runs a substitute turn; `$$` spawns a worker, `$$$` a read-only worker */
+  kind: BangModelCommandKind;
+  /** Fuzzy model request, e.g. "opus-4" or "openai/gpt-5" */
+  modelRequest: string;
+  /** Everything after the model token */
+  prompt: string;
+}
+
+/** One to three dollars; four or more is ordinary text, not a command prefix. */
+const BANG_MODEL_INPUT = /^(\${1,3})(\S+)\s+(\S.*)$/;
+
 /**
- * Parse "/sub <model name> <prompt...>" input.
+ * What a plausible model request looks like: a letter first, then word
+ * characters, dots, slashes, colons, at-signs, or hyphens. Rejects dollar
+ * amounts ("$100 note"), stray dollars ("$$$$$ money"), and plain numbers so
+ * ordinary text reaches the model untouched.
+ */
+const MODEL_REQUEST_LIKE = /^[A-Za-z][\w./:@-]*$/;
+
+/**
+ * Parse a `$`-prefixed model command: "$<model> <prompt...>",
+ * "$$<model> <prompt...>", or "$$$<model> <prompt...>".
  *
- * @param args - Raw argument string the user typed after /sub
+ * Input that does not match the shape, such as "$100 budget note" or a lone
+ * "$model" without a prompt, is left as ordinary message text.
+ *
+ * @param text - Raw user input
+ * @returns The parsed command, or null when the input is not a bang-model command
+ */
+export function parseBangModelCommand(
+  text: string,
+): BangModelCommandArgs | null {
+  const match = BANG_MODEL_INPUT.exec(text);
+  if (!match || !MODEL_REQUEST_LIKE.test(match[2])) {
+    return null;
+  }
+  const kind: BangModelCommandKind =
+    match[1].length === 1
+      ? "sub"
+      : match[1].length === 2
+        ? "worker"
+        : "readonly-worker";
+  return { kind, modelRequest: match[2], prompt: match[3].trim() };
+}
+
+/**
+ * Parse substitute-model input: "<model name> <prompt...>" (the "$" prefix is
+ * stripped by the input handler before this runs).
+ *
+ * @param args - Raw argument string: the model request and prompt
  * @returns The model request and prompt, or null when either part is missing
  */
 export function parseSubCommandArgs(args: string): SubCommandArgs | null {
@@ -262,6 +312,140 @@ function getAvailableModels(
   } catch (_e) {
     return [];
   }
+}
+
+/** One argument-completion entry pi shows below the command line. */
+export interface CommandCompletionItem {
+  label: string;
+  value: string;
+}
+
+/**
+ * Complete the leading model argument of a typed command like "$<model> <prompt...>".
+ *
+ * Treats everything before the first space as the model token, so completions
+ * are suppressed once the user starts typing the prompt. Within the token an
+ * optional "provider/" prefix narrows the candidates, and the remaining text
+ * is matched as a case-insensitive substring of the provider or model name.
+ *
+ * @param argumentPrefix - Text the user typed after the command name so far
+ * @param models - Available models to complete against
+ * @param maxItems - Upper bound on returned entries
+ * @return: Up to maxItems "provider/model" completions, or null when there is nothing to offer
+ */
+export function completeModelArg(
+  argumentPrefix: string,
+  models: Array<{ provider: string; model: string }>,
+  maxItems = 12,
+): CommandCompletionItem[] | null {
+  // Model names never contain spaces, so any space after the leading
+  // whitespace means the user has moved on to typing the prompt.
+  if (argumentPrefix.trim().includes(" ")) return null;
+  const modelToken = argumentPrefix.split(" ", 1)[0];
+  const tokenParts = modelToken.split("/", 2);
+  const providerPrefix =
+    tokenParts.length === 2 ? tokenParts[0].toLowerCase() : null;
+  const namePrefix = (
+    tokenParts.length === 2 ? tokenParts[1] : modelToken
+  ).toLowerCase();
+  const items = models
+    .filter(
+      (m) =>
+        (providerPrefix === null ||
+          m.provider.toLowerCase() === providerPrefix) &&
+        (namePrefix === "" ||
+          m.model.toLowerCase().includes(namePrefix) ||
+          m.provider.toLowerCase().includes(namePrefix)),
+    )
+    .slice(0, maxItems)
+    .map((m) => ({
+      label: `${m.provider}/${m.model}`,
+      value: `${m.provider}/${m.model}`,
+    }));
+  return items.length > 0 ? items : null;
+}
+
+/** One to three dollars; four or more is ordinary text, not a command prefix. */
+const BANG_MODEL_TYPED_PREFIX = /^(\${1,3})(\S*)$/;
+
+/** One suggestion pi's editor can complete: what to insert and how to show it. */
+interface BangCompletionItem {
+  label: string;
+  value: string;
+  description?: string;
+}
+
+/**
+ * Subset of pi-tui's AutocompleteProvider the wrapper needs. Optional
+ * `options` mirrors the runtime signature (abort signal, Tab force flag);
+ * the vendored peer types predate it.
+ */
+interface EditorAutocompleteProvider {
+  getSuggestions(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    options?: { signal: AbortSignal; force?: boolean },
+  ): Promise<{ items: BangCompletionItem[]; prefix: string } | null>;
+  applyCompletion(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    item: BangCompletionItem,
+    prefix: string,
+  ): { lines: string[]; cursorLine: number; cursorCol: number };
+}
+
+/**
+ * Runtime shape of pi's UI context. The vendored peer types lack
+ * addAutocompleteProvider, so the install site casts through this interface.
+ */
+interface EditorUIContext {
+  addAutocompleteProvider?: (
+    factory: (
+      current: EditorAutocompleteProvider,
+    ) => EditorAutocompleteProvider,
+  ) => void;
+}
+
+/**
+ * Wrap pi's autocomplete provider so `$`, `$$`, and `$$$` prefixes offer the
+ * model list while the user is typing the model token.
+ *
+ * Prefixes without a leading run of one to three dollars fall through to the
+ * wrapped provider unchanged. Completion values carry the dollar prefix, so
+ * accepting a suggestion keeps it in place.
+ *
+ * @param getModels - Supplies the models to complete against at call time
+ * @return: A factory that wraps the current autocomplete provider
+ */
+export function createBangModelCompletionFactory(
+  getModels: () => Array<{ provider: string; model: string }>,
+): (current: EditorAutocompleteProvider) => EditorAutocompleteProvider {
+  return (current) => ({
+    getSuggestions: async (lines, cursorLine, cursorCol, options) => {
+      const textBefore = (lines[cursorLine] ?? "").slice(0, cursorCol);
+      const match = BANG_MODEL_TYPED_PREFIX.exec(textBefore);
+      if (!match) {
+        return current.getSuggestions(lines, cursorLine, cursorCol, options);
+      }
+      // The regex anchors at the line start, so a space anywhere before the
+      // cursor means the user is already typing the prompt; no completions.
+      const items = completeModelArg(match[2], getModels());
+      if (!items) {
+        return null;
+      }
+      return {
+        items: items.map((item) => ({
+          ...item,
+          value: `${match[1]}${item.value}`,
+        })),
+        prefix: textBefore,
+      };
+    },
+    applyCompletion: (lines, cursorLine, cursorCol, item, prefix) =>
+      current.applyCompletion(lines, cursorLine, cursorCol, item, prefix),
+  });
 }
 
 /**
@@ -1422,10 +1606,7 @@ function spawnWorkerProcess(
  * @param safeName - Sanitized worker name
  */
 function seedWorkerStateFiles(safeTeamName: string, safeName: string): void {
-  const firstActivationFile = paths.firstActivationPath(
-    safeTeamName,
-    safeName,
-  );
+  const firstActivationFile = paths.firstActivationPath(safeTeamName, safeName);
   const lastMessageFile = paths.lastMessagePath(safeTeamName, safeName);
   const lastReportFile = paths.lastReportPath(safeTeamName, safeName);
   const lastAwokenFile = paths.lastAwokenPath(safeTeamName, safeName);
@@ -1555,9 +1736,11 @@ export default function (pi: ExtensionAPI) {
   let isAgentIdle = true;
   let isAgentRunning = false;
   // Captured from the first context that carries a model registry, so the
-  // /sub argument completion can list available models before its handler
+  // "$"-command completion can list available models before its handler
   // has ever run.
   let subModelRegistry: ModelRegistryLike | null = null;
+  // Guards the one-time autocomplete-provider installation for "$" commands.
+  let bangModelCompletionsInstalled = false;
   // Increments once a follow-up message has actually reached the agent's
   // followUp queue. The agent_end hold loop watches this counter to decide
   // when the run should continue with queued worker results.
@@ -1685,10 +1868,11 @@ export default function (pi: ExtensionAPI) {
   // automatically when a message arrives. Sleeping wastes wall time and
   // tokens and delays responses to the team-lead.
   const SLEEP_COMMAND_PATTERN = /^sleep\s+\d+/;
-  // Resolve the promise /sub waits on when the run the substitute prompt
-  // started reaches its end. The waiter is installed by /sub before it sends
-  // the prompt, so no agent_end can fire unobserved in between; the agent is
-  // idle when /sub runs, which makes the next agent_end the turn's end.
+  // Resolve the promise the "$" substitute command waits on when the run the
+  // substitute prompt started reaches its end. The waiter is installed by the
+  // input handler before it sends the prompt, so no agent_end can fire
+  // unobserved in between; the agent is idle when the command runs, which
+  // makes the next agent_end the turn's end.
   let subRunEndWaiter: (() => void) | null = null;
   pi.on("agent_end", () => {
     const waiter = subRunEndWaiter;
@@ -1724,6 +1908,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     isAgentRunning = false;
     subModelRegistry ??= ctx.modelRegistry;
+    if (isLead && !bangModelCompletionsInstalled) {
+      bangModelCompletionsInstalled = true;
+      (ctx.ui as EditorUIContext).addAutocompleteProvider?.(
+        createBangModelCompletionFactory(() =>
+          subModelRegistry ? getAvailableModels(subModelRegistry) : [],
+        ),
+      );
+    }
     pendingInboxNotifications.clear();
     paths.ensureDirs();
     if (isTeammate) {
@@ -1841,7 +2033,8 @@ export default function (pi: ExtensionAPI) {
     if (isProcessAlive(path.join(paths.teamDir(team), `${member.name}.pid`))) {
       return true;
     }
-    if (member.windowId && terminal?.isWindowAlive(member.windowId)) return true;
+    if (member.windowId && terminal?.isWindowAlive(member.windowId))
+      return true;
     if (member.tmuxPaneId && terminal?.isAlive(member.tmuxPaneId)) return true;
     return isAgentActive(team, member.name);
   }
@@ -2003,7 +2196,10 @@ export default function (pi: ExtensionAPI) {
     // Lead running in an auto-exit host mode: the extension holds the run open
     // while the team is active. Tell the lead so it ends its turn instead of
     // polling, and releases the session through team_shutdown when done.
-    if (!isTeammate && holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })) {
+    if (
+      !isTeammate &&
+      holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })
+    ) {
       return {
         systemPrompt:
           event.systemPrompt +
@@ -2502,62 +2698,53 @@ export default function (pi: ExtensionAPI) {
         handleFlavoredModelsCommand(ctx),
     });
 
-    pi.registerCommand("sub", {
-      description:
-        "Run one turn with a substitute model, then restore the current model " +
-        "(/sub <model name> <prompt...>)",
-      getArgumentCompletions: (argumentPrefix: string) => {
-        if (!subModelRegistry) return null;
-        const prefixParts = argumentPrefix.split("/", 2);
-        const providerPrefix =
-          prefixParts.length === 2 ? prefixParts[0].toLowerCase() : null;
-        const namePrefix = (
-          prefixParts.length === 2 ? prefixParts[1] : argumentPrefix
-        ).toLowerCase();
-        const items = getAvailableModels(subModelRegistry)
-          .filter(
-            (m) =>
-              (providerPrefix === null ||
-                m.provider.toLowerCase() === providerPrefix) &&
-              (namePrefix === "" ||
-                m.model.toLowerCase().includes(namePrefix) ||
-                m.provider.toLowerCase().includes(namePrefix)),
-          )
-          .slice(0, 12)
-          .map((m) => ({
-            label: `${m.provider}/${m.model}`,
-            value: `${m.provider}/${m.model}`,
-          }));
-        return items.length > 0 ? items : null;
-      },
-      handler: (args: string, ctx: ExtensionCommandContext) =>
-        runSubCommand(args, ctx),
+    pi.on("input", async (event, ctx) => {
+      // Only typed input goes through the bang commands. Worker deliveries and
+      // other extension-sourced messages flow through this same handler via
+      // pi.sendUserMessage, and a report that happens to start with
+      // "$<model> <prompt>" must reach the lead as ordinary text.
+      if (event.source !== "interactive") {
+        return { action: "continue" };
+      }
+      const parsed = parseBangModelCommand(event.text);
+      if (!parsed) {
+        return { action: "continue" };
+      }
+      subModelRegistry ??= ctx.modelRegistry;
+      const args = `${parsed.modelRequest} ${parsed.prompt}`;
+      if (parsed.kind === "sub") {
+        await runSubCommand(args, ctx);
+      } else {
+        await runInstaWorkerCommand(
+          args,
+          ctx,
+          parsed.kind === "readonly-worker",
+        );
+      }
+      return { action: "handled" };
     });
 
     /**
-     * Handle /sub: switch to a fuzzy-matched substitute model for exactly one
-     * turn, run the prompt, and restore the original model afterwards.
+     * Handle "$<model> <prompt...>": switch to a fuzzy-matched substitute
+     * model for exactly one turn, run the prompt, and restore the original
+     * model afterwards.
      *
      * @param args - Raw argument string: "<model name> <prompt...>"
      * @param ctx - Command context for the current session
      */
     async function runSubCommand(
       args: string,
-      ctx: ExtensionCommandContext,
+      ctx: ExtensionContext,
     ): Promise<void> {
       const parsed = parseSubCommandArgs(args);
       if (!parsed) {
-        instaNotify(
-          ctx,
-          "Usage: /sub <model name> <prompt...>",
-          "error",
-        );
+        instaNotify(ctx, "Usage: $<model name> <prompt...>", "error");
         return;
       }
       if (!ctx.isIdle()) {
         instaNotify(
           ctx,
-          "/sub needs an idle agent; wait for the current run to finish.",
+          "$ needs an idle agent; wait for the current run to finish.",
           "error",
         );
         return;
@@ -2588,9 +2775,7 @@ export default function (pi: ExtensionAPI) {
               full.slice(0, slashIndex),
               full.slice(slashIndex + 1),
             );
-            return found
-              ? { provider: found.provider, model: found.id }
-              : null;
+            return found ? { provider: found.provider, model: found.id } : null;
           },
           setModel: async (ref) => {
             const found = ctx.modelRegistry.find(ref.provider, ref.model);
@@ -2619,7 +2804,9 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Insta workers: create (or reuse) the session's team, fire off a worker,
-    // and deliver the task prompt straight into the worker's inbox.
+    // and deliver the task prompt straight into the worker's inbox. They are
+    // typed as "$$<model> <prompt...>" and "$$$<model> <prompt...>"; the
+    // input handler above dispatches both.
 
     /**
      * Show a command notification in UI sessions; log to the console in
@@ -2646,13 +2833,13 @@ export default function (pi: ExtensionAPI) {
       ctx: ExtensionContext,
       readonlyWorker: boolean,
     ): Promise<void> {
-      const commandName = readonlyWorker ? "insta-worker-ro" : "insta-worker";
+      const commandName = readonlyWorker ? "$$$" : "$$";
       try {
         const parsed = parseInstaWorkerArgs(args);
         if (!parsed) {
           instaNotify(
             ctx,
-            `Usage: /${commandName} <model name> <prompt ...>`,
+            `Usage: ${commandName}<model name> <prompt ...>`,
             "error",
           );
           return;
@@ -2730,20 +2917,6 @@ export default function (pi: ExtensionAPI) {
         );
       }
     }
-
-    pi.registerCommand("insta-worker", {
-      description:
-        "Spawn a teammate and deliver a task prompt to it. Usage: /insta-worker <model name> <prompt ...>",
-      handler: (args: string, ctx: ExtensionContext) =>
-        runInstaWorkerCommand(args, ctx, false),
-    });
-
-    pi.registerCommand("insta-worker-ro", {
-      description:
-        "Spawn a read-only teammate and deliver a task prompt to it. Usage: /insta-worker-ro <model name> <prompt ...>",
-      handler: (args: string, ctx: ExtensionContext) =>
-        runInstaWorkerCommand(args, ctx, true),
-    });
   }
 
   // ── Shared tools ─────────────────────────────────────────────────────────

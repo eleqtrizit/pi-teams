@@ -1,6 +1,9 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
+  completeModelArg,
+  createBangModelCompletionFactory,
   getTopModelMatches,
+  parseBangModelCommand,
   clearModelsCache,
   resolveModelWithProvider,
   scopedPatternMatches,
@@ -232,8 +235,12 @@ describe("scopedPatternMatches", () => {
   });
 
   it("ignores a :thinking-level suffix while matching", () => {
-    expect(scopedPatternMatches("github-copilot/gpt-4o:high", entry)).toBe(true);
-    expect(scopedPatternMatches("github-copilot/gpt-4o:xhigh", entry)).toBe(false);
+    expect(scopedPatternMatches("github-copilot/gpt-4o:high", entry)).toBe(
+      true,
+    );
+    expect(scopedPatternMatches("github-copilot/gpt-4o:xhigh", entry)).toBe(
+      false,
+    );
   });
 });
 
@@ -366,5 +373,150 @@ describe("FollowUpMessageQueue", () => {
     queue.flush((message) => sentMessages.push(message));
 
     expect(sentMessages).toEqual([]);
+  });
+});
+
+describe("completeModelArg", () => {
+  const models = [
+    { provider: "anthropic", model: "claude-opus-4" },
+    { provider: "anthropic", model: "claude-sonnet-4.5" },
+    { provider: "openai", model: "gpt-5" },
+  ];
+
+  it("completes by model name substring", () => {
+    expect(completeModelArg("opus", models)).toEqual([
+      { label: "anthropic/claude-opus-4", value: "anthropic/claude-opus-4" },
+    ]);
+  });
+
+  it("completes by provider substring", () => {
+    expect(completeModelArg("anth", models)).toHaveLength(2);
+  });
+
+  it("narrowers by provider prefix before the slash", () => {
+    expect(completeModelArg("openai/g", models)).toEqual([
+      { label: "openai/gpt-5", value: "openai/gpt-5" },
+    ]);
+  });
+
+  it("matches provider and model case-insensitively", () => {
+    expect(completeModelArg("OpenAI/GPT", models)).toEqual([
+      { label: "openai/gpt-5", value: "openai/gpt-5" },
+    ]);
+  });
+
+  it("offers every model for an empty prefix", () => {
+    expect(completeModelArg("", models)).toHaveLength(3);
+  });
+
+  it("suppresses completions once the prompt is being typed", () => {
+    expect(completeModelArg("opus write a haiku", models)).toBeNull();
+    expect(completeModelArg("openai/gpt-5 do the thing", models)).toBeNull();
+  });
+
+  it("returns null when nothing matches", () => {
+    expect(completeModelArg("_nomatch", models)).toBeNull();
+    expect(completeModelArg("nothing/gpt", models)).toBeNull();
+  });
+
+  it("caps the entry count at maxItems", () => {
+    expect(completeModelArg("", models, 2)).toHaveLength(2);
+  });
+});
+
+describe("parseBangModelCommand", () => {
+  it("maps one dollar to the substitute-turn command", () => {
+    expect(parseBangModelCommand("$opus-4 write a haiku")).toEqual({
+      kind: "sub",
+      modelRequest: "opus-4",
+      prompt: "write a haiku",
+    });
+  });
+
+  it("maps two dollars to the worker command", () => {
+    expect(parseBangModelCommand("$$openai/gpt-5 do the thing")).toEqual({
+      kind: "worker",
+      modelRequest: "openai/gpt-5",
+      prompt: "do the thing",
+    });
+  });
+
+  it("maps three dollars to the read-only worker command", () => {
+    expect(parseBangModelCommand("$$$nemotron audit the schema")).toEqual({
+      kind: "readonly-worker",
+      modelRequest: "nemotron",
+      prompt: "audit the schema",
+    });
+  });
+
+  it("leaves dollar amounts as ordinary text", () => {
+    expect(parseBangModelCommand("$100 budget note")).toBeNull();
+    expect(parseBangModelCommand("$$100 total")).toBeNull();
+  });
+
+  it("rejects missing or blank prompts", () => {
+    expect(parseBangModelCommand("$opus-4")).toBeNull();
+    expect(parseBangModelCommand("$opus-4   ")).toBeNull();
+  });
+
+  it("rejects missing model tokens", () => {
+    expect(parseBangModelCommand("$ write a haiku")).toBeNull();
+  });
+
+  it("treats four or more dollars as ordinary text", () => {
+    expect(parseBangModelCommand("$$$$$ money money money")).toBeNull();
+  });
+});
+
+describe("createBangModelCompletionFactory", () => {
+  const models = [
+    { provider: "anthropic", model: "claude-opus-4" },
+    { provider: "openai", model: "gpt-5" },
+  ];
+
+  function makeCurrent() {
+    return {
+      getSuggestions: vi.fn().mockResolvedValue(null),
+      applyCompletion: vi.fn(),
+    };
+  }
+
+  function suggestionsFor(provider: ReturnType<typeof makeCurrent>, typed: string) {
+    const wrapped = createBangModelCompletionFactory(() => models)(provider);
+    return wrapped.getSuggestions([typed], 0, typed.length, {
+      signal: new AbortController().signal,
+    });
+  }
+
+  it("offers models with the dollar prefix retained in values", async () => {
+    const provider = makeCurrent();
+    const result = await suggestionsFor(provider, "$op");
+    expect(result?.prefix).toBe("$op");
+    expect(result?.items[0].value).toBe("$anthropic/claude-opus-4");
+    expect(provider.getSuggestions).not.toHaveBeenCalled();
+  });
+
+  it("keeps two and three dollar prefixes intact", async () => {
+    await expect(
+      suggestionsFor(makeCurrent(), "$$gpt"),
+    ).resolves.toMatchObject({
+      items: [{ value: "$$openai/gpt-5" }],
+    });
+    await expect(
+      suggestionsFor(makeCurrent(), "$$$gpt"),
+    ).resolves.toMatchObject({
+      items: [{ value: "$$$openai/gpt-5" }],
+    });
+  });
+
+  it("falls through to the wrapped provider for other text", async () => {
+    const provider = makeCurrent();
+    const result = await suggestionsFor(provider, "plain message");
+    expect(result).toBeNull();
+    expect(provider.getSuggestions).toHaveBeenCalled();
+  });
+
+  it("suppresses completions once the prompt has started", async () => {
+    expect(await suggestionsFor(makeCurrent(), "$opus-4 write a haiku")).toBeNull();
   });
 });

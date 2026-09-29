@@ -10,27 +10,27 @@ Team members sit idle until a message is delivered to them. A programmatic loop 
 
 All 13 tools are registered in `extensions/index.ts`, split by session identity into three sections: team-lead tools under `if (isLead)`, shared tools for every session, and worker tools under `if (isWorker)`. `isLead` is true when `PI_AGENT_TYPE` is unset or `"lead"`; `isWorker` is true for `PI_AGENT_TYPE` `"teammate"` or `"readonly-worker"` when the agent is not named `team-lead`.
 
-| Tool | Section | What it does | Supporting files |
-|---|---|---|---|
-| `team_create` | lead | Create a team with seeded config and task directory | `src/utils/teams.ts` |
-| `resolve_model` | lead | Resolve a provider/model name for spawn calls | `extensions/index.ts` |
-| `spawn_teammate` | lead | Spawn a worker in a pane or separate window | `src/adapters/*`, `src/utils/teams.ts`, `src/utils/paths.ts` |
-| `spawn_readonly_worker` | lead | Spawn a read-only worker with a restricted tool list | same as `spawn_teammate` |
-| `spawn_lead_window` | lead | Open the team-lead in its own OS window | `src/adapters/*`, `src/utils/teams.ts` |
-| `team_shutdown` | lead | Remove every member, then wipe the team directory | `src/utils/teams.ts` (`removeAgent`) |
-| `close_worker` | lead | Close one teammate | `src/utils/teams.ts` (`removeAgent`) |
-| `get_flavored_models` | lead | Show the high/med/fast model lists | `src/utils/flavoredModels.ts` |
-| `get_models` | lead | Show OSS and frontier model lists | `src/utils/flavoredModels.ts` |
-| `send_message` | shared | Deliver a message to one agent | `src/utils/messaging.ts`, `src/utils/paths.ts` |
-| `broadcast_message` | shared | Deliver a message to every member | `src/utils/messaging.ts` |
-| `list_teammates` | shared | Show members with status and undelivered counts | `src/utils/teams.ts`, `src/utils/messaging.ts` |
-| `close_myself` | worker | Terminate the calling agent | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
+| Tool                    | Section | What it does                                         | Supporting files                                                |
+| ----------------------- | ------- | ---------------------------------------------------- | --------------------------------------------------------------- |
+| `team_create`           | lead    | Create a team with seeded config and task directory  | `src/utils/teams.ts`                                            |
+| `resolve_model`         | lead    | Resolve a provider/model name for spawn calls        | `extensions/index.ts`                                           |
+| `spawn_teammate`        | lead    | Spawn a worker in a pane or separate window          | `src/adapters/*`, `src/utils/teams.ts`, `src/utils/paths.ts`    |
+| `spawn_readonly_worker` | lead    | Spawn a read-only worker with a restricted tool list | same as `spawn_teammate`                                        |
+| `spawn_lead_window`     | lead    | Open the team-lead in its own OS window              | `src/adapters/*`, `src/utils/teams.ts`                          |
+| `team_shutdown`         | lead    | Remove every member, then wipe the team directory    | `src/utils/teams.ts` (`removeAgent`)                            |
+| `close_worker`          | lead    | Close one teammate                                   | `src/utils/teams.ts` (`removeAgent`)                            |
+| `get_flavored_models`   | lead    | Show the high/med/fast model lists                   | `src/utils/flavoredModels.ts`                                   |
+| `get_models`            | lead    | Show OSS and frontier model lists                    | `src/utils/flavoredModels.ts`                                   |
+| `send_message`          | shared  | Deliver a message to one agent                       | `src/utils/messaging.ts`, `src/utils/paths.ts`                  |
+| `broadcast_message`     | shared  | Deliver a message to every member                    | `src/utils/messaging.ts`                                        |
+| `list_teammates`        | shared  | Show members with status and undelivered counts      | `src/utils/teams.ts`, `src/utils/messaging.ts`                  |
+| `close_myself`          | worker  | Terminate the calling agent                          | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
 
-The `/insta-worker` and `/insta-worker-ro` slash commands are also registered with the team-lead tools: they create the session's team when none exists, spawn a worker on the requested model (bare names resolve through the same matching as `resolve_model`), and deliver the task prompt plus a report-back-and-close instruction into the worker's inbox. All three spawn surfaces run through one shared `spawnTeamWorker` path in `extensions/index.ts`, which also owns the state pre-seed (`seedWorkerStateFiles`).
+The team-lead also accepts dollar-prefixed inputs, registered as `input` handlers with the team-lead tools (not slash commands): `$$<model> <prompt...>` and `$$$<model> <prompt...>` create the session's team when none exists, spawn a worker on the requested model (bare names resolve through the same matching as `resolve_model`), and deliver the task prompt plus a report-back-and-close instruction into the worker's inbox. All spawn surfaces run through one shared `spawnTeamWorker` path in `extensions/index.ts`, which also owns the state pre-seed (`seedWorkerStateFiles`). Parsing lives in the exported `parseBangModelCommand` helper.
 
-The `/sub` slash command is registered with the team-lead tools: `/sub <model name> <prompt...>` fuzzy-matches the requested model through `resolveModelWithProvider`, switches the session to it with `pi.setModel`, runs exactly one turn via `pi.sendUserMessage`, waits for idle, then restores the original model (restoration runs in a `finally` block, so an error or abort still restores). Parsing and orchestration live in the exported `parseSubCommandArgs` and `executeSubTurn` helpers in `extensions/index.ts`.
+Model substitution runs through the same input handlers: `$<model name> <prompt...>` (one dollar) fuzzy-matches the requested model through `resolveModelWithProvider`, switches the session to it with `pi.setModel`, runs exactly one turn via `pi.sendUserMessage`, waits for idle, then restores the original model (restoration runs in a `finally` block, so an error or abort still restores). Parsing and orchestration live in the exported `parseSubCommandArgs` and `executeSubTurn` helpers in `extensions/index.ts`. While typing, an autocomplete provider installed through `ctx.ui.addAutocompleteProvider` (`createBangModelCompletionFactory`) offers model completions for `$`, `$$`, and `$$$` prefixes. Input that does not parse as a model command, such as `$100 budget note`, flows through to the model as ordinary text.
 
 Read-only workers are additionally filtered by pi's `--tools` set at spawn, so they effectively see `read`, `grep`, `find`, `ls`, `send_message`, `broadcast_message`, and `close_myself` only.
 

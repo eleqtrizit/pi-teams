@@ -81,9 +81,10 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### Insta worker commands
 
-- **`/insta-worker`** - Spawn a teammate and deliver a task prompt to it in one step. Usage: `/insta-worker <model name> <prompt ...>`; a bare model name resolves automatically
-- **`/insta-worker-ro`** - Same, but the worker is read-only (`read`, `grep`, `find`, `ls`, messaging, `close_myself`)
+- **`$$<model name> <prompt ...>`** - Spawn a teammate and deliver a task prompt to it in one step; a bare model name resolves automatically
+- **`$$$<model name> <prompt ...>`** - Same, but the worker is read-only (`read`, `grep`, `find`, `ls`, messaging, `close_myself`)
 - Both create the session's team when none exists, spawn a worker on the resolved model, and inject the prompt plus a report-back-and-close instruction into the worker's inbox
+- Model name autocomplete appears while typing the token after the dollars
 
 ### Model Categorization
 
@@ -93,7 +94,8 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### Model Substitution
 
-- **`/sub`** - Run one turn with a different model, then restore the original. Usage: `/sub <model name> <prompt ...>`; the model name is fuzzy-matched the same way as `resolve_model`
+- **`$<model name> <prompt ...>`** - Run one turn with a different model, then restore the original; the model name is fuzzy-matched the same way as `resolve_model`, with autocomplete while typing
+- Input without a resolvable-looking model token, such as `$100 budget note`, stays an ordinary message
 
 ### Messaging System
 
@@ -111,50 +113,59 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 ## Features
 
 ### 🏢 Team Management
+
 - Create teams with custom names, descriptions, and default AI models
 - Configure separate OS windows vs terminal panes for teammates
 - Persistent team configuration stored locally
 
 ### 🤖 Agent Spawning
+
 - Launch specialized teammates with different models and thinking levels
 - Support for separate OS windows (iTerm2, WezTerm) or terminal panes (tmux, Zellij)
 - Automatic model resolution with fuzzy matching
 
 ### 💬 Inter-Agent Messaging
+
 - Agents communicate autonomously via file-based inbox system
 - Direct messaging between specific teammates
 - Broadcasting to all team members with optional colors
 - Unread message tracking and notifications
 
 ### 🔔 Automated Reminders
+
 - System prompts idle agents to report back to team-lead
 - Smart reminder logic based on instruction timestamps (not wake cycles)
 - One-time reminders per instruction cycle to avoid spam
 
 ### 🖥️ Terminal Integration
+
 - **tmux** - Pane-based spawning with `tmux split-window`
 - **Zellij** - Pane-based spawning with `zellij run`
 - **iTerm2** - macOS native with AppleScript window/pane management
 - **WezTerm** - Cross-platform with CLI-based pane and window management
 
 ### 🔒 Lock System
+
 - Thread-safe operations with file-based locking
 - Automatic stale lock cleanup (60s timeout)
 - Race condition protection for multi-agent operations
 
 ### 🍦 Flavored Models
+
 - Categorize your enabled models into flavors: `high` (deep reasoning), `med` (balanced), `fast` (quick responses)
 - Configured in `~/.pi/agent/settings.json` via `enabledModelsHigh`, `enabledModelsMed`, and `enabledModelsFast`
 - `/flavored-models` opens an interactive settings UI (team-lead sessions only)
 - Spawn tools follow flavor guidance: match the flavor to the task, spread teammates across providers, and fall back to the team lead's model when no flavors are set
 
 ### 📊 Model Resolution
+
 - Smart provider selection with priority-based matching
 - Fuzzy search with Levenshtein distance for typo tolerance
 - Provider priority: OAuth/subscription providers first (cheaper), then API-key providers
 - Composite-aware token matching (e.g., "qwen35b" matches "qwen3-coder-35b")
 
 ### 🎨 Window Title Support
+
 - Automatic window/pane titles: `{teamName}: {agentName}`
 - Terminal-specific implementations:
   - **iTerm2**: Escape sequences via AppleScript
@@ -165,12 +176,12 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 pi-teams automatically detects and integrates with your terminal environment:
 
-| Terminal | Detection | Pane Management | Window Support |
-|----------|-----------|-----------------|----------------|
-| **tmux** | `TMUX` env var | `tmux split-window` | ❌ |
-| **Zellij** | `ZELLIJ` env var | `zellij run` | ❌ |
-| **iTerm2** | `TERM_PROGRAM=iTerm.app` | AppleScript splits | ✅ |
-| **WezTerm** | `WEZTERM_PANE` env var | `wezterm cli split-pane` | ✅ |
+| Terminal    | Detection                | Pane Management          | Window Support |
+| ----------- | ------------------------ | ------------------------ | -------------- |
+| **tmux**    | `TMUX` env var           | `tmux split-window`      | ❌             |
+| **Zellij**  | `ZELLIJ` env var         | `zellij run`             | ❌             |
+| **iTerm2**  | `TERM_PROGRAM=iTerm.app` | AppleScript splits       | ✅             |
+| **WezTerm** | `WEZTERM_PANE` env var   | `wezterm cli split-pane` | ✅             |
 
 ### Detection Priority Order
 
@@ -198,6 +209,7 @@ If a teammate completes work without reporting back to the team-lead, the system
 > "What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately."
 
 **Smart Logic**: The reminder system uses instruction-based timestamps to avoid false positives from incidental wake cycles. A reminder is only sent if:
+
 1. Inbox contains team-lead instructions
 2. All instructions have been read
 3. Agent hasn't sent a message to `team-lead` since the latest instruction
@@ -206,6 +218,7 @@ If a teammate completes work without reporting back to the team-lead, the system
 ### Context Injection
 
 Each teammate receives a custom system prompt including:
+
 - Their role and instructions
 - Team context (team name, member list)
 - Available tools
@@ -256,13 +269,16 @@ All team data is stored in `~/.pi/`:
 The `resolve_model` tool provides intelligent model name resolution:
 
 ### Search Strategies
+
 1. **Exact match** - Case-insensitive exact model name match
 2. **Token match** - Partial matching with tokenization
 3. **Fuzzy match** - Levenshtein distance for typo tolerance
 4. **Composite match** - Handles composite names like "qwen35b" → "qwen3-coder-35b"
 
 ### Provider Priority
+
 Models are ranked by provider cost-effectiveness:
+
 1. Google Gemini CLI (OAuth, free tier)
 2. GitHub Copilot (subscription)
 3. Kimi (subscription)
@@ -270,6 +286,7 @@ Models are ranked by provider cost-effectiveness:
 5. Other providers (Azure, Bedrock, Mistral, Groq, etc.)
 
 ### Example Usage
+
 ```
 resolve_model(model_name="haiku")
 # Returns: "anthropic/claude-3-haiku-20240307"
