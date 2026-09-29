@@ -1685,6 +1685,19 @@ export default function (pi: ExtensionAPI) {
   // automatically when a message arrives. Sleeping wastes wall time and
   // tokens and delays responses to the team-lead.
   const SLEEP_COMMAND_PATTERN = /^sleep\s+\d+/;
+  // Resolve the promise /sub waits on when the run the substitute prompt
+  // started reaches its end. The waiter is installed by /sub before it sends
+  // the prompt, so no agent_end can fire unobserved in between; the agent is
+  // idle when /sub runs, which makes the next agent_end the turn's end.
+  let subRunEndWaiter: (() => void) | null = null;
+  pi.on("agent_end", () => {
+    const waiter = subRunEndWaiter;
+    if (waiter) {
+      subRunEndWaiter = null;
+      waiter();
+    }
+  });
+
   pi.on("tool_call", async (event) => {
     // Only enforce while a team is online; otherwise this would interfere
     // with ordinary sleep usage in standalone pi sessions.
@@ -2554,6 +2567,11 @@ export default function (pi: ExtensionAPI) {
         instaNotify(ctx, "No model is active in this session.", "error");
         return;
       }
+      // Armed before the prompt is sent: the agent is idle, so the next
+      // agent_end event marks the end of the substitute turn.
+      const subTurnRunEndPromise = new Promise<void>((resolve) => {
+        subRunEndWaiter = resolve;
+      });
       await executeSubTurn(
         {
           originalModel: { provider: original.provider, model: original.id },
@@ -2585,7 +2603,14 @@ export default function (pi: ExtensionAPI) {
             pi.sendUserMessage(prompt);
             return Promise.resolve();
           },
-          waitForIdle: () => ctx.waitForIdle(),
+          // ctx.waitForIdle() would resolve immediately here: the prompt is
+          // queued asynchronously and the agent is still idle when it is
+          // called. Instead, wait for the run this prompt starts to end via
+          // the persistent agent_end listener. The guard above ensures the
+          // agent was idle, so the next agent_end belongs to this turn. The
+          // waiter was installed before runPrompt, so no agent_end can slip
+          // past it.
+          waitForIdle: () => subTurnRunEndPromise,
           notify: (message, level) => instaNotify(ctx, message, level),
         },
         parsed.modelRequest,
