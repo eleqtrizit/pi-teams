@@ -381,6 +381,8 @@ interface BangCompletionItem {
  * the vendored peer types predate it.
  */
 interface EditorAutocompleteProvider {
+  /** Characters that auto-trigger this provider at token boundaries. */
+  triggerCharacters?: string[];
   getSuggestions(
     lines: string[],
     cursorLine: number,
@@ -423,6 +425,10 @@ export function createBangModelCompletionFactory(
   getModels: () => Array<{ provider: string; model: string }>,
 ): (current: EditorAutocompleteProvider) => EditorAutocompleteProvider {
   return (current) => ({
+    // pi's editor only auto-opens completions for a known trigger character
+    // (defaults: "@" and "#"). Declaring "$" here makes typing a dollar sign
+    // open the popup; pi_tui merges this into the editor's trigger set.
+    triggerCharacters: ["$"],
     getSuggestions: async (lines, cursorLine, cursorCol, options) => {
       const textBefore = (lines[cursorLine] ?? "").slice(0, cursorCol);
       const match = BANG_MODEL_TYPED_PREFIX.exec(textBefore);

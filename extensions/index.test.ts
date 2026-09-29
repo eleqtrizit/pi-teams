@@ -481,7 +481,10 @@ describe("createBangModelCompletionFactory", () => {
     };
   }
 
-  function suggestionsFor(provider: ReturnType<typeof makeCurrent>, typed: string) {
+  function suggestionsFor(
+    provider: ReturnType<typeof makeCurrent>,
+    typed: string,
+  ) {
     const wrapped = createBangModelCompletionFactory(() => models)(provider);
     return wrapped.getSuggestions([typed], 0, typed.length, {
       signal: new AbortController().signal,
@@ -497,11 +500,11 @@ describe("createBangModelCompletionFactory", () => {
   });
 
   it("keeps two and three dollar prefixes intact", async () => {
-    await expect(
-      suggestionsFor(makeCurrent(), "$$gpt"),
-    ).resolves.toMatchObject({
-      items: [{ value: "$$openai/gpt-5" }],
-    });
+    await expect(suggestionsFor(makeCurrent(), "$$gpt")).resolves.toMatchObject(
+      {
+        items: [{ value: "$$openai/gpt-5" }],
+      },
+    );
     await expect(
       suggestionsFor(makeCurrent(), "$$$gpt"),
     ).resolves.toMatchObject({
@@ -516,7 +519,16 @@ describe("createBangModelCompletionFactory", () => {
     expect(provider.getSuggestions).toHaveBeenCalled();
   });
 
+  it("declares $ as a trigger character so the editor opens the popup", () => {
+    const wrapped = createBangModelCompletionFactory(() => models)(
+      makeCurrent(),
+    );
+    expect(wrapped.triggerCharacters).toEqual(["$"]);
+  });
+
   it("suppresses completions once the prompt has started", async () => {
-    expect(await suggestionsFor(makeCurrent(), "$opus-4 write a haiku")).toBeNull();
+    expect(
+      await suggestionsFor(makeCurrent(), "$opus-4 write a haiku"),
+    ).toBeNull();
   });
 });
