@@ -23,12 +23,11 @@
     "README.md"
   ],
   "dependencies": {
-    "typebox": "^1.1.33",
     "uuid": "^11.1.0"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "pi": {
     "image": "https://raw.githubusercontent.com/burggraf/pi-teams/main/pi-team-in-action.png",

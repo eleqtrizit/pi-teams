@@ -11,11 +11,8 @@ importers:
       '@mariozechner/pi-coding-agent':
         specifier: '*'
         version: 0.73.1(ws@8.21.0)(zod@4.4.3)
-      '@sinclair/typebox':
-        specifier: '*'
-        version: 0.34.49
       typebox:
-        specifier: ^1.1.33
+        specifier: '*'
         version: 1.2.1
       uuid:
         specifier: ^11.1.0
@@ -416,9 +413,6 @@ packages:
 
   '@silvia-odwyer/photon-node@0.3.4':
     resolution: {integrity: sha512-bnly4BKB3KDTFxrUIcgCLbaeVVS8lrAkri1pEzskpmxu9MdfGQTy8b8EgcD83ywD3RPMsIulY8xJH5Awa+t9fA==}
-
-  '@sinclair/typebox@0.34.49':
-    resolution: {integrity: sha512-brySQQs7Jtn0joV8Xh9ZV/hZb9Ozb0pmazDIASBkYKCjXrXU3mpcFahmK/z4YDhGkQvP9mWJbVyahdtU5wQA+A==}
 
   '@smithy/core@3.24.6':
     resolution: {integrity: sha512-wBXDRup6UU97VKyaiRo8AssnfStPtG0oAAfpq/bC0a1YYau8pM86YB4kM6ccoVi1mS8l/UHbn9oDM+7uozr/ug==}
@@ -1848,8 +1842,6 @@ snapshots:
   '@rolldown/pluginutils@1.0.1': {}
 
   '@silvia-odwyer/photon-node@0.3.4': {}
-
-  '@sinclair/typebox@0.34.49': {}
 
   '@smithy/core@3.24.6':
     dependencies:
