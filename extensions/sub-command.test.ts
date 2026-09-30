@@ -121,9 +121,43 @@ describe("executeSubTurn", () => {
     });
     await executeSubTurn(deps, "gpt-5", "do the thing");
     expect(notifications.map((n) => n.level)).toEqual([
-      "info",
-      "info",
+      "success",
+      "success",
     ]);
     expect(notifications[1].message).toContain("claude-opus-4");
+  });
+
+  it("reports errors without prompting when setModel throws", async () => {
+    const notifications: Array<{ message: string; level: string }> = [];
+    const deps = makeDeps({
+      setModel: async () => {
+        throw new Error("registry exploded");
+      },
+      runPrompt: async () => {
+        throw new Error("prompt must not run");
+      },
+      notify: (message, level) => {
+        notifications.push({ message, level });
+      },
+    });
+    await executeSubTurn(deps, "gpt-5", "do the thing");
+    expect(notifications).toEqual([
+      { level: "error", message: expect.stringContaining("registry exploded") },
+    ]);
+  });
+
+  it("restores the original model when the restore switch throws", async () => {
+    const setModelCalls: string[] = [];
+    const deps = makeDeps({
+      setModel: async (ref) => {
+        setModelCalls.push(ref.model);
+        if (ref.model === "claude-opus-4") {
+          throw new Error("restore blew up");
+        }
+        return true;
+      },
+    });
+    await executeSubTurn(deps, "gpt-5", "do the thing");
+    expect(setModelCalls).toEqual(["gpt-5", "claude-opus-4"]);
   });
 });

@@ -2,7 +2,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   Container,
   type SettingItem,
@@ -10,7 +10,7 @@ import {
   type SettingsListTheme,
   Spacer,
   Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -156,8 +156,8 @@ export interface SubTurnDeps {
   runPrompt: (prompt: string) => Promise<void>;
   /** Resolves when the agent is idle again after the turn */
   waitForIdle: () => Promise<void>;
-  /** Shows a status or error message to the user */
-  notify: (message: string, level: "info" | "error") => void;
+  /** Shows a status, error, or success message to the user */
+  notify: (message: string, level: "info" | "error" | "success") => void;
 }
 
 /**
@@ -180,10 +180,21 @@ export async function executeSubTurn(
     deps.notify("Could not resolve the substitute model.", "error");
     return;
   }
-  const switchResult = await deps.setModel(substitute);
+  let switchResult: boolean;
+  try {
+    switchResult = await deps.setModel(substitute);
+  } catch (error) {
+    deps.notify(
+      `Switching to ${substitute.provider}/${substitute.model} failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      "error",
+    );
+    return;
+  }
   if (!switchResult) {
     deps.notify(
-      `Provider "${substitute.provider}" is not authenticated; no model switch was made.`,
+      `Could not switch to ${substitute.provider}/${substitute.model}: the model is not in the registry or the provider is not authenticated.`,
       "error",
     );
     return;
@@ -191,22 +202,40 @@ export async function executeSubTurn(
   try {
     deps.notify(
       `Running one turn with ${substitute.provider}/${substitute.model}.`,
-      "info",
+      "success",
     );
     await deps.runPrompt(prompt);
     await deps.waitForIdle();
   } finally {
     deps.notify(
       `Substitute turn done; restoring ${deps.originalModel.provider}/${deps.originalModel.model}.`,
-      "info",
+      "success",
     );
-    await deps.setModel(deps.originalModel);
+    try {
+      await deps.setModel(deps.originalModel);
+    } catch (restoreError) {
+      deps.notify(
+        `Failed to restore ${deps.originalModel.provider}/${deps.originalModel.model}: ${
+          restoreError instanceof Error
+            ? restoreError.message
+            : String(restoreError)
+        }`,
+        "error",
+      );
+    }
   }
 }
 
-/**
- * Clear the available models cache. Useful for testing.
- */
+/** Data payload of a green model-switch notice entry. */
+interface ModelSwitchEntryData {
+  message: string;
+  timestamp: number;
+}
+
+/** Custom entry type for green model-switch notices. */
+const MODEL_SWITCH_ENTRY_TYPE = "pi-teams/model-switch";
+
+/** Clear the available models cache. Useful for testing. */
 export function clearModelsCache(): void {
   availableModelsCache = null;
   modelsCacheTime = 0;
@@ -2701,6 +2730,36 @@ export default function (pi: ExtensionAPI) {
       },
     });
 
+    // Green model-switch notices: pi renders ctx.ui.notify(..., "info") in
+    // dim gray, which is easy to miss (and looks like nothing happened). The
+    // switch and restore messages instead go through a custom session entry
+    // rendered with the theme's success (green) color. Older pi builds lack
+    // entry renderers, so the registration is optional and the notice falls
+    // back to plain console output.
+    if (typeof pi.registerEntryRenderer === "function") {
+      pi.registerEntryRenderer<ModelSwitchEntryData>(
+        MODEL_SWITCH_ENTRY_TYPE,
+        (entry, _options, theme) => {
+          const data = entry.data ?? { message: "", timestamp: Date.now() };
+          const container = new Container();
+          const ts = new Date(data.timestamp)
+            .toISOString()
+            .replace("T", " ")
+            .slice(0, 19);
+          container.addChild(new Spacer(1));
+          container.addChild(
+            new Text(
+              theme.fg("success", `✓ ${data.message}`) +
+                theme.fg("dim", `  (${ts})`),
+              1,
+              0,
+            ),
+          );
+          return container;
+        },
+      );
+    }
+
     pi.registerCommand("flavored-models", {
       description: "Configure model flavor assignments (high/med/fast/none)",
       handler: (_args: string, ctx: ExtensionContext) =>
@@ -2805,7 +2864,10 @@ export default function (pi: ExtensionAPI) {
           // waiter was installed before runPrompt, so no agent_end can slip
           // past it.
           waitForIdle: () => subTurnRunEndPromise,
-          notify: (message, level) => instaNotify(ctx, message, level),
+          notify: (message, level) =>
+            level === "success"
+              ? notifyModelSwitch(ctx, message)
+              : instaNotify(ctx, message, level),
         },
         parsed.modelRequest,
         parsed.prompt,
@@ -2835,6 +2897,23 @@ export default function (pi: ExtensionAPI) {
       } else {
         (level === "error" ? console.error : console.log)(message);
       }
+    }
+
+    /** Show a green model-switch notice: a themed session entry in UI
+     * sessions, a plain console line in print-like sessions.
+     *
+     * @param ctx - Command context with the UI availability flag
+     * @param message - The message to show or log
+     */
+    function notifyModelSwitch(ctx: ExtensionContext, message: string): void {
+      if (!ctx.hasUI || typeof (pi as ExtensionAPI).appendEntry !== "function") {
+        console.log(message);
+        return;
+      }
+      pi.appendEntry<ModelSwitchEntryData>(MODEL_SWITCH_ENTRY_TYPE, {
+        message,
+        timestamp: Date.now(),
+      });
     }
 
     async function runInstaWorkerCommand(

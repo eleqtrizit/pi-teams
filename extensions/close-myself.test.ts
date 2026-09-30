@@ -33,6 +33,7 @@ function registerExtensionForCurrentEnv(): Map<string, any> {
     on: vi.fn(),
     registerTool: (tool: any) => registered.set(tool.name, tool),
     registerCommand: vi.fn(),
+    registerEntryRenderer: vi.fn(),
     sendUserMessage: vi.fn(),
   } as any);
   return registered;

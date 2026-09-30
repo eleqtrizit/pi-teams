@@ -26,6 +26,7 @@ function registeredToolNames(): Set<string> {
     on: vi.fn(),
     registerTool: (tool: { name: string }) => names.add(tool.name),
     registerCommand: vi.fn(),
+      registerEntryRenderer: vi.fn(),
     sendUserMessage: vi.fn(),
   } as any);
   return names;
@@ -146,6 +147,7 @@ describe("bang-model input handling by identity", () => {
       on: (event: string) => events.push(event),
       registerTool: vi.fn(),
       registerCommand: vi.fn(),
+      registerEntryRenderer: vi.fn(),
       sendUserMessage: vi.fn(),
     } as any);
     expect(events).toContain("input");
@@ -161,6 +163,7 @@ describe("bang-model input handling by identity", () => {
       on: (event: string) => events.push(event),
       registerTool: vi.fn(),
       registerCommand: vi.fn(),
+      registerEntryRenderer: vi.fn(),
       sendUserMessage: vi.fn(),
     } as any);
     expect(events).not.toContain("input");
