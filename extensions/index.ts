@@ -442,9 +442,12 @@ export function createBangModelCompletionFactory(
         return null;
       }
       return {
+        // A trailing space after the model name puts the cursor where the
+        // prompt starts, so the user types immediately after accepting. The
+        // space also ends the dollar-prefix token, keeping the popup closed.
         items: items.map((item) => ({
           ...item,
-          value: `${match[1]}${item.value}`,
+          value: `${match[1]}${item.value} `,
         })),
         prefix: textBefore,
       };

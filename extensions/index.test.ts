@@ -495,20 +495,20 @@ describe("createBangModelCompletionFactory", () => {
     const provider = makeCurrent();
     const result = await suggestionsFor(provider, "$op");
     expect(result?.prefix).toBe("$op");
-    expect(result?.items[0].value).toBe("$anthropic/claude-opus-4");
+    expect(result?.items[0].value).toBe("$anthropic/claude-opus-4 ");
     expect(provider.getSuggestions).not.toHaveBeenCalled();
   });
 
   it("keeps two and three dollar prefixes intact", async () => {
     await expect(suggestionsFor(makeCurrent(), "$$gpt")).resolves.toMatchObject(
       {
-        items: [{ value: "$$openai/gpt-5" }],
+        items: [{ value: "$$openai/gpt-5 " }],
       },
     );
     await expect(
       suggestionsFor(makeCurrent(), "$$$gpt"),
     ).resolves.toMatchObject({
-      items: [{ value: "$$$openai/gpt-5" }],
+      items: [{ value: "$$$openai/gpt-5 " }],
     });
   });
 
