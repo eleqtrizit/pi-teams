@@ -127,7 +127,8 @@ describe("command registration by identity", () => {
       registerCommand: (name: string) => commands.push(name),
       sendUserMessage: vi.fn(),
     } as any);
-    expect(commands).toEqual([]);
+    // keep_last is a shared command: every identity gets it.
+    expect(commands).toEqual(["keep_last"]);
   });
 });
 

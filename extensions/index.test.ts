@@ -12,6 +12,7 @@ import {
   mergeQueuedMessages,
   classifyModel,
   executeGetModels,
+  getLastUserMessageText,
 } from "./index";
 import type { InboxMessage } from "../src/utils/models";
 import * as flavoredModels from "../src/utils/flavoredModels";
@@ -530,5 +531,62 @@ describe("createBangModelCompletionFactory", () => {
     expect(
       await suggestionsFor(makeCurrent(), "$opus-4 write a haiku"),
     ).toBeNull();
+  });
+});
+
+describe("getLastUserMessageText", () => {
+  const userMessage = (text: string) => ({
+    type: "message",
+    id: `u-${text.slice(0, 4)}`,
+    parentId: null,
+    timestamp: new Date().toISOString(),
+    message: { role: "user", content: [{ type: "text", text }] },
+  });
+
+  it("returns the text of the last user message", () => {
+    const entries = [
+      userMessage("first prompt"),
+      userMessage("second prompt"),
+    ] as never[];
+    expect(getLastUserMessageText(entries)).toBe("second prompt");
+  });
+
+  it("skips non-user entries between user messages", () => {
+    const assistant = {
+      type: "message",
+      id: "a1",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+    };
+    const entries = [
+      userMessage("keep me"),
+      assistant,
+      { type: "model_change", id: "m1", parentId: null, timestamp: "" },
+    ] as never[];
+    expect(getLastUserMessageText(entries)).toBe("keep me");
+  });
+
+  it("joins multiple text blocks and trims whitespace", () => {
+    const entry = {
+      type: "message",
+      id: "u1",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "  line one  " },
+          { type: "text", text: "line two" },
+        ],
+      },
+    };
+    expect(getLastUserMessageText([entry as never])).toBe(
+      "line one\nline two",
+    );
+  });
+
+  it("returns null when there is no user message with text", () => {
+    expect(getLastUserMessageText([])).toBeNull();
   });
 });

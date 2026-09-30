@@ -1,7 +1,9 @@
 import { StringEnum } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
+  SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -1370,6 +1372,40 @@ export const INSTA_WORKER_INSTRUCTION =
 
 /** Name prefix shared by insta teams and insta workers. */
 export const INSTA_NAME_PREFIX = "insta-";
+
+/** Minimal shape of a message content block that carries text. */
+interface TextContentBlock {
+  type: string;
+  text: string;
+}
+
+/**
+ * Extract the text of the most recent user message on the branch, walking
+ * backwards so tool results and non-user entries in between are skipped.
+ *
+ * @param entries - Branch entries in path order (oldest first)
+ * @returns The last user message's text content, or null when the branch has no user message with text
+ */
+export function getLastUserMessageText(entries: SessionEntry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || entry.type !== "message") continue;
+    const message = (entry as { message?: { role?: string; content?: string | TextContentBlock[] } }).message;
+    if (message?.role !== "user") continue;
+    if (typeof message.content === "string") {
+      const trimmed = message.content.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    const text = (message.content ?? [])
+      .filter((block): block is TextContentBlock => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text.trim())
+      .filter((text) => text.length > 0)
+      .join("\n");
+    if (text) return text;
+  }
+  return null;
+}
 
 /** Tools granted to read-only workers at spawn and reported in spawn results. */
 export const READONLY_WORKER_TOOLS = [
@@ -3009,6 +3045,35 @@ export default function (pi: ExtensionAPI) {
 
   // ── Shared tools ─────────────────────────────────────────────────────────
   // Messaging and team status. Available to the team-lead and to workers.
+
+  pi.registerCommand("keep_last", {
+    description: "Remove all session history except the last user message",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      const branch = ctx.sessionManager.getBranch();
+      const text = getLastUserMessageText(branch);
+      if (!text) {
+        ctx.ui.notify("No user message to keep in this session", "error");
+        return;
+      }
+      const currentSessionFile = ctx.sessionManager.getSessionFile();
+      // The old session file is preserved on disk through parentSession, so the
+      // trimmed history stays recoverable. The replacement session starts
+      // empty; in interactive mode the kept message is placed in the editor so
+      // it can be reviewed and sent again against a clean context.
+      const result = await ctx.newSession({
+        parentSession: currentSessionFile,
+        withSession: async (replacementCtx) => {
+          if (replacementCtx.mode === "tui") {
+            replacementCtx.ui.setEditorText(text);
+            replacementCtx.ui.notify("History cleared; last message moved to the editor", "info");
+          }
+        },
+      });
+      if (result.cancelled) {
+        ctx.ui.notify("Cancelled", "info");
+      }
+    },
+  });
 
   pi.registerTool({
     name: "send_message",
