@@ -79,23 +79,11 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - **`spawn_lead_window`** - Open team lead in a separate OS window
 - **`close_worker`** - Close one teammate: remove it from the team config, clean up its state, and terminate its process and pane
 
-### Insta worker commands
-
-- **`$$<model name> <prompt ...>`** - Spawn a teammate and deliver a task prompt to it in one step; a bare model name resolves automatically
-- **`$$$<model name> <prompt ...>`** - Same, but the worker is read-only (`read`, `grep`, `find`, `ls`, messaging, `close_myself`)
-- Both create the session's team when none exists, spawn a worker on the resolved model, and inject the prompt plus a report-back-and-close instruction into the worker's inbox
-- Model name autocomplete appears while typing the token after the dollars
-
 ### Model Categorization
 
 - **`get_models`** - Read enabled models from pi settings.json, split into OSS and frontier (GPT/Claude) lists
 - **`get_flavored_models`** - Read flavor-categorized model lists from pi settings.json
 - **`/flavored-models`** - Interactive command to assign each enabled model to a flavor
-
-### Model Substitution
-
-- **`$<model name> <prompt ...>`** - Run one turn with a different model, then restore the original; the model name is fuzzy-matched the same way as `resolve_model`, with autocomplete while typing
-- Input without a resolvable-looking model token, such as `$100 budget note`, stays an ordinary message
 
 ### Messaging System
 

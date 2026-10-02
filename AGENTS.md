@@ -28,9 +28,7 @@ All 13 tools are registered in `extensions/index.ts`, split by session identity 
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
 
-The team-lead also accepts dollar-prefixed inputs, registered as `input` handlers with the team-lead tools (not slash commands): `$$<model> <prompt...>` and `$$$<model> <prompt...>` create the session's team when none exists, spawn a worker on the requested model (bare names resolve through the same matching as `resolve_model`), and deliver the task prompt plus a report-back-and-close instruction into the worker's inbox. All spawn surfaces run through one shared `spawnTeamWorker` path in `extensions/index.ts`, which also owns the state pre-seed (`seedWorkerStateFiles`). Parsing lives in the exported `parseBangModelCommand` helper.
-
-Model substitution runs through the same input handlers: `$<model name> <prompt...>` (one dollar) fuzzy-matches the requested model through `resolveModelWithProvider`, switches the session to it with `pi.setModel`, runs exactly one turn via `pi.sendUserMessage`, waits for idle, then restores the original model (restoration runs in a `finally` block, so an error or abort still restores). Parsing and orchestration live in the exported `parseSubCommandArgs` and `executeSubTurn` helpers in `extensions/index.ts`. While typing, an autocomplete provider installed through `ctx.ui.addAutocompleteProvider` (`createBangModelCompletionFactory`) offers model completions for `$`, `$$`, and `$$$` prefixes. Input that does not parse as a model command, such as `$100 budget note`, flows through to the model as ordinary text.
+The dollar-prefixed one-turn model substitution inputs (`$<model> <prompt...>` and `$$<model> <prompt...>`) moved to the pi-oneturnagent package (`~/repos/pi/pi-oneturnagent`). pi-teams no longer registers them.
 
 Read-only workers are additionally filtered by pi's `--tools` set at spawn, so they effectively see `read`, `grep`, `find`, `ls`, `send_message`, `broadcast_message`, and `close_myself` only.
 

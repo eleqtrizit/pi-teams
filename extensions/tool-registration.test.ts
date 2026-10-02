@@ -132,41 +132,4 @@ describe("command registration by identity", () => {
   });
 });
 
-describe("bang-model input handling by identity", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.restoreAllMocks();
-  });
 
-  it("registers an input handler for lead sessions", () => {
-    vi.stubEnv("PI_AGENT_NAME", "");
-    vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
-
-    const events: string[] = [];
-    theExtension({
-      on: (event: string) => events.push(event),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      registerEntryRenderer: vi.fn(),
-      sendUserMessage: vi.fn(),
-    } as any);
-    expect(events).toContain("input");
-  });
-
-  it("registers no input handler for a teammate", () => {
-    vi.stubEnv("PI_AGENT_NAME", "worker-1");
-    vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
-
-    const events: string[] = [];
-    theExtension({
-      on: (event: string) => events.push(event),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      registerEntryRenderer: vi.fn(),
-      sendUserMessage: vi.fn(),
-    } as any);
-    expect(events).not.toContain("input");
-  });
-});
