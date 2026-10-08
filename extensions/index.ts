@@ -221,7 +221,7 @@ function byProviderPriority(
  *
  * Provider-prefixed requests resolve strictly within the named provider. Bare
  * names walk a priority ladder: the flavored models from pi settings first
- * (high/med/fast), then the session's scoped models (pi --models flag, or the
+ * (orchestrator/worker/swarm), then the session's scoped models (pi --models flag, or the
  * enabledModels list when the flag is absent), then the entire registry. The
  * fuzzy match runs only against the first non-empty group, so a configured
  * group always wins: a flavored model is returned when any flavored model is
@@ -337,7 +337,7 @@ export function resolveModelWithProvider(
 /**
  * Map flavored model ids to registry-available models.
  *
- * Flavored ids are pi settings' high/med/fast entries; each id matches either
+ * Flavored ids are pi settings' orchestrator/worker/swarm entries; each id matches either
  * the "provider/modelId" pair or the bare model id, case-insensitively.
  *
  * @param availableModels - Registry-available models
@@ -448,7 +448,7 @@ export function buildScopedModelGroup(
 }
 
 /**
- * Build the flavored-model group: the high/med/fast flavor lists from pi
+ * Build the flavored-model group: the orchestrator/worker/swarm lists from pi
  * settings.json mapped to registry-available models.
  *
  * @param availableModels - Registry-available models
@@ -460,9 +460,9 @@ function getFlavoredModelGroup(
   try {
     const flavors = flavoredModels.readFlavoredModels();
     return buildFlavoredModelGroup(availableModels, [
-      ...flavors.high,
-      ...flavors.med,
-      ...flavors.fast,
+      ...flavors.orchestrator,
+      ...flavors.worker,
+      ...flavors.swarm,
     ]);
   } catch (_e) {
     // Malformed settings leave the group empty and the ladder falls through.
@@ -820,17 +820,46 @@ export interface GetModelsResult {
 
 // ── Flavored models ─────────────────────────────────────────────────────────
 
+const FLAVOR_KEYS: readonly FlavorKey[] = ["orchestrator", "worker", "swarm"];
+
 const FLAVOR_LABELS: Record<FlavorKey, string> = {
-  high: "High Quality",
-  med: "Medium",
-  fast: "Fast",
+  orchestrator: "Orchestrator (planning, coordinating)",
+  worker: "Worker (coding)",
+  swarm: "Swarm (read-only information gathering)",
 };
 
 const FLAVOR_BULLET: Record<FlavorKey, string> = {
-  high: "\u25C6",
-  med: "\u25CF",
-  fast: "\u25B8",
+  orchestrator: "\u25C6",
+  worker: "\u25CF",
+  swarm: "\u25B8",
 };
+
+const FLAVOR_COLOR: Record<FlavorKey, string> = {
+  orchestrator: "accent",
+  worker: "success",
+  swarm: "warning",
+};
+
+/**
+ * Migrate legacy high/med/fast settings to orchestrator/worker/swarm.
+ *
+ * Failures are reported as an error notice instead of thrown, so a malformed
+ * settings file never blocks session start.
+ *
+ * @returns The warning text when a migration ran, the error text when it
+ *   failed, or undefined when there was nothing to migrate
+ */
+function runFlavorMigration(): { text: string; failed: boolean } | undefined {
+  try {
+    const result = flavoredModels.migrateLegacyFlavors();
+    return result
+      ? { text: flavoredModels.buildMigrationNotice(result), failed: false }
+      : undefined;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { text: `Flavored model migration failed: ${reason}`, failed: true };
+  }
+}
 
 /**
  * Classify a model identifier as frontier (GPT/Claude) or OSS.
@@ -895,18 +924,19 @@ function buildSettingsListTheme(theme: {
 
 /**
  * Execute the get-flavored-models tool: read flavor-categorized models from
- * pi settings.json and return three lists (high/med/fast).
+ * pi settings.json and return three lists (orchestrator/worker/swarm).
  *
+ * @param migrationNotice - Pending migration warning to prepend to the output
  * @returns Tool result content plus flavor details
  * @throws If the settings file cannot be read or parsed
  */
-function executeGetFlavoredModels(): {
+function executeGetFlavoredModels(migrationNotice?: string): {
   content: { type: "text"; text: string }[];
   details: FlavoredModelsResult;
 } {
   const flavors = flavoredModels.readFlavoredModels();
 
-  const sections = (["high", "med", "fast"] as const).flatMap((flavor) => {
+  const sections = FLAVOR_KEYS.flatMap((flavor) => {
     const items = flavors[flavor];
     return [
       `## ${FLAVOR_LABELS[flavor]} Models`,
@@ -918,7 +948,14 @@ function executeGetFlavoredModels(): {
   });
 
   return {
-    content: [{ type: "text", text: sections.join("\n") }],
+    content: [
+      {
+        type: "text",
+        text: migrationNotice
+          ? `${migrationNotice}\n\n${sections.join("\n")}`
+          : sections.join("\n"),
+      },
+    ],
     details: flavors,
   };
 }
@@ -927,7 +964,7 @@ function executeGetFlavoredModels(): {
  * Handler for the /flavored-models command.
  *
  * Opens an interactive SettingsList UI that lets the user assign each
- * enabled model to a flavor (high/med/fast/none). Changes are saved to
+ * enabled model to a flavor (orchestrator/worker/swarm/none). Changes are saved to
  * settings.json when the dialog closes.
  *
  * @param ctx - The extension context providing the UI interface
@@ -1066,7 +1103,11 @@ export function getLastUserMessageText(entries: SessionEntry[]): string | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (!entry || entry.type !== "message") continue;
-    const message = (entry as { message?: { role?: string; content?: string | TextContentBlock[] } }).message;
+    const message = (
+      entry as {
+        message?: { role?: string; content?: string | TextContentBlock[] };
+      }
+    ).message;
     if (message?.role !== "user") continue;
     if (typeof message.content === "string") {
       const trimmed = message.content.trim();
@@ -1074,7 +1115,10 @@ export function getLastUserMessageText(entries: SessionEntry[]): string | null {
       continue;
     }
     const text = (message.content ?? [])
-      .filter((block): block is TextContentBlock => block.type === "text" && typeof block.text === "string")
+      .filter(
+        (block): block is TextContentBlock =>
+          block.type === "text" && typeof block.text === "string",
+      )
       .map((block) => block.text.trim())
       .filter((text) => text.length > 0)
       .join("\n");
@@ -1376,6 +1420,8 @@ export default function (pi: ExtensionAPI) {
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentIdle = true;
   let isAgentRunning = false;
+  /** Migration warning shown to the model on its next get_flavored_models call */
+  let pendingMigrationNotice: string | undefined;
   // Captured from the first context that carries a model registry, so the
   // Increments once a follow-up message has actually reached the agent's
   // followUp queue. The agent_end hold loop watches this counter to decide
@@ -1529,6 +1575,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     isAgentRunning = false;
+    if (isLead) {
+      const migration = runFlavorMigration();
+      if (migration) {
+        ctx.ui.notify(migration.text, migration.failed ? "error" : "warning");
+        if (!migration.failed) {
+          pendingMigrationNotice = migration.text;
+        }
+      }
+    }
     pendingInboxNotifications.clear();
     paths.ensureDirs();
     if (isTeammate) {
@@ -1965,11 +2020,12 @@ export default function (pi: ExtensionAPI) {
       description:
         "Spawn a new teammate in a terminal pane or separate window.\n\n" +
         "Model selection: before spawning, call get_flavored_models to see the " +
-        "configured high/med/fast model lists. Pick a model whose flavor matches " +
-        "the task (high = deep reasoning, med = balanced work, fast = quick " +
-        "lookups/simple edits), and prefer spreading teammates across different " +
-        "providers unless the user names specific models. If no flavors are " +
-        "configured, spawn the same model as yours (the team lead's).\n\n" +
+        "configured orchestrator/worker/swarm model lists. Pick from the worker " +
+        "list for coding. Pick from the orchestrator list only for a teammate " +
+        "that plans or coordinates other work. Never pick from the swarm list " +
+        "(read-only gathering). Prefer spreading teammates across different " +
+        "providers unless the user names specific models. If no worker models " +
+        "are configured, spawn the same model as yours (the team lead's).\n\n" +
         "If you pass a model explicitly, it must be fully qualified as " +
         "provider/model. Use resolve_model first if you only know a model name.",
       parameters: asPiToolSchema(
@@ -2024,11 +2080,11 @@ export default function (pi: ExtensionAPI) {
       label: "Spawn Read-Only Worker",
       description:
         "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
-        "Model selection: before spawning, call get_flavored_models and spawn a " +
-        "model from the flavor that matches the task (usually fast or med for " +
-        "read-only research). Prefer spreading workers across different providers " +
-        "unless the user names specific models. If no flavors are configured, " +
-        "spawn the same model as yours (the team lead's).",
+        "Model selection: before spawning, call get_flavored_models and pick a " +
+        "model from the swarm list. If the swarm list is empty, pick from the " +
+        "worker list. If that is empty too, spawn the same model as yours (the " +
+        "team lead's). Prefer spreading workers across different providers " +
+        "unless the user names specific models.",
       parameters: asPiToolSchema(
         Type.Object({
           team_name: Type.String(),
@@ -2195,12 +2251,14 @@ export default function (pi: ExtensionAPI) {
       label: "Get Flavored Models",
       description:
         "Read flavor-categorized models from pi settings.json and return three " +
-        "lists: high (high-quality/deep reasoning), med (balanced performance), " +
-        "and fast (quick responses).",
+        "lists: orchestrator (orchestrating, planning, coordinating), worker " +
+        "(coding), and swarm (read-only information gathering).",
       parameters: asPiToolSchema(Type.Object({})) as any,
       async execute() {
         try {
-          return executeGetFlavoredModels();
+          const notice = pendingMigrationNotice;
+          pendingMigrationNotice = undefined;
+          return executeGetFlavoredModels(notice);
         } catch (e) {
           throw new Error(`Failed to read flavored models: ${e}`);
         }
@@ -2222,24 +2280,21 @@ export default function (pi: ExtensionAPI) {
           return text;
         }
 
-        const lines = (["high", "med", "fast"] as FlavorKey[]).flatMap(
-          (key) => {
-            const items = details[key];
-            const color =
-              key === "high" ? "accent" : key === "med" ? "success" : "warning";
-            const modelLines =
-              items.length > 0
-                ? items.map(
-                    (m) => `  ${theme.fg(color, FLAVOR_BULLET[key])} ${m}`,
-                  )
-                : [theme.fg("dim", "  (none configured)")];
-            return [
-              theme.fg("toolTitle", theme.bold(`${FLAVOR_LABELS[key]} Models`)),
-              ...modelLines,
-              "",
-            ];
-          },
-        );
+        const lines = FLAVOR_KEYS.flatMap((key) => {
+          const items = details[key];
+          const color = FLAVOR_COLOR[key];
+          const modelLines =
+            items.length > 0
+              ? items.map(
+                  (m) => `  ${theme.fg(color, FLAVOR_BULLET[key])} ${m}`,
+                )
+              : [theme.fg("dim", "  (none configured)")];
+          return [
+            theme.fg("toolTitle", theme.bold(`${FLAVOR_LABELS[key]} Models`)),
+            ...modelLines,
+            "",
+          ];
+        });
 
         text.setText(lines.join("\n"));
         return text;
@@ -2306,11 +2361,11 @@ export default function (pi: ExtensionAPI) {
     });
 
     pi.registerCommand("flavored-models", {
-      description: "Configure model flavor assignments (high/med/fast/none)",
+      description:
+        "Configure model flavor assignments (orchestrator/worker/swarm/none)",
       handler: (_args: string, ctx: ExtensionContext) =>
         handleFlavoredModelsCommand(ctx),
     });
-
   }
 
   // ── Shared tools ─────────────────────────────────────────────────────────
@@ -2335,7 +2390,10 @@ export default function (pi: ExtensionAPI) {
         withSession: async (replacementCtx) => {
           if (replacementCtx.mode === "tui") {
             replacementCtx.ui.setEditorText(text);
-            replacementCtx.ui.notify("History cleared; last message moved to the editor", "info");
+            replacementCtx.ui.notify(
+              "History cleared; last message moved to the editor",
+              "info",
+            );
           }
         },
       });

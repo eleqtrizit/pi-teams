@@ -19,7 +19,7 @@ All 13 tools are registered in `extensions/index.ts`, split by session identity 
 | `spawn_lead_window`     | lead    | Open the team-lead in its own OS window              | `src/adapters/*`, `src/utils/teams.ts`                          |
 | `team_shutdown`         | lead    | Remove every member, then wipe the team directory    | `src/utils/teams.ts` (`removeAgent`)                            |
 | `close_worker`          | lead    | Close one teammate                                   | `src/utils/teams.ts` (`removeAgent`)                            |
-| `get_flavored_models`   | lead    | Show the high/med/fast model lists                   | `src/utils/flavoredModels.ts`                                   |
+| `get_flavored_models`   | lead    | Show the orchestrator/worker/swarm model lists       | `src/utils/flavoredModels.ts`                                   |
 | `get_models`            | lead    | Show OSS and frontier model lists                    | `src/utils/flavoredModels.ts`                                   |
 | `send_message`          | shared  | Deliver a message to one agent                       | `src/utils/messaging.ts`, `src/utils/paths.ts`                  |
 | `broadcast_message`     | shared  | Deliver a message to every member                    | `src/utils/messaging.ts`                                        |
@@ -27,6 +27,8 @@ All 13 tools are registered in `extensions/index.ts`, split by session identity 
 | `close_myself`          | worker  | Terminate the calling agent                          | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
+
+Flavors are `orchestrator` (orchestrating, planning, coordinating), `worker` (coding), and `swarm` (read-only information gathering), stored as `enabledModelsOrchestrator`, `enabledModelsWorker`, and `enabledModelsSwarm`. `spawn_teammate` picks from `worker` (and `orchestrator` for a planning or coordinating teammate). `spawn_readonly_worker` picks from `swarm`, then `worker`, then the lead's model. On the lead's `session_start`, `migrateLegacyFlavors` converts the legacy `enabledModelsHigh/Med/Fast` keys once (`high` to orchestrator, `med` and `fast` to worker), shows a warning that names the moved models, and queues the same warning onto the next `get_flavored_models` result. `pi-oneturnagent` keeps its own read-only reader for both key sets and never migrates.
 
 The dollar-prefixed one-turn model substitution inputs (`$<model> <prompt...>` and `$$<model> <prompt...>`) moved to the pi-oneturnagent package (`~/repos/pi/pi-oneturnagent`). pi-teams no longer registers them.
 
@@ -86,7 +88,7 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 
 ## Model Resolution
 
-- `resolveModel` walks a priority ladder for bare-name requests: flavored models from pi settings high/med/fast first, then the scoped models (pi `--models` flag, or the enabledModels list when the flag is absent), then the entire registry. The fuzzy match runs only against the first non-empty group, so a configured group always wins.
+- `resolveModel` walks a priority ladder for bare-name requests: flavored models from pi settings (the union of the orchestrator, worker, and swarm lists) first, then the scoped models (pi `--models` flag, or the enabledModels list when the flag is absent), then the entire registry. The fuzzy match runs only against the first non-empty group, so a configured group always wins.
 - Provider-prefixed requests still resolve strictly within the named provider.
 - Model resolution uses a smart priority system that handles OAuth provider precedence.
 - Models can be specified at the team level and overridden per teammate.
@@ -114,7 +116,7 @@ pi-teams/
 │       ├── lock.ts                   # withLock locking for concurrent config and inbox writes
 │       ├── hold.ts                   # run-hold decisions for non-interactive lead sessions
 │       ├── models.ts                 # Member, TeamConfig, InboxMessage types
-│       └── flavoredModels.ts         # high/med/fast flavor lists in pi settings.json
+│       └── flavoredModels.ts         # orchestrator/worker/swarm lists, legacy migration
 ├── docs/                             # terminal research and release notes
 ├── AGENTS.md                         # this file
 ├── README.md                         # user-facing documentation

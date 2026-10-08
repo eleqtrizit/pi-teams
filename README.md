@@ -75,14 +75,14 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - **`spawn_readonly_worker`** - Launch a read-only worker restricted to `read`, `grep`, `find`, `ls`
   - No `bash`, `write`, or `edit` access — safe for code review, auditing, exploration
   - Can still message the team lead via `send_message`/`broadcast_message`
-  - Accepts an optional `model` parameter; defaults to the team leader's model
+  - Accepts an optional `model` parameter; defaults to the `swarm` list, then the `worker` list, then the team leader's model
 - **`spawn_lead_window`** - Open team lead in a separate OS window
 - **`close_worker`** - Close one teammate: remove it from the team config, clean up its state, and terminate its process and pane
 
 ### Model Categorization
 
 - **`get_models`** - Read enabled models from pi settings.json, split into OSS and frontier (GPT/Claude) lists
-- **`get_flavored_models`** - Read flavor-categorized model lists from pi settings.json
+- **`get_flavored_models`** - Read the orchestrator, worker, and swarm model lists from pi settings.json
 - **`/flavored-models`** - Interactive command to assign each enabled model to a flavor
 
 ### Messaging System
@@ -140,10 +140,11 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### 🍦 Flavored Models
 
-- Categorize your enabled models into flavors: `high` (deep reasoning), `med` (balanced), `fast` (quick responses)
-- Configured in `~/.pi/agent/settings.json` via `enabledModelsHigh`, `enabledModelsMed`, and `enabledModelsFast`
+- Categorize your enabled models into flavors: `orchestrator` (orchestrating, planning, coordinating), `worker` (coding), `swarm` (read-only information gathering)
+- Configured in `~/.pi/agent/settings.json` via `enabledModelsOrchestrator`, `enabledModelsWorker`, and `enabledModelsSwarm`
 - `/flavored-models` opens an interactive settings UI (team-lead sessions only)
-- Spawn tools follow flavor guidance: match the flavor to the task, spread teammates across providers, and fall back to the team lead's model when no flavors are set
+- Spawn tools follow flavor guidance: match the flavor to the task, spread teammates across providers, and fall back to the team lead's model when no matching models are set
+- Older settings migrate automatically (see Migrating from high, med, and fast)
 
 ### 📊 Model Resolution
 
@@ -292,12 +293,15 @@ When flavor lists are configured, the team lead uses them to choose models
 when spawning teammates:
 
 1. Before spawning, the lead calls `get_flavored_models` to read the lists
-2. It picks a model whose flavor matches the task: `high` for deep reasoning,
-   `med` for balanced work, `fast` for lookups and simple edits (read-only
-   research usually gets `fast` or `med`)
+2. It picks a model whose flavor matches the task:
+   - `spawn_teammate` uses the `worker` list. It uses the `orchestrator` list
+     only for a teammate that plans or coordinates other work.
+   - `spawn_readonly_worker` uses the `swarm` list, then the `worker` list.
+   - Nothing spawns from the `swarm` list except read-only workers.
 3. It prefers spreading teammates across different providers unless the user
    names specific models
-4. If no flavors are configured, it spawns the same model as the team lead
+4. If no matching models are configured, it spawns the same model as the team
+   lead
 
 ```json
 // ~/.pi/agent/settings.json
@@ -307,13 +311,33 @@ when spawning teammates:
     "anthropic/claude-3.5-haiku",
     "google/gemini-2.5-flash"
   ],
-  "enabledModelsHigh": ["anthropic/claude-opus-4"],
-  "enabledModelsMed": ["google/gemini-2.5-flash"],
-  "enabledModelsFast": ["anthropic/claude-3.5-haiku"]
+  "enabledModelsOrchestrator": ["anthropic/claude-opus-4"],
+  "enabledModelsWorker": ["google/gemini-2.5-flash"],
+  "enabledModelsSwarm": ["anthropic/claude-3.5-haiku"]
 }
 ```
 
 Run `/flavored-models` in a team-lead session to edit these lists interactively.
+
+### Migrating from high, med, and fast
+
+Earlier versions used the `enabledModelsHigh`, `enabledModelsMed`, and
+`enabledModelsFast` keys. When a team-lead session starts and finds any of them,
+it migrates the settings once:
+
+| Old list | New list       |
+| -------- | -------------- |
+| `high`   | `orchestrator` |
+| `med`    | `worker`       |
+| `fast`   | `worker`       |
+
+- The migration appends to existing lists, removes duplicates, deletes the old
+  keys, and writes `settings.json` atomically.
+- The session shows a warning that names the moved models. The next
+  `get_flavored_models` call repeats the warning for the model.
+- No models move to `swarm`. Assign them with `/flavored-models`.
+- Review your prompts and skills that mention high, med, or fast models, and
+  update them.
 
 ## Requirements
 
