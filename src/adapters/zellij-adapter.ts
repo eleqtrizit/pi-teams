@@ -44,15 +44,12 @@ export class ZellijAdapter implements TerminalAdapter {
     // when the process exits. No explicit kill needed.
   }
 
-  isAlive(paneId: string): boolean {
-    // Zellij doesn't have a straightforward way to check if a pane is alive
-    // For now, we assume alive if it's a zellij pane ID
-    if (!paneId || !paneId.startsWith("zellij_")) {
-      return false;
-    }
-    
-    // Could potentially use `zellij list-sessions` or similar in the future
-    return true;
+  isAlive(_paneId: string): boolean {
+    // Zellij gives us no reliable pane handle (spawn returns a synthetic id),
+    // so we cannot probe the pane. Liveness for zellij workers comes from the
+    // pid file (isMemberAlive checks it first); reporting true here would make
+    // a crashed worker appear alive forever and park the lead's run hold.
+    return false;
   }
 
   setTitle(_title: string): void {

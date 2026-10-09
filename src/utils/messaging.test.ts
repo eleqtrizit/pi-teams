@@ -3,14 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
+  pendingReminder,
   appendMessage,
   readInbox,
   drainUndelivered,
   sendPlainMessage,
   broadcastMessage,
-  getLastMessageTime,
   needsReminderMessage,
-  updateLastMessageTime,
   updateLastReminderTime,
   updateLastReportTime,
 } from "./messaging";
@@ -25,6 +24,17 @@ describe("Messaging Utilities", () => {
     if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
     fs.mkdirSync(testDir, { recursive: true });
 
+    // Seed a minimal team config so sendPlainMessage's recipient validation passes.
+    const inboxesDir = path.join(testDir, "inboxes");
+    fs.mkdirSync(inboxesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(testDir, "config.json"),
+      JSON.stringify({
+        name: "test-team",
+        members: [{ name: "team-lead" }, { name: "worker-1" }, { name: "receiver" }, { name: "bob" }],
+      }),
+    );
+
     // Override paths to use testDir
     vi.spyOn(paths, "inboxPath").mockImplementation((teamName, agentName) => {
       return path.join(testDir, "inboxes", `${agentName}.json`);
@@ -33,16 +43,6 @@ describe("Messaging Utilities", () => {
     vi.spyOn(paths, "configPath").mockImplementation((teamName) => {
       return path.join(testDir, "config.json");
     });
-    vi.spyOn(paths, "lastMessagePath").mockImplementation(
-      (teamName, agentName) => {
-        return path.join(testDir, `${agentName}.lastMessage`);
-      },
-    );
-    vi.spyOn(paths, "lastAwokenPath").mockImplementation(
-      (teamName, agentName) => {
-        return path.join(testDir, `${agentName}.awoken`);
-      },
-    );
     vi.spyOn(paths, "lastReminderPath").mockImplementation(
       (teamName, agentName) => {
         return path.join(testDir, `${agentName}.lastReminder`);
@@ -143,7 +143,11 @@ describe("Messaging Utilities", () => {
       }
     })();
 
-    await Promise.all([...appenders, drainer]);
+    await Promise.all(appenders);
+    // Appends have settled; drain whatever landed after the loop exited.
+    const finalBatch = await drainUndelivered("test-team", "receiver");
+    if (finalBatch.length > 0) drainedBatches.push(finalBatch);
+    await drainer;
 
     // Collect every delivered message ID across all batches.
     const deliveredIds = drainedBatches.flat().map((m) => m.id);
@@ -279,7 +283,7 @@ describe("Messaging Utilities", () => {
     expect(inboxSender.length).toBe(0);
   });
 
-  it("should record outbound activity for a broadcast even with no recipients", async () => {
+  it("should complete a broadcast even with no recipients", async () => {
     const config = {
       name: "test-team",
       members: [{ name: "sender" }],
@@ -295,7 +299,8 @@ describe("Messaging Utilities", () => {
       "summary",
     );
 
-    expect(getLastMessageTime("test-team", "sender")).not.toBeNull();
+    // The only member is the sender, so nothing is delivered.
+    expect(fs.existsSync(path.join(testDir, "inboxes", "team-lead.json"))).toBe(false);
   });
 
   it("should include id and subject in messages created by sendPlainMessage", async () => {
@@ -376,8 +381,8 @@ describe("Messaging Utilities", () => {
 
     it("should return true when agent sent message to peer but not to team-lead", () => {
       const instructionTs = Date.now() - 120_000;
-      // Only update lastMessageTime (peer message), not lastReportTime
-      updateLastMessageTime("test-team", "worker");
+      // A peer message no longer exists as state; without a report to the
+      // team-lead after the instruction, a reminder is due.
 
       const result = needsReminderMessage(
         "test-team",
@@ -440,5 +445,144 @@ describe("Messaging Utilities", () => {
       );
       expect(result).toBe(true);
     });
+  });
+});
+
+describe("sendPlainMessage validation", () => {
+  beforeEach(() => {
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.mkdirSync(path.join(testDir, "inboxes"), { recursive: true });
+    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(testDir, "inboxes", `${a}.json`));
+    vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
+    vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
+    vi.spyOn(paths, "lastReportPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReport`));
+    vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReminder`));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+  });
+
+  it("rejects a recipient who is not a team member", async () => {
+    fs.writeFileSync(path.join(testDir, "config.json"), JSON.stringify({ name: "test-team", members: [{ name: "worker-1" }] }));
+    await expect(sendPlainMessage("test-team", "worker-1", "wrker-1", "s", "t")).rejects.toThrow(/not a member/);
+    expect(fs.existsSync(path.join(testDir, "inboxes", "wrker-1.json"))).toBe(false);
+  });
+
+  it("rejects a message to a team that does not exist", async () => {
+    await expect(sendPlainMessage("ghost-team", "a", "b", "s", "t")).rejects.toThrow(/not found/);
+    expect(fs.existsSync(path.join(testDir, "ghost-team"))).toBe(false);
+  });
+
+  it("still delivers to a valid member", async () => {
+    fs.writeFileSync(path.join(testDir, "config.json"), JSON.stringify({ name: "test-team", members: [{ name: "worker-1" }] }));
+    await sendPlainMessage("test-team", "team-lead", "worker-1", "s", "t");
+    const inbox = JSON.parse(fs.readFileSync(path.join(testDir, "inboxes", "worker-1.json"), "utf-8"));
+    expect(inbox).toHaveLength(1);
+  });
+});
+
+describe("pendingReminder", () => {
+  beforeEach(() => {
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.mkdirSync(path.join(testDir, "inboxes"), { recursive: true });
+    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(testDir, "inboxes", `${a}.json`));
+    vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
+    vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
+    vi.spyOn(paths, "lastReportPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReport`));
+    vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReminder`));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+  });
+
+  const seed = async (messages: Partial<InboxMessage>[]) => {
+    fs.writeFileSync(
+      path.join(testDir, "inboxes", "worker.json"),
+      JSON.stringify(
+        messages.map((m, i) => ({
+          id: `id-${i}`,
+          from: "team-lead",
+          to: "worker",
+          subject: "s",
+          text: "t",
+          timestamp: new Date(Date.now() - 120000 + i * 1000).toISOString(),
+          delivered: true,
+          ...m,
+        })),
+      ),
+    );
+  };
+
+  it("returns null when there are no team-lead messages", async () => {
+    await seed([{ from: "peer" }]);
+    expect(await pendingReminder("test-team", "worker")).toBeNull();
+  });
+
+  it("returns the reminder text and stamps the reminder time when due", async () => {
+    await appendMessage("test-team", "worker", {
+      id: "i1", from: "team-lead", to: "worker", subject: "s", text: "t",
+      timestamp: new Date(Date.now() - 60000).toISOString(), delivered: true,
+    });
+    const result = await pendingReminder("test-team", "worker");
+    expect(result).toContain("Report back to the team-lead");
+    // Stamped: a second call returns null (one reminder per instruction).
+    expect(await pendingReminder("test-team", "worker")).toBeNull();
+  });
+
+  it("returns null when the agent already reported after the instruction", async () => {
+    await appendMessage("test-team", "worker", {
+      id: "i1", from: "team-lead", to: "worker", subject: "s", text: "t",
+      timestamp: new Date(Date.now() - 120000).toISOString(), delivered: true,
+    });
+    updateLastReportTime("test-team", "worker");
+    expect(await pendingReminder("test-team", "worker")).toBeNull();
+  });
+});
+
+describe("drainUndelivered pruning", () => {
+  beforeEach(() => {
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.mkdirSync(path.join(testDir, "inboxes"), { recursive: true });
+    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(testDir, "inboxes", `${a}.json`));
+    vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
+    vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
+    vi.spyOn(paths, "lastReportPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReport`));
+    vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReminder`));
+    fs.writeFileSync(path.join(testDir, "config.json"), JSON.stringify({ name: "t", members: [{ name: "worker" }] }));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+  });
+
+  it("prunes old delivered messages but keeps the newest team-lead message and undelivered ones", async () => {
+    for (let i = 0; i < 60; i++) {
+      await appendMessage("test-team", "worker", {
+        id: `m${i}`,
+        from: i === 0 ? "team-lead" : "peer",
+        to: "worker",
+        subject: "s",
+        text: "t",
+        timestamp: new Date(Date.now() - 600000 + i * 1000).toISOString(),
+        delivered: true,
+      });
+    }
+    // One undelivered message that must survive pruning.
+    await appendMessage("test-team", "worker", {
+      id: "undelivered", from: "peer", to: "worker", subject: "s", text: "t",
+      timestamp: new Date().toISOString(), delivered: false,
+    });
+    const drained = await drainUndelivered("test-team", "worker");
+    expect(drained).toHaveLength(1);
+
+    const all = JSON.parse(fs.readFileSync(path.join(testDir, "inboxes", "worker.json"), "utf-8"));
+    expect(all.length).toBeLessThanOrEqual(51);
+    expect(all.some((m: InboxMessage) => m.id === "m0")).toBe(true); // newest team-lead kept
+    expect(all.some((m: InboxMessage) => m.id === "undelivered")).toBe(true);
   });
 });

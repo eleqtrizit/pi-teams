@@ -29,8 +29,8 @@ describe("withLock", () => {
   });
 
   it("should fail to acquire lock if already held", async () => {
-    // Manually create lock file
-    fs.writeFileSync(lockFile, "9999");
+    // A lock held by a live process (ours) is never reaped.
+    fs.writeFileSync(lockFile, String(process.pid));
 
     const fn = vi.fn().mockResolvedValue("result");
     
@@ -44,5 +44,18 @@ describe("withLock", () => {
 
     await expect(withLock(lockPath, fn)).rejects.toThrow("failure");
     expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
+  it("reaps a lock whose holder pid is dead and acquires it", async () => {
+    fs.writeFileSync(lockFile, "999999999");
+    const fn = vi.fn().mockResolvedValue("result");
+    const result = await withLock(lockPath, fn, 5);
+    expect(result).toBe("result");
+    expect(fn).toHaveBeenCalled();
+  });
+
+  it("rethrows non-EEXIST acquisition errors", async () => {
+    const missing = path.join(testDir, "no-such-dir", "x");
+    await expect(withLock(missing, async () => "ok", 2)).rejects.toThrow();
   });
 });

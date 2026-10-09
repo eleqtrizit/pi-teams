@@ -5,7 +5,7 @@
  * Uses AppleScript for all operations.
  */
 
-import { TerminalAdapter, SpawnOptions } from "../utils/terminal-adapter";
+import { TerminalAdapter, SpawnOptions, shQuote } from "../utils/terminal-adapter";
 import { spawnSync } from "node:child_process";
 
 /**
@@ -19,6 +19,23 @@ export interface Iterm2SpawnContext {
 export class Iterm2Adapter implements TerminalAdapter {
   readonly name = "iTerm2";
   private spawnContext: Iterm2SpawnContext = {};
+
+  /**
+   * Escape a value for safe embedding inside a double-quoted AppleScript
+   * string literal. Backslashes first, then quotes.
+   */
+  private static appleScriptString(value: string): string {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  /** Build the shell startup line with a safely quoted cwd. */
+  private static shellCommand(options: SpawnOptions): string {
+    const envStr = Object.entries(options.env)
+      .filter(([k]) => k.startsWith("PI_"))
+      .map(([k, v]) => `${k}=${shQuote(v)}`)
+      .join(" ");
+    return `cd ${shQuote(options.cwd)} && ${envStr} ${options.command}`;
+  }
 
   detect(): boolean {
     return process.env.TERM_PROGRAM === "iTerm.app" && !process.env.TMUX && !process.env.ZELLIJ;
@@ -40,13 +57,9 @@ export class Iterm2Adapter implements TerminalAdapter {
   }
 
   spawn(options: SpawnOptions): string {
-    const envStr = Object.entries(options.env)
-      .filter(([k]) => k.startsWith("PI_"))
-      .map(([k, v]) => `${k}=${v}`)
-      .join(" ");
-
-    const itermCmd = `cd '${options.cwd}' && ${envStr} ${options.command}`;
-    const escapedCmd = itermCmd.replace(/"/g, '\\"');
+    const escapedCmd = Iterm2Adapter.appleScriptString(
+      Iterm2Adapter.shellCommand(options),
+    );
 
     let script: string;
 
@@ -145,7 +158,7 @@ end tell`;
   }
 
   setTitle(title: string): void {
-    const escapedTitle = title.replace(/"/g, '\\"');
+    const escapedTitle = Iterm2Adapter.appleScriptString(title);
     const script = `tell application "iTerm2" to tell current session of current window
       set name to "${escapedTitle}"
     end tell`;
@@ -167,19 +180,15 @@ end tell`;
    * Spawn a new separate OS window with the given options.
    */
   spawnWindow(options: SpawnOptions): string {
-    const envStr = Object.entries(options.env)
-      .filter(([k]) => k.startsWith("PI_"))
-      .map(([k, v]) => `${k}=${v}`)
-      .join(" ");
-
-    const itermCmd = `cd '${options.cwd}' && ${envStr} ${options.command}`;
-    const escapedCmd = itermCmd.replace(/"/g, '\\"');
+    const escapedCmd = Iterm2Adapter.appleScriptString(
+      Iterm2Adapter.shellCommand(options),
+    );
 
     const windowTitle = options.teamName
       ? `${options.teamName}: ${options.name}`
       : options.name;
 
-    const escapedTitle = windowTitle.replace(/"/g, '\\"');
+    const escapedTitle = Iterm2Adapter.appleScriptString(windowTitle);
 
     const script = `tell application "iTerm2"
   set newWindow to (create window with default profile)
@@ -190,7 +199,7 @@ end tell`;
     -- We use double backslashes for AppleScript to emit a single backslash to the shell
     write text "printf '\\\\033]2;${escapedTitle}\\\\007'"
     -- Execute the command
-    write text "cd '${options.cwd}' && ${escapedCmd}"
+    write text "${escapedCmd}"
     return id of newWindow
   end tell
 end tell`;
@@ -214,7 +223,7 @@ end tell`;
     }
 
     const itermId = windowId.replace("iterm_win_", "");
-    const escapedTitle = title.replace(/"/g, '\\"');
+    const escapedTitle = Iterm2Adapter.appleScriptString(title);
 
     const script = `tell application "iTerm2"
   repeat with aWindow in windows

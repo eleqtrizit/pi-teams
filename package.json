@@ -17,14 +17,10 @@
   "main": "extensions/index.ts",
   "files": [
     "extensions",
-    "skills",
     "src",
     "package.json",
     "README.md"
   ],
-  "dependencies": {
-    "uuid": "^11.1.0"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.99.1",
     "typebox": "*"
@@ -33,9 +29,6 @@
     "image": "https://raw.githubusercontent.com/burggraf/pi-teams/main/pi-team-in-action.png",
     "extensions": [
       "extensions/index.ts"
-    ],
-    "skills": [
-      "skills"
     ]
   },
   "devDependencies": {
@@ -43,7 +36,6 @@
     "@earendil-works/pi-coding-agent": "^0.99.1",
     "@earendil-works/pi-tui": "^0.99.1",
     "@types/node": "^25.3.0",
-    "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   }

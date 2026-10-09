@@ -36,20 +36,20 @@ export function configPath(teamName: string) {
   return path.join(teamDir(teamName), "config.json");
 }
 
-export function lastMessagePath(teamName: string, agentName: string) {
-  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastMessage`);
-}
-
-export function lastAwokenPath(teamName: string, agentName: string) {
-  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.awoken`);
-}
-
 export function lastReminderPath(teamName: string, agentName: string) {
   return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastReminder`);
 }
 
 export function lastReportPath(teamName: string, agentName: string) {
   return path.join(teamDir(teamName), `${sanitizeName(agentName)}.lastReport`);
+}
+
+export function pidPath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.pid`);
+}
+
+export function activePath(teamName: string, agentName: string) {
+  return path.join(teamDir(teamName), `${sanitizeName(agentName)}.active`);
 }
 
 export function firstActivationPath(teamName: string, agentName: string) {

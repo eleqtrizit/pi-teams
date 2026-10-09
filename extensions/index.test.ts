@@ -1,9 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
-  getTopModelMatches,
-  clearModelsCache,
-  resolveModelWithProvider,
-  scopedPatternMatches,
   formatDeliveredMessages,
   FollowUpMessageQueue,
   mergeQueuedMessages,
@@ -12,6 +8,12 @@ import {
   getLastUserMessageText,
 } from "./index";
 import type { InboxMessage } from "../src/utils/models";
+import {
+  clearModelsCache,
+  getTopModelMatches,
+  resolveModelWithProvider,
+  scopedPatternMatches,
+} from "../src/utils/modelSearch";
 import * as flavoredModels from "../src/utils/flavoredModels";
 
 describe("classifyModel", () => {

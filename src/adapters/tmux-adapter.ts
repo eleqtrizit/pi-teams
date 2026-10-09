@@ -4,7 +4,6 @@
  * Implements the TerminalAdapter interface for tmux terminal multiplexer.
  */
 
-import { execSync } from "node:child_process";
 import { TerminalAdapter, SpawnOptions, execCommand } from "../utils/terminal-adapter";
 
 export class TmuxAdapter implements TerminalAdapter {
@@ -59,12 +58,10 @@ export class TmuxAdapter implements TerminalAdapter {
       return false; // Not a tmux pane
     }
 
-    try {
-      execSync(`tmux has-session -t ${paneId}`);
-      return true;
-    } catch {
-      return false;
-    }
+    // list-panes -a -F '#{pane_id}' is exact for a pane id (has-session takes
+    // a session name). Args array avoids any shell interpolation of paneId.
+    const result = execCommand("tmux", ["list-panes", "-a", "-F", "#{pane_id}"]);
+    return result.status === 0 && result.stdout.split("\n").map((l) => l.trim()).includes(paneId.trim());
   }
 
   setTitle(title: string): void {

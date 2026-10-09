@@ -5,7 +5,7 @@
  * Uses the `orca` CLI for terminal lifecycle management (create, close, list, rename).
  */
 
-import { TerminalAdapter, SpawnOptions, execCommand } from "../utils/terminal-adapter";
+import { TerminalAdapter, SpawnOptions, execCommand, shQuote } from "../utils/terminal-adapter";
 
 export class OrcaAdapter implements TerminalAdapter {
   readonly name = "Orca";
@@ -36,7 +36,7 @@ export class OrcaAdapter implements TerminalAdapter {
   spawn(options: SpawnOptions): string {
     const envArgs = Object.entries(options.env)
       .filter(([k]) => k.startsWith("PI_"))
-      .map(([k, v]) => `${k}=${v}`);
+      .map(([k, v]) => `${k}=${shQuote(v)}`);
 
     const fullCommand =
       envArgs.length > 0

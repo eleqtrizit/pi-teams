@@ -135,7 +135,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 ### 🔒 Lock System
 
 - Thread-safe operations with file-based locking
-- Automatic stale lock cleanup (60s timeout)
+- Automatic stale lock cleanup (30s timeout)
 - Race condition protection for multi-agent operations
 
 ### 🍦 Flavored Models
@@ -240,14 +240,12 @@ All team data is stored in `~/.pi/`:
 └── messages/
     └── <team-name>/
         ├── <agent-name>.json    # Message inboxes
-        ├── <agent-name>.last-message  # Last sent message timestamp
-        ├── <agent-name>.last-awoken   # Last activation timestamp
         └── <agent-name>.last-reminder # Last reminder timestamp
 ```
 
 ## Security
 
-- **Lock files** prevent concurrent modifications with automatic stale lock cleanup (60s timeout)
+- **Lock files** prevent concurrent modifications with automatic stale lock cleanup (30s timeout)
 - **Race condition protection** for multi-agent operations
 - **Input validation** on all task and message data
 - **File-based isolation** between teams
@@ -386,7 +384,7 @@ The modular adapter design makes it easy to add new terminal support:
 3. Write tests
 4. Update documentation
 
-See `WEZTERM_SUPPORT.md` for an example implementation.
+See `docs/notes/WEZTERM_SUPPORT.md` for an example implementation.
 
 ## Contributing
 

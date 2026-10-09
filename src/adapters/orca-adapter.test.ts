@@ -105,7 +105,7 @@ describe("OrcaAdapter", () => {
       const commandIdx = callArgs.indexOf("--command");
       expect(commandIdx).toBeGreaterThan(-1);
       const cmd = callArgs[commandIdx + 1];
-      expect(cmd).toContain("env PI_TEAM_NAME=myteam PI_AGENT_NAME=agent1 pi");
+      expect(cmd).toContain("env PI_TEAM_NAME='myteam' PI_AGENT_NAME='agent1' pi");
       expect(cmd).not.toContain("OTHER_VAR");
     });
 

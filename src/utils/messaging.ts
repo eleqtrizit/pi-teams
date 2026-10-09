@@ -1,16 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "node:crypto";
 import { withLock } from "./lock";
 import { InboxMessage, TeamConfig } from "./models";
 import {
   inboxPath,
-  lastAwokenPath,
-  lastMessagePath,
   lastReminderPath,
   lastReportPath,
 } from "./paths";
 import { readConfig } from "./teams";
+
+/**
+ * Delivered messages kept in an inbox after a drain. Old messages are pruned
+ * so the per-second poller never reparses an unbounded file, but the newest
+ * team-lead message is always retained because needsReminderMessage reads its
+ * timestamp.
+ */
+const MAX_RETAINED_DELIVERED = 50;
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -38,43 +44,6 @@ function readTimestamp(p: string): number | null {
  */
 function writeNow(p: string): void {
   fs.writeFileSync(p, Date.now().toString());
-}
-
-/**
- * Get the timestamp of the last message sent by this agent.
- * @param teamName The name of the team
- * @param agentName The name of the agent
- * @returns The timestamp in milliseconds, or null if no message has been sent
- */
-export function getLastMessageTime(
-  teamName: string,
-  agentName: string,
-): number | null {
-  return readTimestamp(lastMessagePath(teamName, agentName));
-}
-
-/**
- * Update the last message sent timestamp for this agent.
- * @param teamName The name of the team
- * @param agentName The name of the agent
- */
-export function updateLastMessageTime(
-  teamName: string,
-  agentName: string,
-): void {
-  writeNow(lastMessagePath(teamName, agentName));
-}
-
-/**
- * Update the last awoken timestamp for this agent.
- * @param teamName The name of the team
- * @param agentName The name of the agent
- */
-export function updateLastAwokenTime(
-  teamName: string,
-  agentName: string,
-): void {
-  writeNow(lastAwokenPath(teamName, agentName));
 }
 
 /**
@@ -169,6 +138,63 @@ export function needsReminderMessage(
   return true;
 }
 
+/**
+ * Parse an inbox file, quarantining it when it is not valid JSON.
+ *
+ * A corrupt file would otherwise throw on every poll tick forever. The file is
+ * renamed to `<inbox>.corrupt-<timestamp>` for inspection and the inbox
+ * restarts empty. Must run under the inbox lock.
+ *
+ * @param p Absolute path of the inbox file
+ * @returns The parsed messages, or an empty list after quarantine
+ */
+function parseInboxFile(p: string): InboxMessage[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, "utf-8"));
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // fall through to quarantine
+  }
+  try {
+    fs.renameSync(p, `${p}.corrupt-${Date.now()}`);
+  } catch {
+    // ignore: the file may already be gone
+  }
+  return [];
+}
+
+export const REPORT_REMINDER_TEXT =
+  "Report back to the team-lead with your results, if you haven't already done so.";
+
+/**
+ * Compute, stamp, and return a pending reminder for an agent.
+ *
+ * Encapsulates the reminder rule used by both the polling loop and the
+ * turn_end handler: read the inbox, find the newest team-lead instruction,
+ * and ask needsReminderMessage whether a reminder is due. When it is, the
+ * last-reminder timestamp is stamped here so callers cannot forget it.
+ *
+ * @param teamName The name of the team
+ * @param agentName The name of the agent
+ * @returns REMINDER text when a reminder is due, otherwise null
+ */
+export async function pendingReminder(
+  teamName: string,
+  agentName: string,
+): Promise<string | null> {
+  const allMsgs = await readInbox(teamName, agentName, false);
+  const teamLeadMsgs = allMsgs.filter((m) => m.from === "team-lead");
+  if (teamLeadMsgs.length === 0) return null;
+
+  const latestInstructionTs = Math.max(...teamLeadMsgs.map((m) => new Date(m.timestamp).getTime()));
+  const hasUndelivered = teamLeadMsgs.some((m) => !m.delivered);
+  if (!needsReminderMessage(teamName, agentName, latestInstructionTs, hasUndelivered)) {
+    return null;
+  }
+  updateLastReminderTime(teamName, agentName);
+  return REPORT_REMINDER_TEXT;
+}
+
 export async function appendMessage(
   teamName: string,
   agentName: string,
@@ -176,13 +202,12 @@ export async function appendMessage(
 ) {
   const p = inboxPath(teamName, agentName);
   const dir = path.dirname(p);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // Non-recursive: a missing team directory is an error, not something to
+  // create silently. Caller (sendPlainMessage) validates the team first.
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
 
   await withLock(p, async () => {
-    let msgs: InboxMessage[] = [];
-    if (fs.existsSync(p)) {
-      msgs = JSON.parse(fs.readFileSync(p, "utf-8"));
-    }
+    const msgs: InboxMessage[] = fs.existsSync(p) ? parseInboxFile(p) : [];
     msgs.push(message);
     fs.writeFileSync(p, JSON.stringify(msgs, null, 2));
   });
@@ -206,7 +231,7 @@ export async function readInbox(
   if (!fs.existsSync(p)) return [];
 
   return await withLock(p, async () => {
-    const allMsgs: InboxMessage[] = JSON.parse(fs.readFileSync(p, "utf-8"));
+    const allMsgs: InboxMessage[] = parseInboxFile(p);
 
     const toReturn = undeliveredOnly
       ? allMsgs.filter((m) => !m.delivered)
@@ -235,7 +260,7 @@ export async function drainUndelivered(
   if (!fs.existsSync(p)) return [];
 
   return await withLock(p, async () => {
-    const allMsgs: InboxMessage[] = JSON.parse(fs.readFileSync(p, "utf-8"));
+    const allMsgs: InboxMessage[] = parseInboxFile(p);
 
     const toDeliver = allMsgs.filter((m) => !m.delivered);
     if (toDeliver.length === 0) return [];
@@ -243,7 +268,22 @@ export async function drainUndelivered(
     for (const m of allMsgs) {
       if (!m.delivered) m.delivered = true;
     }
-    fs.writeFileSync(p, JSON.stringify(allMsgs, null, 2));
+
+    // Prune old delivered messages (see MAX_RETAINED_DELIVERED). Undelivered
+    // messages are never dropped. The newest team-lead message survives as
+    // the anchor for needsReminderMessage, which reads its timestamp.
+    const withTs = (m: InboxMessage) => new Date(m.timestamp).getTime();
+    const teamLeadMsgs = allMsgs.filter((m) => m.from === "team-lead");
+    const newestTeamLead =
+      teamLeadMsgs.length > 0
+        ? teamLeadMsgs.reduce((a, b) => (withTs(b) > withTs(a) ? b : a))
+        : null;
+    const keptDelivered = allMsgs.filter((m) => m.delivered).slice(-MAX_RETAINED_DELIVERED);
+    if (newestTeamLead && newestTeamLead.delivered && !keptDelivered.includes(newestTeamLead)) {
+      keptDelivered.unshift(newestTeamLead);
+    }
+    const pruned = [...keptDelivered, ...allMsgs.filter((m) => !m.delivered)];
+    fs.writeFileSync(p, JSON.stringify(pruned, null, 2));
 
     return toDeliver.map((m) => ({ ...m }));
   });
@@ -258,10 +298,16 @@ export async function sendPlainMessage(
   summary?: string,
   color?: string,
 ) {
+  // Validate the recipient before writing: a typo would otherwise create a
+  // ghost inbox file that no agent polls, and the send would report success.
+  const config = await readConfig(teamName);
+  if (!config.members.some((m) => m.name === toName)) {
+    throw new Error(`Recipient "${toName}" is not a member of team "${teamName}".`);
+  }
   const msg: InboxMessage = {
     // 8-char hex prefix of a v4 UUID — 32 bits of entropy. Collision
     // risk is accepted: ~1 in 42M per inbox; unambiguous in practice.
-    id: uuidv4().slice(0, 8),
+    id: randomUUID().slice(0, 8),
     from: fromName,
     to: toName,
     subject,
@@ -272,8 +318,6 @@ export async function sendPlainMessage(
     color,
   };
   await appendMessage(teamName, toName, msg);
-  // Track that the sender has sent a message
-  updateLastMessageTime(teamName, fromName);
   // Track reports to the team-lead separately (used by reminder logic)
   if (toName === "team-lead") {
     updateLastReportTime(teamName, fromName);
@@ -304,8 +348,6 @@ export async function broadcastMessage(
     // Team not found — silently skip broadcast
     return;
   }
-  updateLastMessageTime(teamName, fromName);
-
   // Create an array of delivery promises for all members except the sender
   const deliveryPromises = config.members
     .filter((member) => member.name !== fromName)

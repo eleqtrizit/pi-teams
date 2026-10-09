@@ -47,7 +47,7 @@ If a team member receives a team-lead instruction but finishes its turn without 
 
 > "Report back to the team-lead with your results, if you haven't already done so."
 
-A reminder can fire from two places (belt-and-suspenders): the `turn_end` handler steers the agent immediately if it ended a turn without responding (queued for the run boundary when the agent is still running, so it never injects midstream), and the polling loop fires the reminder if the agent is still idle and unresponsive. At most one reminder fires per instruction: reminders do not re-fire on a timer, so a permanently stuck agent gets exactly one nudge per team-lead message. The logic lives in `needsReminderMessage` (`src/utils/messaging.ts`) and keys off the `delivered` flag on instructions plus `lastReportTime`/`lastReminderTime` timestamps — never off agent read state.
+A reminder can fire from two places (belt-and-suspenders): the `turn_end` handler steers the agent immediately if it ended a turn without responding (queued for the run boundary when the agent is still running, so it never injects midstream), and the polling loop fires the reminder if the agent is still idle and unresponsive. At most one reminder fires per instruction: reminders do not re-fire on a timer, so a permanently stuck agent gets exactly one nudge per team-lead message. The logic lives in `pendingReminder` and `needsReminderMessage` (`src/utils/messaging.ts`) and keys off the `delivered` flag on instructions plus `lastReportTime`/`lastReminderTime` timestamps — never off agent read state.
 
 **Important:** Delivery and reminders are fully automated — they do NOT involve LLM cycles for the polling itself. The system handles draining, marking delivered, and sending reminders programmatically.
 
@@ -99,8 +99,8 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 ```
 pi-teams/
 ├── extensions/                       # pi extension entry and lifecycle handlers
-│   ├── index.ts                      # tool registration (lead/shared/worker), pollers, spawn commands
-│   ├── index.test.ts                 # tests for pure helpers: formatting and model matching
+│   ├── index.ts                      # tool registration (one lead block, shared, worker), pollers, hold
+│   ├── index.test.ts                 # tests for pure helpers: formatting and queueing
 │   ├── close-myself.test.ts          # close_myself registration and execute tests
 │   └── tool-registration.test.ts     # registration-by-identity contract tests
 ├── src/
@@ -113,11 +113,13 @@ pi-teams/
 │       ├── teams.ts                  # team config CRUD and the shared removeAgent removal path
 │       ├── messaging.ts              # inboxes, delivery, reminders, needsReminderMessage
 │       ├── paths.ts                  # ~/.pi/teams path builders and sanitizeName
-│       ├── lock.ts                   # withLock locking for concurrent config and inbox writes
+│       ├── lock.ts                   # withLock pid-based locking for concurrent config and inbox writes
+│       ├── modelSearch.ts            # model resolution ladder and fuzzy top matches
+│       ├── spawn.ts                  # buildWorkerCommand, spawnWorkerProcess, seedWorkerStateFiles
 │       ├── hold.ts                   # run-hold decisions for non-interactive lead sessions
 │       ├── models.ts                 # Member, TeamConfig, InboxMessage types
 │       └── flavoredModels.ts         # orchestrator/worker/swarm lists, legacy migration
-├── docs/                             # terminal research and release notes
+├── docs/                             # terminal research and release notes (working notes under docs/notes)
 ├── AGENTS.md                         # this file
 ├── README.md                         # user-facing documentation
 └── package.json                      # pi-package manifest: extension entry points

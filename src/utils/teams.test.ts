@@ -5,6 +5,7 @@ import os from "node:os";
 import type { MockInstance } from "vitest";
 import { createTeam, addMember, readConfig, removeAgent } from "./teams";
 import * as paths from "./paths";
+import * as terminalAdapter from "./terminal-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
 import type { Member } from "./models";
 
@@ -43,6 +44,16 @@ function fakeTerminal(): TerminalAdapter {
 }
 
 describe("removeAgent", () => {
+  beforeEach(() => {
+    // pid-verification probes ps; report a pi worker so the kill proceeds.
+    vi.spyOn(terminalAdapter, "execCommand").mockReturnValue({
+      stdout: "node /path/to/pi -ne -e '/x/extensions/index.ts' --model x",
+      stderr: "",
+      status: 0,
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   let killProcessSpy: MockInstance;
 
   beforeEach(() => {
@@ -59,17 +70,17 @@ describe("removeAgent", () => {
     vi.spyOn(paths, "inboxPath").mockImplementation((_t, agentName) =>
       path.join(testDir, "inboxes", `${agentName}.json`),
     );
-    vi.spyOn(paths, "lastMessagePath").mockImplementation((_t, agentName) =>
-      path.join(testDir, `${agentName}.lastMessage`),
-    );
     vi.spyOn(paths, "lastReportPath").mockImplementation((_t, agentName) =>
       path.join(testDir, `${agentName}.lastReport`),
     );
-    vi.spyOn(paths, "lastAwokenPath").mockImplementation((_t, agentName) =>
-      path.join(testDir, `${agentName}.awoken`),
-    );
     vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, agentName) =>
       path.join(testDir, `${agentName}.lastReminder`),
+    );
+    vi.spyOn(paths, "pidPath").mockImplementation((_t, agentName) =>
+      path.join(testDir, `${agentName}.pid`),
+    );
+    vi.spyOn(paths, "activePath").mockImplementation((_t, agentName) =>
+      path.join(testDir, `${agentName}.active`),
     );
     vi.spyOn(paths, "firstActivationPath").mockImplementation((_t, agentName) =>
       path.join(testDir, `${agentName}.firstActivation`),
@@ -88,9 +99,7 @@ describe("removeAgent", () => {
     const statePaths = [
       path.join(testDir, `${agentName}.pid`),
       path.join(testDir, `${agentName}.active`),
-      path.join(testDir, `${agentName}.lastMessage`),
       path.join(testDir, `${agentName}.lastReport`),
-      path.join(testDir, `${agentName}.awoken`),
       path.join(testDir, `${agentName}.lastReminder`),
       path.join(testDir, `${agentName}.firstActivation`),
     ];
@@ -186,5 +195,73 @@ describe("removeAgent", () => {
     ).resolves.toBeUndefined();
 
     expect(killProcessSpy).toHaveBeenCalledWith(888, "SIGKILL");
+  });
+});
+
+describe("createTeam overwrite guard", () => {
+  beforeEach(() => {
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+    fs.mkdirSync(testDir, { recursive: true });
+    vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
+    vi.spyOn(paths, "taskDir").mockReturnValue(path.join(testDir, "..", "tasks"));
+    vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+  });
+
+  it("refuses to overwrite an existing team and preserves its directory", () => {
+    createTeam("t1", "sess-1", "lead-agent");
+    fs.writeFileSync(path.join(testDir, "keep.txt"), "state");
+    expect(() => createTeam("t1", "sess-2", "lead-agent")).toThrow(/already exists/);
+    expect(fs.existsSync(path.join(testDir, "keep.txt"))).toBe(true);
+  });
+
+  it("wipes a stale leftover directory with no config", () => {
+    fs.mkdirSync(testDir, { recursive: true });
+    fs.writeFileSync(path.join(testDir, "junk.json"), "{}");
+    expect(() => createTeam("t1", "sess-1", "lead-agent")).not.toThrow();
+    expect(fs.existsSync(path.join(testDir, "junk.json"))).toBe(false);
+    expect(fs.existsSync(path.join(testDir, "config.json"))).toBe(true);
+  });
+});
+
+describe("removeAgent pid verification", () => {
+  beforeEach(() => {
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+    fs.mkdirSync(testDir, { recursive: true });
+    vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
+    vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
+    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(testDir, "inboxes", `${a}.json`));
+    vi.spyOn(paths, "lastReportPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReport`));
+    vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReminder`));
+    vi.spyOn(paths, "firstActivationPath").mockImplementation((_t, a) => path.join(testDir, `${a}.firstActivation`));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not kill a pid whose command line is not pi", async () => {
+    vi.spyOn(terminalAdapter, "execCommand").mockReturnValue({
+      stdout: "/usr/bin/somethingelse --watch",
+      stderr: "",
+      status: 0,
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    createTeam("t1", "sess-1", "lead-agent");
+    fs.writeFileSync(path.join(testDir, "worker-1.pid"), "4242");
+    await removeAgent({ team: "t1", agentName: "worker-1" });
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it("always kills ownPid without verification", async () => {
+    vi.spyOn(terminalAdapter, "execCommand").mockReturnValue({
+      stdout: "/usr/bin/somethingelse --watch",
+      stderr: "",
+      status: 0,
+    });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    createTeam("t1", "sess-1", "lead-agent");
+    await removeAgent({ team: "t1", agentName: "worker-1", ownPid: 4242 });
+    expect(killSpy).toHaveBeenCalledWith(4242, "SIGKILL");
   });
 });

@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import * as path from "node:path";
 import { TeamConfig, Member } from "./models";
 import * as paths from "./paths";
 import { withLock } from "./lock";
+import { execCommand } from "./terminal-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
 
 export function teamExists(teamName: string) {
@@ -17,9 +17,14 @@ export function createTeam(
   defaultModel?: string,
   separateWindows?: boolean
 ): TeamConfig {
+  // Refuse to overwrite a live team: its workers would be orphaned (running
+  // with a deleted config, inboxes, and pid files) and its task list erased.
+  if (fs.existsSync(paths.configPath(name))) {
+    throw new Error(`Team "${name}" already exists. Run team_shutdown first.`);
+  }
   const dir = paths.teamDir(name);
-  // Always wipe the team directory so no state files (inboxes, awoken markers,
-  // reminder timestamps, PIDs, etc.) leak from a previous run of the same team.
+  // Wipe stale leftovers from a previous run without a config (a crashed
+  // createTeam), so no state files can leak into the new team.
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
 
@@ -108,17 +113,45 @@ export async function updateMember(teamName: string, agentName: string, updates:
  * @returns Paths of the agent's state files
  */
 function agentStateFiles(team: string, agentName: string): string[] {
-  const teamDirectory = paths.teamDir(team);
   return [
-    path.join(teamDirectory, `${agentName}.pid`),
-    path.join(teamDirectory, `${agentName}.active`),
-    paths.lastMessagePath(team, agentName),
+    paths.pidPath(team, agentName),
+    paths.activePath(team, agentName),
     paths.lastReportPath(team, agentName),
-    paths.lastAwokenPath(team, agentName),
     paths.lastReminderPath(team, agentName),
     paths.firstActivationPath(team, agentName),
     paths.inboxPath(team, agentName),
   ];
+}
+
+/**
+ * Delete every per-agent state file, ignoring the ones an option keeps.
+ *
+ * Shared by agent removal, worker seeding, and first-activation cleanup so
+ * the state-file list lives only in {@link agentStateFiles}.
+ *
+ * @param team - Name of the team the agent belongs to
+ * @param agentName - Name of the agent
+ * @param options - keepInbox preserves the inbox file; keepFirstActivation preserves the first-activation stamp
+ */
+export function resetAgentState(
+  team: string,
+  agentName: string,
+  options: { keepInbox?: boolean; keepFirstActivation?: boolean } = {},
+): void {
+  for (const stateFile of agentStateFiles(team, agentName)) {
+    if (options.keepInbox && stateFile === paths.inboxPath(team, agentName)) continue;
+    if (
+      options.keepFirstActivation &&
+      stateFile === paths.firstActivationPath(team, agentName)
+    ) {
+      continue;
+    }
+    try {
+      if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
+    } catch (_e) {
+      // ignore
+    }
+  }
 }
 
 /**
@@ -131,10 +164,10 @@ function agentStateFiles(team: string, agentName: string): string[] {
  * @returns The recorded process id, or null when the file is missing or malformed
  */
 function readPidFromPidFile(
-  teamDirectory: string,
+  team: string,
   agentName: string,
 ): number | null {
-  const pidFile = path.join(teamDirectory, `${agentName}.pid`);
+  const pidFile = paths.pidPath(team, agentName);
   if (!fs.existsSync(pidFile)) return null;
   try {
     const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
@@ -163,6 +196,33 @@ export interface RemoveAgentOptions {
 }
 
 /**
+ * Check whether the process with the given pid still looks like a pi worker.
+ *
+ * Pid files can outlive their process: after a crash the OS may hand the pid
+ * to an unrelated program, and a blind SIGKILL would kill that program. The
+ * pid is only trusted when its command line carries the `-ne -e` extension
+ * flags that every spawned worker is launched with.
+ *
+ * @param pid - Process id from the agent's pid file
+ * @returns True when the command line matches pi; unknown shapes are skipped
+ */
+/**
+ * Workers launch as `node <pi cli> -ne -e <extension entry> ...`. The `-ne -e`
+ * pair identifies a pi-teams process; a bare path component named "pi" does not.
+ */
+const PI_WORKER_COMMAND_PATTERN = /\s-ne\s+-e\s/;
+
+function pidLooksLikePiWorker(pid: number): boolean {
+  try {
+    const result = execCommand("ps", ["-p", String(pid), "-o", "command="]);
+    if (result.status !== 0) return false;
+    return PI_WORKER_COMMAND_PATTERN.test(result.stdout);
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
  * Remove an agent from its team, clean up its state, and terminate it.
  *
  * This is the single removal path for worker termination: team shutdown,
@@ -179,9 +239,8 @@ export async function removeAgent(options: RemoveAgentOptions): Promise<void> {
   // The lead coordinates shutdowns itself and is never removed.
   if (agentName === "team-lead") return;
 
-  const teamDirectory = paths.teamDir(team);
   // Capture the pid before state cleanup; the pid file is deleted below.
-  const pid = options.ownPid ?? readPidFromPidFile(teamDirectory, agentName);
+  const pid = options.ownPid ?? readPidFromPidFile(team, agentName);
 
   // Capture terminal ids from the team config when the caller did not pass
   // them: the member record disappears from the config after removal.
@@ -202,13 +261,7 @@ export async function removeAgent(options: RemoveAgentOptions): Promise<void> {
     // The config may already be gone; termination still matters.
   }
 
-  for (const stateFile of agentStateFiles(team, agentName)) {
-    try {
-      if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
-    } catch (_e) {
-      // ignore
-    }
-  }
+  resetAgentState(team, agentName);
 
   const terminal = options.terminal ?? null;
   if (terminal) {
@@ -225,10 +278,15 @@ export async function removeAgent(options: RemoveAgentOptions): Promise<void> {
   }
 
   if (pid !== null) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch (_e) {
-      // The process may already be gone.
+    // Only a pid the caller vouches for (close_myself passes its own pid) is
+    // killed without verification; pid-file pids are checked against the pi
+    // command line so pid reuse cannot make us kill an unrelated process.
+    if (options.ownPid === pid || pidLooksLikePiWorker(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (_e) {
+        // The process may already be gone.
+      }
     }
   }
 }
