@@ -2018,12 +2018,13 @@ export default function (pi: ExtensionAPI) {
       name: "spawn_teammate",
       label: "Spawn Teammate",
       description:
-        "Spawn a new teammate in a terminal pane or separate window.\n\n" +
+        "Spawn a new teammate/worker/subagent in a terminal pane or separate window.\n\n" +
         "Model selection: before spawning, call get_flavored_models to see the " +
         "configured orchestrator/worker/swarm model lists. Pick from the worker " +
-        "list for coding. Pick from the orchestrator list only for a teammate " +
+        "list for coding. Pick from the orchestrator list only for a " +
+        "teammate/worker/subagent " +
         "that plans or coordinates other work. Never pick from the swarm list " +
-        "(read-only gathering). Prefer spreading teammates across different " +
+        "(read-only gathering). Prefer spreading teammates/workers/subagents across different " +
         "providers unless the user names specific models. If no worker models " +
         "are configured, spawn the same model as yours (the team lead's).\n\n" +
         "If you pass a model explicitly, it must be fully qualified as " +
@@ -2079,11 +2080,11 @@ export default function (pi: ExtensionAPI) {
       name: "spawn_readonly_worker",
       label: "Spawn Read-Only Worker",
       description:
-        "Spawn a read-only worker agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the worker can still use messaging tools (send_message, broadcast_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
+        "Spawn a read-only teammate/worker/subagent agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the teammate/worker/subagent can still use messaging tools (send_message, broadcast_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
         "Model selection: before spawning, call get_flavored_models and pick a " +
         "model from the swarm list. If the swarm list is empty, pick from the " +
         "worker list. If that is empty too, spawn the same model as yours (the " +
-        "team lead's). Prefer spreading workers across different providers " +
+        "team lead's). Prefer spreading teammates/workers/subagents across different providers " +
         "unless the user names specific models.",
       parameters: asPiToolSchema(
         Type.Object({
@@ -2216,7 +2217,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool({
       name: "close_worker",
       label: "Close Worker",
-      description: "Process a teammate's shutdown.",
+      description: "Process a teammate/worker/subagent's shutdown.",
       parameters: asPiToolSchema(
         Type.Object({
           team_name: Type.String(),
@@ -2406,7 +2407,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "send_message",
     label: "Send Message",
-    description: "Send a message to a teammate.",
+    description: "Send a message to a teammate/worker/subagent.",
     parameters: asPiToolSchema(
       Type.Object({
         team_name: Type.Optional(
@@ -2490,7 +2491,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "list_teammates",
     label: "List Teammates",
-    description: "List all teammates in a team with their status.",
+    description: "List all teammates/workers/subagents in a team with their status.",
     parameters: asPiToolSchema(
       Type.Object({
         team_name: Type.String(),
