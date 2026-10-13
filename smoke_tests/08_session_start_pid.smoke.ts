@@ -14,16 +14,12 @@ describe("S8 session_start pid survives cleanup", () => {
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
     vi.stubEnv("PI_TEAM_NAME", "t");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-ss-"));
-    fs.mkdirSync(path.join(dir, "inboxes"));
     const f = (n: string) => (_t: string, a: string) => path.join(dir, `${a}.${n}`);
     vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
     vi.spyOn(paths, "teamDir").mockReturnValue(dir);
     vi.spyOn(paths, "pidPath").mockImplementation(f("pid"));
     vi.spyOn(paths, "activePath").mockImplementation(f("active"));
-    vi.spyOn(paths, "lastReportPath").mockImplementation(f("lastReport"));
-    vi.spyOn(paths, "lastReminderPath").mockImplementation(f("lastReminder"));
     vi.spyOn(paths, "firstActivationPath").mockImplementation(f("firstActivation"));
-    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(dir, "inboxes", `${a}.json`));
 
     const handlers: Record<string, any> = {};
     theExtension({

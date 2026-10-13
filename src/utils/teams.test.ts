@@ -67,14 +67,8 @@ describe("removeAgent", () => {
     vi.spyOn(paths, "taskDir").mockImplementation(
       () => path.join(testDir, "tasks"),
     );
-    vi.spyOn(paths, "inboxPath").mockImplementation((_t, agentName) =>
-      path.join(testDir, "inboxes", `${agentName}.json`),
-    );
-    vi.spyOn(paths, "lastReportPath").mockImplementation((_t, agentName) =>
-      path.join(testDir, `${agentName}.lastReport`),
-    );
-    vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, agentName) =>
-      path.join(testDir, `${agentName}.lastReminder`),
+    vi.spyOn(paths, "socketPath").mockImplementation((_t, agentName) =>
+      path.join(testDir, `${agentName}.sock`),
     );
     vi.spyOn(paths, "pidPath").mockImplementation((_t, agentName) =>
       path.join(testDir, `${agentName}.pid`),
@@ -99,17 +93,14 @@ describe("removeAgent", () => {
     const statePaths = [
       path.join(testDir, `${agentName}.pid`),
       path.join(testDir, `${agentName}.active`),
-      path.join(testDir, `${agentName}.lastReport`),
-      path.join(testDir, `${agentName}.lastReminder`),
       path.join(testDir, `${agentName}.firstActivation`),
+      path.join(testDir, `${agentName}.sock`),
     ];
-    fs.mkdirSync(path.join(testDir, "inboxes"), { recursive: true });
     for (const statePath of statePaths) {
       fs.writeFileSync(statePath, "x");
     }
-    fs.writeFileSync(path.join(testDir, "inboxes", `${agentName}.json`), "[]");
     fs.writeFileSync(path.join(testDir, `${agentName}.pid`), pid);
-    return [...statePaths, path.join(testDir, "inboxes", `${agentName}.json`)];
+    return statePaths;
   }
 
   it("removes the member, deletes every state file, closes its pane, and kills its process", async () => {
@@ -233,9 +224,7 @@ describe("removeAgent pid verification", () => {
     fs.mkdirSync(testDir, { recursive: true });
     vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
     vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
-    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(testDir, "inboxes", `${a}.json`));
-    vi.spyOn(paths, "lastReportPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReport`));
-    vi.spyOn(paths, "lastReminderPath").mockImplementation((_t, a) => path.join(testDir, `${a}.lastReminder`));
+    vi.spyOn(paths, "socketPath").mockImplementation((_t, a) => path.join(testDir, `${a}.sock`));
     vi.spyOn(paths, "firstActivationPath").mockImplementation((_t, a) => path.join(testDir, `${a}.firstActivation`));
   });
   afterEach(() => vi.restoreAllMocks());

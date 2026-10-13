@@ -25,15 +25,21 @@ export interface TeamConfig {
   separateWindows?: boolean;
 }
 
-export interface InboxMessage {
+/**
+ * A message sent between team members over the socket transport.
+ *
+ * The recipient gets the message immediately and keeps no copy on disk.
+ */
+export interface TeamMessage {
+  /** Short unique identifier of the message. */
   id: string;
+  /** Name of the sending agent. */
   from: string;
+  /** Name of the receiving agent. */
   to: string;
   subject: string;
   text: string;
+  /** ISO 8601 time the sender created the message. */
   timestamp: string;
-  /** True once the polling loop has delivered this message to the recipient agent as a user message. */
-  delivered: boolean;
   summary?: string;
-  color?: string;
 }

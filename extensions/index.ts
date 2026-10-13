@@ -27,8 +27,15 @@ import {
   type ModelFlavor,
 } from "../src/utils/flavoredModels";
 import * as holdRun from "../src/utils/hold";
-import { InboxMessage, Member } from "../src/utils/models";
+import { appendReply, buildClosingReport, buildWorkerReport, extractFinalReply } from "../src/utils/report";
+import { Member, TeamMessage } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
+import {
+  type MessageListener,
+  isListening,
+  startListener,
+  waitForListener,
+} from "../src/utils/transport";
 import * as teams from "../src/utils/teams";
 import {
   getTopModelMatches,
@@ -59,10 +66,10 @@ const EXTENSION_ENTRY: string =
 
 
 
-export function formatDeliveredMessages(messages: InboxMessage[]): string {
+export function formatDeliveredMessages(messages: TeamMessage[]): string {
   if (messages.length === 0) return "";
 
-  const formatOne = (m: InboxMessage): string => {
+  const formatOne = (m: TeamMessage): string => {
     const ts = new Date(m.timestamp)
       .toISOString()
       .replace("T", " ")
@@ -102,6 +109,37 @@ export function mergeQueuedMessages(messages: readonly string[]): string {
     "Multiple queued messages were produced. Address all of them:",
     ...sections,
   ].join("\n\n");
+}
+
+/** Delay before a follow-up that failed to queue is flushed again while no run is active. */
+const FOLLOW_UP_RETRY_MS = 2000;
+
+/** Longest time a spawn tool waits for a new worker to start listening. */
+const WORKER_LISTEN_TIMEOUT_MS = 30_000;
+
+/** Longest time list_teammates waits for one member's socket to answer. */
+const LISTEN_PROBE_TIMEOUT_MS = 500;
+
+/**
+ * Warn the lead when a new worker has not started listening yet.
+ *
+ * @param spawned - The spawn result
+ * @returns An empty string when the worker listens, otherwise a warning sentence
+ */
+function listeningNote(spawned: { listening: boolean }): string {
+  return spawned.listening
+    ? ""
+    : " The worker is not accepting messages yet. Check list_teammates before you send it a message.";
+}
+
+/**
+ * Describe the members a broadcast could not reach.
+ *
+ * @param failed - The failed deliveries with their reasons
+ * @returns A one-line summary naming each member
+ */
+function formatBroadcastFailures(failed: { name: string; reason: string }[]): string {
+  return failed.map((f) => `${f.name} (${f.reason})`).join("; ");
 }
 
 export class FollowUpMessageQueue {
@@ -543,6 +581,8 @@ export default function (pi: ExtensionAPI) {
     terminalId: string;
     isWindow: boolean;
     model: string;
+    /** True when the worker accepted connections before the wait ended. */
+    listening: boolean;
   }
 
   async function spawnTeamWorker(
@@ -623,14 +663,28 @@ export default function (pi: ExtensionAPI) {
       useSeparateWindow ? { windowId: terminalId } : { tmuxPaneId: terminalId },
     );
 
-    return { member, terminalId, isWindow: useSeparateWindow, model };
+    // The first message can arrive before the worker boots. Wait for its
+    // socket so a send right after the spawn does not fail.
+    const listening = await waitForListener(safeTeamName, safeName, WORKER_LISTEN_TIMEOUT_MS);
+
+    return { member, terminalId, isWindow: useSeparateWindow, model, listening };
   }
 
   const terminal = getTerminalAdapter();
-  let inboxCheckInterval: ReturnType<typeof setInterval> | null = null;
+  /** Socket listener that receives messages for this agent. */
+  let messageListener: MessageListener | null = null;
+  /** Team the current listener belongs to, so a new team replaces it. */
+  let listenerTeam: string | undefined;
+  /** Timer that retries a follow-up that could not be queued. */
+  let followUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
-  let isAgentIdle = true;
   let isAgentRunning = false;
+  /** Final replies of the runs in the current settle cycle, captured at agent_end for the report. */
+  let cycleReplies: string[] = [];
+  /** Newest assistant text of the run in progress, kept so close_myself can report it. */
+  let currentRunText: string | null = null;
+  /** True once this worker messaged the team-lead during the current run cycle. */
+  let reportedToLead = false;
   /** Migration warning shown to the model on its next get_flavored_models call */
   let pendingMigrationNotice: string | undefined;
   // Captured from the first context that carries a model registry, so the
@@ -640,12 +694,10 @@ export default function (pi: ExtensionAPI) {
   let followUpEpoch = 0;
   const pendingInboxNotifications = new FollowUpMessageQueue();
 
-  function clearInboxCheckInterval(): void {
-    if (inboxCheckInterval == null) {
-      return;
-    }
-    clearInterval(inboxCheckInterval);
-    inboxCheckInterval = null;
+  function clearFollowUpRetryTimer(): void {
+    if (followUpRetryTimer == null) return;
+    clearTimeout(followUpRetryTimer);
+    followUpRetryTimer = null;
   }
 
   function clearTitleRefreshTimeouts(): void {
@@ -687,8 +739,10 @@ export default function (pi: ExtensionAPI) {
         followUpEpoch++;
       } catch (_err) {
         // A transient failure (for example compaction in progress) must not
-        // lose the message. Re-queue it so the next agent_end flush retries.
+        // lose the message. Re-queue it. The next agent_end flushes it, and
+        // when no run is active the retry timer flushes it instead.
         pendingInboxNotifications.enqueue(message);
+        scheduleFollowUpRetry();
       }
     })();
   }
@@ -711,54 +765,47 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function startInboxPolling(): void {
-    clearInboxCheckInterval();
-    inboxCheckInterval = setInterval(async () => {
-      if (!teamName || tickInFlight) {
-        return;
-      }
-      tickInFlight = true;
-      try {
-        await pollInboxOnce();
-      } catch (_e) {
-        // A transient failure (stale lock, half-written inbox file) must not
-        // kill the process through an unhandled rejection. The next tick retries.
-      } finally {
-        tickInFlight = false;
-      }
-    }, 1000);
+  /** Retry a failed follow-up after a short delay when no run will flush it. */
+  function scheduleFollowUpRetry(): void {
+    if (isAgentRunning || followUpRetryTimer != null) return;
+    followUpRetryTimer = setTimeout(() => {
+      followUpRetryTimer = null;
+      pendingInboxNotifications.flush(sendFollowUp);
+    }, FOLLOW_UP_RETRY_MS);
   }
 
-  /** True while a poll tick is running, so overlapping ticks are skipped. */
-  let tickInFlight = false;
+  /**
+   * Receive one message from a teammate. The transport calls this before it
+   * acknowledges the sender, so a message the agent cannot take is reported
+   * back to the sender.
+   */
+  function receiveTeamMessage(message: TeamMessage): void {
+    deliverPendingMessage(formatDeliveredMessages([message]));
+  }
 
-  /** One poll tick: deliver drained messages, then maybe send a reminder. */
-  async function pollInboxOnce(): Promise<void> {
-    if (!teamName) {
-      return;
-    }
+  /**
+   * Listen for messages addressed to this agent. Starts a new listener when
+   * the team changed since the last call and does nothing otherwise.
+   *
+   * @throws Error when the socket cannot be created
+   */
+  async function ensureListener(): Promise<void> {
+    if (!teamName || (messageListener && listenerTeam === teamName)) return;
+    await closeListener();
+    messageListener = await startListener(teamName, agentName, receiveTeamMessage);
+    listenerTeam = teamName;
+  }
 
-      // Drain undelivered messages and deliver their full bodies as a single
-      // user message. drainUndelivered marks them delivered atomically, so the
-      // same batch is never delivered twice.
-      const toDeliver = await messaging.drainUndelivered(teamName, agentName);
-      if (toDeliver.length > 0) {
-        deliverPendingMessage(formatDeliveredMessages(toDeliver));
-        return;
-      }
-
-      // Reminder fallback: fires only when the agent is idle. Covers the case
-      // where a delivered instruction's follow-up failed to wake the agent for
-      // another turn, or the agent ended its turn without reporting back.
-      if (isTeammate && isAgentIdle) {
-        const reminder = await messaging.pendingReminder(teamName, agentName);
-        if (reminder) deliverPendingMessage(reminder);
-      }
+  async function closeListener(): Promise<void> {
+    const current = messageListener;
+    messageListener = null;
+    listenerTeam = undefined;
+    await current?.close();
   }
 
   // Block "sleep N" bash commands for agents that participate in a team.
-  // Waiting agents must end their turn; the inbox polling loop wakes them
-  // automatically when a message arrives. Sleeping wastes wall time and
+  // Waiting agents must end their turn; an incoming message wakes them
+  // automatically. Sleeping wastes wall time and
   // tokens and delays responses to the team-lead.
   const SLEEP_COMMAND_PATTERN = /^sleep\s+\d+/;
   pi.on("tool_call", async (event) => {
@@ -806,10 +853,7 @@ export default function (pi: ExtensionAPI) {
       scheduleTerminalTitleRefreshes(fullTitle);
 
       // On first spawn, purge ALL stale state from any previous session and
-      // stamp the firstActivationFile immediately (before messages can arrive).
-      // Previously this cleanup ran at turn_start, which created a race: a message
-      // sent between session_start and the first turn_start would be deleted when
-      // the first turn fired and wiped the inbox.
+      // stamp the firstActivationFile immediately, before the listener starts.
       if (teamName) {
         const firstActivationFile = paths.firstActivationPath(
           teamName,
@@ -823,13 +867,13 @@ export default function (pi: ExtensionAPI) {
         fs.writeFileSync(paths.pidPath(teamName, agentName), process.pid.toString());
       }
 
-      startInboxPolling();
-    } else {
-      if (teamName) {
-        ctx.ui.setStatus("pi-teams", `Lead @ ${teamName}`);
-      }
-
-      startInboxPolling();
+    } else if (teamName) {
+      ctx.ui.setStatus("pi-teams", `Lead @ ${teamName}`);
+    }
+    try {
+      await ensureListener();
+    } catch (e) {
+      ctx.ui.notify(`pi-teams: cannot receive messages: ${e}`, "error");
     }
   });
 
@@ -862,7 +906,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("turn_start", async (_event, ctx) => {
-    isAgentIdle = false;
     setActiveStatus(true);
     if (isTeammate) {
       const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
@@ -998,8 +1041,8 @@ export default function (pi: ExtensionAPI) {
     isAgentRunning = true;
     // Do not clear pendingInboxNotifications here: messages queued by a failed
     // sendFollowUp retry, or queued mid-run for the boundary flush, would be
-    // lost (their inbox entries are already marked delivered). The queue is
-    // flushed at agent_end and cleared only on session_shutdown.
+    // lost because no copy exists on disk. The queue is flushed at agent_end
+    // and cleared only on session_shutdown.
   });
 
   pi.on("agent_end", async (_event, ctx) => {
@@ -1013,30 +1056,50 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", async () => {
-    isAgentIdle = true;
     setActiveStatus(false);
-    if (!isTeammate || !teamName) return;
+  });
+
+  // Track the newest assistant text of the running run. A worker that closes
+  // itself never reaches agent_end, so close_myself reads this value.
+  pi.on("message_end", async (event) => {
+    if (!isWorker) return;
+    currentRunText = extractFinalReply([event.message]) ?? currentRunText;
+  });
+
+  // agent_end fires once per low-level run; retries and queued work can start
+  // more runs before the session settles. Keep every run's reply, in order.
+  pi.on("agent_end", async (event) => {
+    if (!isWorker) return;
+    cycleReplies = appendReply(cycleReplies, extractFinalReply(event.messages));
+    currentRunText = null;
+  });
+
+  // agent_settled means Pi will not continue on its own. For a worker, that is
+  // the moment to report to the team-lead, unless the worker already did.
+  pi.on("agent_settled", async (event) => {
+    if (!isWorker || !teamName) return;
+    const replies = cycleReplies;
+    const alreadyReported = reportedToLead;
+    cycleReplies = [];
+    reportedToLead = false;
+    if (alreadyReported && !event.aborted) return;
+    const report = buildWorkerReport(agentName, replies, event.aborted);
     try {
-      // If the agent ended its turn without reporting back after a delivered
-      // team-lead instruction, steer it to do so now.
-      const reminder = await messaging.pendingReminder(teamName, agentName);
-      if (!reminder) return;
-      // Mid-run, queue for the run boundary so it never injects midstream;
-      // when the run has actually ended, steer immediately.
-      if (isAgentRunning) {
-        pendingInboxNotifications.enqueue(reminder);
-      } else {
-        // Synchronous fire-and-forget; sendUserMessage returns void and
-        // handles its own async failures internally.
-        pi.sendUserMessage(reminder, { deliverAs: "steer" });
-      }
+      await messaging.sendPlainMessage(
+        teamName,
+        agentName,
+        "team-lead",
+        report.subject,
+        report.text,
+      );
     } catch (_e) {
-      // A transient inbox read failure must not crash the turn-end path.
+      // The team directory can be gone after team_shutdown or close_worker.
     }
   });
 
   pi.on("session_shutdown", async () => {
-    clearInboxCheckInterval();
+    clearFollowUpRetryTimer();
+    await closeListener();
     clearTitleRefreshTimeouts();
     isAgentRunning = false;
     pendingInboxNotifications.clear();
@@ -1093,13 +1156,13 @@ export default function (pi: ExtensionAPI) {
 
       const capabilitiesNote =
         agentType === "readonly-worker"
-          ? "\nYou are limited to reading files (read, grep, find, ls), messaging tools (send_message, broadcast_message), and close_myself. You cannot write, edit, or execute commands. Close yourself with close_myself only when your instructions tell you to."
+          ? "\nYou are limited to reading files (read, grep, find, ls), messaging (send_message), and close_myself. You cannot write, edit, or execute commands. Close yourself with close_myself only when your instructions tell you to."
           : "";
 
       return {
         systemPrompt:
           event.systemPrompt +
-          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. When your work is done, end your turn and stop — you will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
+          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. When your work is done, end your turn and stop. Your final reply is sent to the team-lead automatically, so make it a complete report. Use send_message only for extra messages, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }
   });
@@ -1138,6 +1201,7 @@ export default function (pi: ExtensionAPI) {
         );
         teamName = params.team_name;
         process.env.PI_TEAM_NAME = params.team_name;
+        await ensureListener();
         return {
           content: [
             { type: "text", text: `Team ${params.team_name} created.` },
@@ -1249,13 +1313,14 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId}.`,
+              text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId}.${listeningNote(spawned)}`,
             },
           ],
           details: {
             agentId: spawned.member.agentId,
             terminalId: spawned.terminalId,
             isWindow: spawned.isWindow,
+            listening: spawned.listening,
           },
         };
       },
@@ -1265,7 +1330,7 @@ export default function (pi: ExtensionAPI) {
       name: "spawn_readonly_worker",
       label: "Spawn Read-Only Worker",
       description:
-        "Spawn a read-only teammate/worker/subagent agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the teammate/worker/subagent can still use messaging tools (send_message, broadcast_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
+        "Spawn a read-only teammate/worker/subagent agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the teammate/worker/subagent can still use messaging tools (send_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
         "Model selection: before spawning, call get_flavored_models and pick a " +
         "model from the swarm list. If the swarm list is empty, pick from the " +
         "worker list. If that is empty too, spawn the same model as yours (the " +
@@ -1297,12 +1362,13 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId}. Restricted to: read, grep, find, ls, messaging (send_message, broadcast_message), and close_myself.`,
+              text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId}. Restricted to: read, grep, find, ls, messaging (send_message), and close_myself.${listeningNote(spawned)}`,
             },
           ],
           details: {
             agentId: spawned.member.agentId,
             terminalId: spawned.terminalId,
+            listening: spawned.listening,
             tools: [...READONLY_WORKER_TOOLS],
           },
         };
@@ -1583,13 +1649,19 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "send_message",
     label: "Send Message",
-    description: "Send a message to a teammate/worker/subagent.",
+    description:
+      "Send a message to a teammate/worker/subagent. The message arrives immediately as a user message. " +
+      `Set recipient to "${messaging.BROADCAST_RECIPIENT}" to send it to every other team member. ` +
+      "Do not use a broadcast just to answer the team-lead. Name the team-lead as the recipient instead. " +
+      "The tool fails at once when the recipient is not running.",
     parameters: asPiToolSchema(
       Type.Object({
         team_name: Type.Optional(
           Type.String({ description: "Defaults to your current team." }),
         ),
-        recipient: Type.String(),
+        recipient: Type.String({
+          description: `A team member name, or "${messaging.BROADCAST_RECIPIENT}" for every other member.`,
+        }),
         subject: Type.String({
           description: "Short subject line for the message.",
         }),
@@ -1603,6 +1675,33 @@ export default function (pi: ExtensionAPI) {
       const resolvedTeam = params.team_name || teamName;
       if (!resolvedTeam)
         throw new Error("team_name is required (no team is currently active).");
+
+      if (params.recipient === messaging.BROADCAST_RECIPIENT) {
+        const result = await messaging.broadcastMessage(
+          resolvedTeam,
+          agentName,
+          params.subject,
+          params.content,
+          params.summary,
+        );
+        // A broadcast reaches the lead, so it counts as a report.
+        if (result.delivered.includes("team-lead")) reportedToLead = true;
+        if (result.delivered.length === 0 && result.failed.length > 0) {
+          throw new Error(`Broadcast reached no one. ${formatBroadcastFailures(result.failed)}`);
+        }
+        const failureNote =
+          result.failed.length > 0 ? `\nNot reached: ${formatBroadcastFailures(result.failed)}` : "";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Message sent to ${result.delivered.join(", ") || "no one"}.${failureNote}`,
+            },
+          ],
+          details: { delivered: result.delivered, failed: result.failed },
+        };
+      }
+
       await messaging.sendPlainMessage(
         resolvedTeam,
         agentName,
@@ -1611,53 +1710,13 @@ export default function (pi: ExtensionAPI) {
         params.content,
         params.summary,
       );
+      if (params.recipient === "team-lead") reportedToLead = true;
       return {
         content: [
           {
             type: "text",
             text: `Message sent to ${params.recipient}.\n\n${params.content}`,
           },
-        ],
-        details: {},
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "broadcast_message",
-    label: "Broadcast Message",
-    description:
-      "Broadcast a message to all team members.  Do not use this just to respond to the team-lead.  Use send_message instead.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.Optional(
-          Type.String({ description: "Defaults to your current team." }),
-        ),
-        subject: Type.String({
-          description: "Short subject line for the broadcast.",
-        }),
-        content: Type.String({ description: "Full message body." }),
-        summary: Type.Optional(
-          Type.String({ description: "Optional brief summary." }),
-        ),
-        color: Type.Optional(Type.String()),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const resolvedTeam = params.team_name || teamName;
-      if (!resolvedTeam)
-        throw new Error("team_name is required (no team is currently active).");
-      await messaging.broadcastMessage(
-        resolvedTeam,
-        agentName,
-        params.subject,
-        params.content,
-        params.summary,
-        params.color,
-      );
-      return {
-        content: [
-          { type: "text", text: `Message broadcasted to all team members.` },
         ],
         details: {},
       };
@@ -1681,9 +1740,10 @@ export default function (pi: ExtensionAPI) {
             m.name === "team-lead" && !isTeammate
               ? true
               : isMemberAlive(params.team_name, m);
-          const undeliveredCount = (
-            await messaging.readInbox(params.team_name, m.name, true)
-          ).length;
+          const listening =
+            m.name === agentName && messageListener
+              ? true
+              : await isListening(params.team_name, m.name, LISTEN_PROBE_TIMEOUT_MS);
           const active = isAgentActive(params.team_name, m.name);
           return {
             name: m.name,
@@ -1691,7 +1751,7 @@ export default function (pi: ExtensionAPI) {
             model: m.model,
             alive,
             active,
-            undeliveredCount,
+            listening,
           };
         }),
       );
@@ -1713,7 +1773,8 @@ export default function (pi: ExtensionAPI) {
       label: "Close Myself",
       description:
         "Close this agent: remove yourself from the team config, clean up your state files, and terminate your own process and terminal pane or window. " +
-        "Do not run this unless your instructions told you to run it. When the team-lead tells you to close yourself, call this tool instead of ending your turn or running kill commands.",
+        "Do not run this unless your instructions told you to run it. When the team-lead tells you to close yourself, call this tool instead of ending your turn or running kill commands. " +
+        "Write your final report as text in the same turn before the call. The extension sends that text to the team-lead as your last report, because you stop running when this tool runs.",
       parameters: asPiToolSchema(Type.Object({})) as any,
       async execute() {
         const activeTeam = teamName;
@@ -1721,6 +1782,15 @@ export default function (pi: ExtensionAPI) {
           throw new Error(
             "No team is active for this agent, so there is nothing to close.",
           );
+        }
+
+        // A closing worker never reaches agent_settled, so report its replies
+        // now, while the lead can still receive them.
+        const report = buildClosingReport(agentName, appendReply(cycleReplies, currentRunText));
+        try {
+          await messaging.sendPlainMessage(activeTeam, agentName, "team-lead", report.subject, report.text);
+        } catch (_e) {
+          // The lead or the team can be gone already. Closing still proceeds.
         }
 
         // removeAgent removes this member from the team config, deletes every

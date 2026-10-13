@@ -7,7 +7,7 @@ import {
   executeGetModels,
   getLastUserMessageText,
 } from "./index";
-import type { InboxMessage } from "../src/utils/models";
+import type { TeamMessage } from "../src/utils/models";
 import {
   clearModelsCache,
   getTopModelMatches,
@@ -250,7 +250,7 @@ describe("formatDeliveredMessages", () => {
   });
 
   it("formats a single message with header fields and body", () => {
-    const messages: InboxMessage[] = [
+    const messages: TeamMessage[] = [
       {
         id: "aaa11111",
         from: "worker",
@@ -258,7 +258,6 @@ describe("formatDeliveredMessages", () => {
         subject: "Status update",
         text: "first report",
         timestamp: "2026-05-28T10:00:00.000Z",
-        delivered: true,
         summary: "report",
       },
     ];
@@ -273,7 +272,7 @@ describe("formatDeliveredMessages", () => {
   });
 
   it("wraps multiple messages with ordered boundaries", () => {
-    const messages: InboxMessage[] = [
+    const messages: TeamMessage[] = [
       {
         id: "aaa11111",
         from: "worker",
@@ -281,7 +280,6 @@ describe("formatDeliveredMessages", () => {
         subject: "First",
         text: "body one",
         timestamp: "2026-05-28T10:00:00.000Z",
-        delivered: true,
       },
       {
         id: "bbb22222",
@@ -290,7 +288,6 @@ describe("formatDeliveredMessages", () => {
         subject: "Second",
         text: "body two",
         timestamp: "2026-05-28T10:01:00.000Z",
-        delivered: true,
       },
     ];
 

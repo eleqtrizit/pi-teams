@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { teamDir, inboxPath, sanitizeName } from "./paths";
+import { teamDir, socketPath, sanitizeName } from "./paths";
 
 describe("Security Audit - Path Traversal (Prevention Check)", () => {
   it("should throw an error for path traversal via teamName", () => {
@@ -10,7 +10,7 @@ describe("Security Audit - Path Traversal (Prevention Check)", () => {
   it("should throw an error for path traversal via agentName", () => {
     const teamName = "audit-team";
     const maliciousAgentName = "../../../.ssh/id_rsa";
-    expect(() => inboxPath(teamName, maliciousAgentName)).toThrow();
+    expect(() => socketPath(teamName, maliciousAgentName)).toThrow();
   });
 
   it("should throw an error for path traversal via taskId", () => {

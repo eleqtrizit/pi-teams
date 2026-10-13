@@ -19,11 +19,9 @@ describe("S4 list_teammates on Zellij", () => {
     vi.stubEnv("PI_AGENT_TYPE", "");
     vi.stubEnv("PI_AGENT_NAME", "");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-zj-"));
-    fs.mkdirSync(path.join(dir, "inboxes"));
     fs.writeFileSync(path.join(dir, "w1.pid"), String(process.pid)); // live worker pid
     vi.spyOn(paths, "pidPath").mockImplementation((_t, a) => path.join(dir, `${a}.pid`));
     vi.spyOn(paths, "activePath").mockImplementation((_t, a) => path.join(dir, `${a}.active`));
-    vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(dir, "inboxes", `${a}.json`));
     vi.spyOn(teams, "readConfig").mockResolvedValue({
       name: "t", members: [{ name: "w1", agentType: "teammate", tmuxPaneId: "zellij_w1", subscriptions: [] }],
     } as any);

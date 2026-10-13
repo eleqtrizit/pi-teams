@@ -102,11 +102,10 @@ export async function updateMember(teamName: string, agentName: string, updates:
 /**
  * Paths of every per-agent state file the extension maintains for one agent.
  *
- * The list covers liveness markers (pid, activity), message state (last
- * message, report, reminder, awoken timestamps), first-activation stamps, and
- * the inbox file. A removed agent must leave none of these behind: stale
- * activity markers make the lead's liveness checks report the agent as alive,
- * and leftover timestamps would leak into a respawned agent of the same name.
+ * The list covers liveness markers (pid, activity), first-activation stamps,
+ * and the message socket. A removed agent must leave none of these behind:
+ * stale activity markers make the lead's liveness checks report the agent as
+ * alive, and a leftover socket file makes senders connect to a dead agent.
  *
  * @param team - Name of the team the agent belongs to
  * @param agentName - Name of the agent
@@ -116,10 +115,8 @@ function agentStateFiles(team: string, agentName: string): string[] {
   return [
     paths.pidPath(team, agentName),
     paths.activePath(team, agentName),
-    paths.lastReportPath(team, agentName),
-    paths.lastReminderPath(team, agentName),
     paths.firstActivationPath(team, agentName),
-    paths.inboxPath(team, agentName),
+    paths.socketPath(team, agentName),
   ];
 }
 
@@ -131,15 +128,14 @@ function agentStateFiles(team: string, agentName: string): string[] {
  *
  * @param team - Name of the team the agent belongs to
  * @param agentName - Name of the agent
- * @param options - keepInbox preserves the inbox file; keepFirstActivation preserves the first-activation stamp
+ * @param options - keepFirstActivation preserves the first-activation stamp
  */
 export function resetAgentState(
   team: string,
   agentName: string,
-  options: { keepInbox?: boolean; keepFirstActivation?: boolean } = {},
+  options: { keepFirstActivation?: boolean } = {},
 ): void {
   for (const stateFile of agentStateFiles(team, agentName)) {
-    if (options.keepInbox && stateFile === paths.inboxPath(team, agentName)) continue;
     if (
       options.keepFirstActivation &&
       stateFile === paths.firstActivationPath(team, agentName)

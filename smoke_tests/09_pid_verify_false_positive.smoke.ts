@@ -17,10 +17,10 @@ describe("S9 pid verification false positives", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-fp-"));
       vi.spyOn(paths, "teamDir").mockReturnValue(dir);
       vi.spyOn(paths, "configPath").mockReturnValue(path.join(dir, "config.json"));
-      for (const fn of ["pidPath", "activePath", "lastReportPath", "lastReminderPath", "firstActivationPath"] as const) {
+      for (const fn of ["pidPath", "activePath", "firstActivationPath"] as const) {
         vi.spyOn(paths, fn).mockImplementation((_t: string, a: string) => path.join(dir, `${a}.${fn}`));
       }
-      vi.spyOn(paths, "inboxPath").mockImplementation((_t, a) => path.join(dir, `${a}.json`));
+      vi.spyOn(paths, "socketPath").mockImplementation((_t, a) => path.join(dir, `${a}.sock`));
       fs.writeFileSync(path.join(dir, "w.pidPath"), "424242");
       vi.spyOn(ta, "execCommand").mockReturnValue({ stdout: cmd, stderr: "", status: 0 });
       const kill = vi.spyOn(process, "kill").mockImplementation(() => true);

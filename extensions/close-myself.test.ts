@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import closeMyselfExtension from "./index";
+import * as messaging from "../src/utils/messaging";
 
 const teamsMocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
@@ -91,6 +92,25 @@ describe("close_myself registration", () => {
   });
 });
 
+/** Load the extension and keep both the tools and the event handlers. */
+function registerWithHandlers(): { tools: Map<string, any>; handlers: { get(name: string): (...a: any[]) => Promise<void> } } {
+  const tools = new Map<string, any>();
+  const registered = new Map<string, any[]>();
+  closeMyselfExtension({
+    on: (name: string, handler: any) => registered.set(name, [...(registered.get(name) ?? []), handler]),
+    registerTool: (tool: any) => tools.set(tool.name, tool),
+    registerCommand: vi.fn(),
+    registerEntryRenderer: vi.fn(),
+    sendUserMessage: vi.fn(),
+  } as any);
+  const handlers = {
+    get: (name: string) => async (...args: any[]) => {
+      for (const handler of registered.get(name) ?? []) await handler(...args);
+    },
+  };
+  return { tools, handlers };
+}
+
 describe("close_myself execute", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -126,6 +146,55 @@ describe("close_myself execute", () => {
       terminal: null,
     });
     expect(result.content[0].text).toContain("closed itself");
+  });
+
+  it("reports its replies to the team-lead before it removes itself", async () => {
+    const order: string[] = [];
+    const sendSpy = vi.spyOn(messaging, "sendPlainMessage").mockImplementation(async () => {
+      order.push("report");
+    });
+    teamsMocks.removeAgent.mockImplementation(async () => {
+      order.push("remove");
+    });
+
+    const { tools, handlers } = registerWithHandlers();
+    await handlers.get("agent_end")(
+      { messages: [{ role: "assistant", content: [{ type: "text", text: "first run" }] }] },
+      { hasUI: true },
+    );
+    await handlers.get("message_end")({
+      message: { role: "assistant", content: [{ type: "text", text: "wrote the file" }] },
+    });
+    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
+
+    expect(order).toEqual(["report", "remove"]);
+    const body = sendSpy.mock.calls[0][4] as string;
+    expect(body).toContain("first run");
+    expect(body).toContain("wrote the file");
+    expect(body).toContain("closed itself");
+    expect(sendSpy.mock.calls[0][2]).toBe("team-lead");
+  });
+
+  it("still removes itself when the report cannot be sent", async () => {
+    vi.spyOn(messaging, "sendPlainMessage").mockRejectedValue(new Error("lead gone"));
+    teamsMocks.removeAgent.mockResolvedValue(undefined);
+
+    const { tools } = registerWithHandlers();
+    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
+
+    expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count a tool-call-only message as text", async () => {
+    const sendSpy = vi.spyOn(messaging, "sendPlainMessage").mockResolvedValue(undefined);
+    teamsMocks.removeAgent.mockResolvedValue(undefined);
+
+    const { tools, handlers } = registerWithHandlers();
+    await handlers.get("message_end")({ message: { role: "assistant", content: [{ type: "text", text: "kept" }] } });
+    await handlers.get("message_end")({ message: { role: "assistant", content: [{ type: "toolCall", name: "close_myself" }] } });
+    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
+
+    expect(sendSpy.mock.calls[0][4]).toContain("kept");
   });
 
   it("throws when no team is active for this agent", async () => {

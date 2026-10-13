@@ -59,7 +59,7 @@ describe("buildWorkerCommand", () => {
   it("restricts tools and agent type for readonly workers", () => {
     const result = buildWorkerCommand({ readonlyWorker: true }, "prov/model", FLAGS);
     expect(result.agentType).toBe("readonly-worker");
-    expect(result.piCmd).toContain("--tools read,grep,find,ls,send_message,broadcast_message,close_myself");
+    expect(result.piCmd).toContain("--tools read,grep,find,ls,send_message,close_myself");
   });
 
   it("uses teammate agent type for regular workers", () => {

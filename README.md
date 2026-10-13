@@ -45,12 +45,9 @@ Send a message to security-bot to focus on the auth module.
 ```
 
 ```
-Broadcast a message to the entire team about the API endpoint change.
+Tell the entire team about the API endpoint change.
 ```
 
-```
-Read the inbox of security-bot.
-```
 
 ## Core Tools
 
@@ -60,7 +57,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 - **`team_create`** - Create new agent team with custom name, description, default model, and window mode
 - **`team_shutdown`** - Shutdown entire team and close all panes/windows
-- **`list_teammates`** - List all teammates with their status (alive, active, unread count)
+- **`list_teammates`** - List all teammates with their status (alive, active, listening)
 - **`close_myself`** - Let an agent close itself
   - Removes the agent from the team config, cleans up its pid and activity markers, and terminates its own process and terminal pane or window
   - Available to teammates only; the lead closes the whole team with `team_shutdown`
@@ -74,7 +71,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
   - Follows flavored-model guidance (see Flavored Models below)
 - **`spawn_readonly_worker`** - Launch a read-only worker restricted to `read`, `grep`, `find`, `ls`
   - No `bash`, `write`, or `edit` access — safe for code review, auditing, exploration
-  - Can still message the team lead via `send_message`/`broadcast_message`
+  - Can still message the team lead via `send_message`
   - Accepts an optional `model` parameter; defaults to the `swarm` list, then the `worker` list, then the team leader's model
 - **`spawn_lead_window`** - Open team lead in a separate OS window
 - **`close_worker`** - Close one teammate: remove it from the team config, clean up its state, and terminate its process and pane
@@ -87,8 +84,9 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### Messaging System
 
-- **`send_message`** - Send direct message to specific teammate
-- **`broadcast_message`** - Broadcast message to all team members (with optional color)
+- **`send_message`** - Send a message to one teammate. Use the recipient `all` to reach every other team member
+  - The message arrives immediately as a user message
+  - The tool fails at once when the recipient is not running
 
 ### Model Resolution
 
@@ -114,16 +112,17 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### 💬 Inter-Agent Messaging
 
-- Agents communicate autonomously via file-based inbox system
+- Agents communicate autonomously over local Unix domain sockets
 - Direct messaging between specific teammates
-- Broadcasting to all team members with optional colors
-- Unread message tracking and notifications
+- Broadcasting to all team members with the recipient `all`
+- Immediate delivery with an acknowledgement, and an instant error when the recipient is not running
 
-### 🔔 Automated Reminders
+### 🔔 Automatic Reports
 
-- System prompts idle agents to report back to team-lead
-- Smart reminder logic based on instruction timestamps (not wake cycles)
-- One-time reminders per instruction cycle to avoid spam
+- When a teammate finishes, its final reply goes to the team-lead automatically
+- A teammate that already messaged the team-lead during the run sends no duplicate
+- An interrupted run sends the team-lead an interruption notice
+- A teammate that closes itself with `close_myself` sends its last replies to the team-lead first
 
 ### 🖥️ Terminal Integration
 
@@ -187,22 +186,17 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 ## Automated Behavior
 
-### Idle Polling
+### Message Delivery
 
-Teammates automatically check for new messages every **1 second** when idle, ensuring responsiveness without manual intervention.
+Each agent listens on a socket. A message reaches the recipient as soon as the sender writes it, and a recipient that is idle wakes for a new turn. A recipient that is mid-run receives the message at the end of its current run.
 
-### Reminder System
+### Automatic Reports
 
-If a teammate completes work without reporting back to the team-lead, the system automatically sends reminder steers until the teammate reports:
+When a teammate's run settles (Pi has no retries, compaction, or queued work left), the extension sends the teammate's full final replies to the team-lead with the subject `Report from <agent>`. When a message starts a second run before the first run's report is sent, the report numbers each reply. Requires Pi 1.1.0 or later.
 
-> "What is your report/feedback/questions? You report to the team-lead, not a human. Send a message to the team-lead immediately."
-
-**Smart Logic**: The reminder system uses instruction-based timestamps to avoid false positives from incidental wake cycles. A reminder is only sent if:
-
-1. Inbox contains team-lead instructions
-2. All instructions have been read
-3. Agent hasn't sent a message to `team-lead` since the latest instruction
-4. No reminder has been sent within the short cooldown window
+- If the teammate sent a message to `team-lead` during the run, no automatic report is sent.
+- If the run was aborted, the team-lead receives an interruption notice instead, with the replies attached when any exist.
+- If the run produced no text, the team-lead receives a note that the run finished without a text reply.
 
 ### Context Injection
 
@@ -219,7 +213,7 @@ Each teammate receives a custom system prompt including:
 When the team-lead runs with `pi -p` (or `--mode json`), pi normally exits as soon as the lead's run settles, leaving spawned workers stranded. The extension holds the run open while the team is active:
 
 1. The lead spawns workers and ends its turn. The `agent_end` handler parks the run with no LLM activity.
-2. Worker messages arrive through the normal 1-second inbox poller and are queued as follow-ups.
+2. Worker messages arrive through the socket listener and are queued as follow-ups.
 3. A queued message releases the hold and continues the run, waking the lead with the results.
 4. When every worker has reported back, the lead calls `team_shutdown` and the session exits normally.
 
@@ -235,13 +229,12 @@ All team data is stored in `~/.pi/`:
 │   └── <team-name>/
 │       ├── config.json          # Team configuration
 │       ├── <agent-name>.pid     # Process ID files
-│       ├── <agent-name>.active  # Activity timestamps
-│       └── tasks/               # Task storage (if using pi-tasks)
-└── messages/
-    └── <team-name>/
-        ├── <agent-name>.json    # Message inboxes
-        └── <agent-name>.last-reminder # Last reminder timestamp
+│       └── <agent-name>.active  # Activity timestamps
+└── tasks/
+    └── <team-name>/             # Task storage (if using pi-tasks)
 ```
+
+Message sockets live outside `~/.pi/`, in `$TMPDIR/pi-teams-<uid>/`, because Unix socket paths have a short length limit. The directory has mode 0700 and each socket has mode 0600, so only your user can send messages to your agents. Messages are not stored on disk. If the recipient is not running, the sender gets an error.
 
 ## Security
 
@@ -361,7 +354,8 @@ pi-teams/
 │   │   └── wezterm-adapter.ts       # WezTerm implementation
 │   └── utils/
 │       ├── teams.ts                 # Team management
-│       ├── messaging.ts             # Inbox/messaging system
+│       ├── transport.ts             # Unix socket listener and acknowledged send
+│       ├── messaging.ts             # Send and broadcast
 │       ├── lock.ts                  # File-based locking
 │       ├── paths.ts                 # Path utilities
 │       └── models.ts                # TypeScript type definitions

@@ -31,7 +31,6 @@ export const READONLY_WORKER_TOOLS = [
   "find",
   "ls",
   "send_message",
-  "broadcast_message",
   "close_myself",
 ] as const;
 
@@ -186,18 +185,16 @@ export function spawnWorkerProcess(
  * Pre-seed a worker's state files before its terminal process starts.
  *
  * Stamping the first-activation file makes the worker's session_start skip the
- * inbox-deletion cleanup, so messages delivered to the worker before or during
- * its boot are preserved.
+ * stale-state cleanup, so the pid and activity markers written during its boot
+ * are preserved.
  *
  * @param safeTeamName - Sanitized team name
  * @param safeName - Sanitized worker name
  */
-
 export function seedWorkerStateFiles(safeTeamName: string, safeName: string): void {
-  // Clear prior timestamps but keep any inbox content so messages delivered
-  // during boot survive, then stamp first activation so session_start skips
-  // the stale-state cleanup.
-  teams.resetAgentState(safeTeamName, safeName, { keepInbox: true, keepFirstActivation: true });
+  // Clear state left by an earlier agent of the same name, then stamp first
+  // activation so session_start skips the stale-state cleanup.
+  teams.resetAgentState(safeTeamName, safeName, { keepFirstActivation: true });
   fs.mkdirSync(path.dirname(paths.firstActivationPath(safeTeamName, safeName)), { recursive: true });
   fs.writeFileSync(
     paths.firstActivationPath(safeTeamName, safeName),

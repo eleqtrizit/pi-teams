@@ -12,7 +12,7 @@ const LEAD_TOOLS = [
   "get_flavored_models",
   "get_models",
 ];
-const SHARED_TOOLS = ["send_message", "broadcast_message", "list_teammates"];
+const SHARED_TOOLS = ["send_message", "list_teammates"];
 const WORKER_TOOLS = ["close_myself"];
 
 /**
