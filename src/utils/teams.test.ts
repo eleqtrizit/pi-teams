@@ -47,7 +47,7 @@ describe("removeAgent", () => {
   beforeEach(() => {
     // pid-verification probes ps; report a pi worker so the kill proceeds.
     vi.spyOn(terminalAdapter, "execCommand").mockReturnValue({
-      stdout: "node /path/to/pi -ne -e '/x/extensions/index.ts' --model x",
+      stdout: "node /path/to/pi --model 'prov/x'",
       stderr: "",
       status: 0,
     });

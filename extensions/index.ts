@@ -15,7 +15,6 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import { registerFsTools } from "./fs-tools";
 import * as messaging from "../src/utils/messaging";
@@ -46,25 +45,11 @@ import {
   buildWorkerCommand,
   spawnWorkerProcess,
   seedWorkerStateFiles,
-  extensionLoadFlags,
   resolveSpawnModel,
   resolveSpawnDirectory,
   READONLY_WORKER_TOOLS,
 } from "../src/utils/spawn";
 import { shQuote } from "../src/utils/terminal-adapter";
-
-// Absolute path of the pi-teams extension entry loaded into THIS session.
-// jiti provides __filename (and resolves import.meta.url) to the real module
-// file whether pi-teams runs from a git checkout, a package install, or a
-// standalone file. Spawned agents load exactly this entry with "-ne -e <path>"
-// so they share the parent session's pi-teams copy instead of re-discovering
-// it, which would double-register tools and fail to load.
-const EXTENSION_ENTRY: string =
-  typeof __filename !== "undefined" && __filename
-    ? __filename
-    : // @ts-expect-error: jiti resolves import.meta.url to the real module
-      // file at runtime; tsc rejects it because the package builds into CJS.
-      fileURLToPath(import.meta.url);
 
 
 
@@ -612,7 +597,7 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    const { piCmd, agentType } = buildWorkerCommand(goals, model, extensionLoadFlags(EXTENSION_ENTRY));
+    const { piCmd, agentType } = buildWorkerCommand(goals, model);
     // Reject duplicate names up front: two members with the same name would
     // share an inbox and pid file, and removeMember would remove both records.
     if (teamConfig.members.some((m) => m.name === safeName)) {
@@ -1410,7 +1395,7 @@ export default function (pi: ExtensionAPI) {
         const teamConfig = await teams.readConfig(safeTeamName);
         const cwd = params.cwd || process.cwd();
         const piBinary = process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
-        let piCmd = `${piBinary} ${extensionLoadFlags(EXTENSION_ENTRY)}`;
+        let piCmd = piBinary;
         if (teamConfig.defaultModel) {
           // Use the combined --model provider/model format; shQuote keeps shell
           // metacharacters in the model name from changing the command.

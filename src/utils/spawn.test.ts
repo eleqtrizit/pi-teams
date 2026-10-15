@@ -2,9 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildWorkerCommand, extensionLoadFlags, resolveSpawnDirectory, spawnWorkerProcess } from "./spawn";
-
-const FLAGS = extensionLoadFlags("/x/extensions/index.ts");
+import { buildWorkerCommand, resolveSpawnDirectory, spawnWorkerProcess } from "./spawn";
 import { Iterm2Adapter } from "../adapters/iterm2-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
 
@@ -25,12 +23,6 @@ function fakeAdapter(overrides: Partial<TerminalAdapter> = {}): TerminalAdapter 
     ...overrides,
   };
 }
-
-describe("extensionLoadFlags", () => {
-  it("shell-quotes the entry path", () => {
-    expect(extensionLoadFlags("/a b/it's/index.ts")).toBe("-ne -e '/a b/it'\\''s/index.ts'");
-  });
-});
 
 describe("resolveSpawnDirectory", () => {
   let base: string;
@@ -67,17 +59,23 @@ describe("resolveSpawnDirectory", () => {
 });
 
 describe("buildWorkerCommand", () => {
+  it("passes no extension flags, so the worker loads its own configured extensions", () => {
+    const { piCmd } = buildWorkerCommand({ readonlyWorker: false }, "prov/model");
+    expect(piCmd).not.toMatch(/\s(-ne|--no-extensions|-e|--extension)\s/);
+    expect(piCmd).toMatch(/^node '.+' --model 'prov\/model'$/);
+  });
+
   it("shell-quotes the model argument", () => {
     const { piCmd } = buildWorkerCommand(
       { readonlyWorker: false },
-      "prov/model; rm -rf /", FLAGS);
+      "prov/model; rm -rf /");
     expect(piCmd).toContain("--model 'prov/model; rm -rf /'");
   });
 
   it("quotes the node binary path", () => {
     const { piCmd } = buildWorkerCommand(
       { readonlyWorker: false },
-      "prov/model", FLAGS);
+      "prov/model");
     // piBinary is `node <quoted argv[1]>` when argv[1] exists.
     expect(piCmd).toMatch(/^node '.+' /);
   });
@@ -85,22 +83,22 @@ describe("buildWorkerCommand", () => {
   it("appends thinking level only for non-readonly workers", () => {
     const withThinking = buildWorkerCommand(
       { readonlyWorker: false, thinking: "high" },
-      "prov/model", FLAGS);
+      "prov/model");
     expect(withThinking.piCmd.endsWith("prov/model':high")).toBe(true);
     const readonlyWithThinking = buildWorkerCommand(
       { readonlyWorker: true, thinking: "high" },
-      "prov/model", FLAGS);
+      "prov/model");
     expect(readonlyWithThinking.piCmd).not.toContain(":high");
   });
 
   it("restricts tools and agent type for readonly workers", () => {
-    const result = buildWorkerCommand({ readonlyWorker: true }, "prov/model", FLAGS);
+    const result = buildWorkerCommand({ readonlyWorker: true }, "prov/model");
     expect(result.agentType).toBe("readonly-worker");
     expect(result.piCmd).toContain("--tools read,grep,find,ls,send_message,close_myself");
   });
 
   it("uses teammate agent type for regular workers", () => {
-    const result = buildWorkerCommand({ readonlyWorker: false }, "prov/model", FLAGS);
+    const result = buildWorkerCommand({ readonlyWorker: false }, "prov/model");
     expect(result.agentType).toBe("teammate");
     expect(result.piCmd).not.toContain("--tools");
   });

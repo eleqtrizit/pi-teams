@@ -217,7 +217,7 @@ When the team-lead runs with `pi -p` (or `--mode json`), pi normally exits as so
 3. A queued message releases the hold and continues the run, waking the lead with the results.
 4. When every worker has reported back, the lead calls `team_shutdown` and the session exits normally.
 
-Worker boot also failed historically when the lead ran pi-teams from the repo itself: the spawned worker re-discovered a second pi-teams copy and exited on duplicate tool registration. Spawned workers now receive `"-ne -e <extension entry>"` and load exactly the parent session's copy. The hold releases when the team directory is removed, when the team has no workers, when no worker has been alive for three consecutive liveness checks, or when a follow-up is queued. Liveness uses the worker's pid file as the primary signal with pane probes as fallbacks. Decision logic lives in `src/utils/hold.ts`.
+Spawned workers start as plain pi sessions and load their own configured extensions, such as pi-teams and pi-sandbox. The spawn command passes no extension flags, because `-ne` would drop every configured extension. Configure pi-teams once, as a settings package or a project package, so a worker does not discover two copies. The hold releases when the team directory is removed, when the team has no workers, when no worker has been alive for three consecutive liveness checks, or when a follow-up is queued. Liveness uses the worker's pid file as the primary signal with pane probes as fallbacks. Decision logic lives in `src/utils/hold.ts`.
 
 ## Data Storage
 

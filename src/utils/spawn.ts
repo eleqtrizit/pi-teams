@@ -14,18 +14,6 @@ import * as teams from "./teams";
 import { Member } from "./models";
 
 /**
- * CLI flags that make a spawned agent load exactly one extension instance.
- * Discovery is disabled so no other pi-teams copy (settings package or
- * project-local package) can register the same tools alongside it.
- *
- * @param extensionEntry - Absolute path of the extension entry file (extensions/index.ts)
- * @returns The shell-quoted flag string
- */
-export function extensionLoadFlags(extensionEntry: string): string {
-  return `-ne -e ${shQuote(extensionEntry)}`;
-}
-
-/**
  * Resolve and validate the working directory for a spawned worker.
  *
  * The directory must be the lead's current directory or one of its
@@ -128,7 +116,6 @@ export function resolveSpawnModel(
  *
  * @param goals - Worker goals including readonlyWorker and thinking
  * @param chosenModel - Fully qualified provider/model resolved for the worker
- * @param loadFlags - Extension load flags from {@link extensionLoadFlags}
  * @returns The launch command and the member agent type
  */
 
@@ -138,15 +125,13 @@ export function buildWorkerCommand(
     thinking?: "off" | "minimal" | "low" | "medium" | "high";
   },
   chosenModel: string,
-  loadFlags: string,
 ): { piCmd: string; agentType: "teammate" | "readonly-worker" } {
   const agentType = goals.readonlyWorker ? "readonly-worker" : "teammate";
-  // Spawned agents must load exactly the pi-teams copy running in this
-  // session: without -ne they would re-discover it (settings package and
-  // project-local package) and fail to load on duplicate tool registration.
-  // Use the combined --model provider/model:thinking format.
+  // Workers start like any pi session and load their own configured
+  // extensions (pi-teams, pi-sandbox, ...). No extension flags: -ne would drop
+  // every configured extension. Use the combined --model provider/model:thinking format.
   const piBinary = process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
-  let piCmd = `${piBinary} ${loadFlags} --model ${shQuote(chosenModel)}`;
+  let piCmd = `${piBinary} --model ${shQuote(chosenModel)}`;
   if (!goals.readonlyWorker && goals.thinking) {
     piCmd = `${piCmd}:${goals.thinking}`;
   }

@@ -83,7 +83,7 @@ When the team-lead runs with `pi -p` (or `--mode json`), pi exits as soon as the
 - A queued worker message releases the hold and continues the run, waking the lead with the results.
 - The hold releases when the team directory is removed (`team_shutdown`), when the team has no workers, when no worker has been alive for three consecutive liveness checks (workers need a moment to boot), or when a follow-up is queued.
 - Idle workers do not release the hold. Completion is the lead's decision, made by calling `team_shutdown` when every teammate has reported back; the run then settles and the session exits normally.
-- Worker liveness uses the worker's pid file (written at its `session_start`, before its first turn) as the primary signal, with pane/window probes and the activity marker as fallbacks. Spawned workers load exactly the parent session's pi-teams copy via `"-ne -e <path>"`, which prevents duplicate tool registration when the lead runs pi-teams from a project-local package.
+- Worker liveness uses the worker's pid file (written at its `session_start`, before its first turn) as the primary signal, with pane/window probes and the activity marker as fallbacks. Spawned workers start as plain pi sessions with no extension flags, so they load their own configured extensions (pi-teams, pi-sandbox). Never add `-ne`: it drops every configured extension, including the sandbox.
 
 The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `countLiveWorkers`, `shouldReleaseRun`, all unit-tested). The hold loop checks for queued follow-ups every second; worker liveness checks run every 5 seconds because terminal liveness probes shell out to the terminal multiplexer.
 
@@ -156,7 +156,7 @@ pi-teams/
 ## How the parts fit together
 
 - **Load:** every pi session runs `extensions/index.ts`. It picks a terminal adapter (`src/adapters/terminal-registry.ts`), computes `isLead` and `isWorker` from `PI_AGENT_TYPE` and `PI_AGENT_NAME`, registers tools by identity, and installs lifecycle handlers.
-- **Spawn:** the lead's spawn tools build a member record (`src/utils/teams.ts`), pre-seed state files through `src/utils/paths.ts`, and launch a child pi process through the adapter. `-ne -e <entry>` pins the worker to this extension copy; `PI_TEAM_NAME`, `PI_AGENT_NAME`, and `PI_AGENT_TYPE` drive its identity.
+- **Spawn:** the lead's spawn tools build a member record (`src/utils/teams.ts`), pre-seed state files through `src/utils/paths.ts`, and launch a child pi process through the adapter. The child loads its own configured extensions; `PI_TEAM_NAME`, `PI_AGENT_NAME`, and `PI_AGENT_TYPE` drive its identity.
 - **Delivery:** at `session_start` (and at `team_create` for the lead) the extension starts a socket listener through `src/utils/transport.ts`. `src/utils/messaging.ts` sends to a recipient's socket and waits for the acknowledgement. The extension injects the received body as a user message. `spawn_teammate` and `spawn_readonly_worker` wait up to 30 seconds for the worker's socket before they return.
 - **Concurrency:** config reads and writes pass through `withLock` (`src/utils/lock.ts`), so two sessions never clobber the same file. The transport needs no lock because each message is one connection.
 - **Removal:** every shutdown path (`close_myself`, `close_worker`, `team_shutdown`) runs `removeAgent` (`src/utils/teams.ts`): config removal, state-file cleanup, pane or window close through the adapter, then SIGKILL by pid.

@@ -196,17 +196,17 @@ export interface RemoveAgentOptions {
  *
  * Pid files can outlive their process: after a crash the OS may hand the pid
  * to an unrelated program, and a blind SIGKILL would kill that program. The
- * pid is only trusted when its command line carries the `-ne -e` extension
- * flags that every spawned worker is launched with.
+ * pid is only trusted when its command line has the `--model` flag that
+ * every spawned worker is launched with.
  *
  * @param pid - Process id from the agent's pid file
  * @returns True when the command line matches pi; unknown shapes are skipped
  */
 /**
- * Workers launch as `node <pi cli> -ne -e <extension entry> ...`. The `-ne -e`
- * pair identifies a pi-teams process; a bare path component named "pi" does not.
+ * Workers launch as `node <pi cli> --model <provider/model> ...`. The flag
+ * identifies a pi worker; a bare path component named "pi" does not.
  */
-const PI_WORKER_COMMAND_PATTERN = /\s-ne\s+-e\s/;
+const PI_WORKER_COMMAND_PATTERN = /\s--model\s/;
 
 function pidLooksLikePiWorker(pid: number): boolean {
   try {
