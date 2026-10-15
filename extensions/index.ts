@@ -17,6 +17,7 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
+import { registerFsTools } from "./fs-tools";
 import * as messaging from "../src/utils/messaging";
 import * as flavoredModels from "../src/utils/flavoredModels";
 import {
@@ -47,6 +48,7 @@ import {
   seedWorkerStateFiles,
   extensionLoadFlags,
   resolveSpawnModel,
+  resolveSpawnDirectory,
   READONLY_WORKER_TOOLS,
 } from "../src/utils/spawn";
 import { shQuote } from "../src/utils/terminal-adapter";
@@ -568,7 +570,8 @@ export default function (pi: ExtensionAPI) {
   interface SpawnWorkerGoals {
     team: string;
     name: string;
-    cwd: string;
+    /** Raw cwd input: undefined resolves to the lead's current directory */
+    cwd?: string;
     /** Raw model input: undefined or "default" resolves to the lead's model */
     modelRequest?: string;
     thinking?: "off" | "minimal" | "low" | "medium" | "high";
@@ -598,6 +601,7 @@ export default function (pi: ExtensionAPI) {
       throw new Error("No terminal adapter detected.");
     }
     const teamConfig = await teams.readConfig(safeTeamName);
+    const cwd = resolveSpawnDirectory(goals.cwd);
     const model = resolveSpawnModel(ctx, goals.modelRequest);
     const useSeparateWindow =
       !goals.readonlyWorker &&
@@ -621,7 +625,7 @@ export default function (pi: ExtensionAPI) {
       model,
       joinedAt: Date.now(),
       tmuxPaneId: "",
-      cwd: goals.cwd,
+      cwd,
       subscriptions: [],
       color: goals.readonlyWorker ? "green" : "blue",
       thinking: goals.readonlyWorker ? undefined : goals.thinking,
@@ -641,7 +645,7 @@ export default function (pi: ExtensionAPI) {
       terminalId = spawnWorkerProcess(terminal, {
         teamName: safeTeamName,
         name: safeName,
-        cwd: goals.cwd,
+        cwd,
         piCmd,
         env,
         members: teamConfig.members,
@@ -1284,7 +1288,13 @@ export default function (pi: ExtensionAPI) {
         Type.Object({
           team_name: Type.String(),
           name: Type.String(),
-          cwd: Type.String(),
+          cwd: Type.Optional(
+            Type.String({
+              description:
+                "Working directory for the worker. Must be the current " +
+                "directory (the default) or one of its subdirectories.",
+            }),
+          ),
           model: Type.Optional(
             Type.String({
               description:
@@ -1340,7 +1350,13 @@ export default function (pi: ExtensionAPI) {
         Type.Object({
           team_name: Type.String(),
           name: Type.String(),
-          cwd: Type.String(),
+          cwd: Type.Optional(
+            Type.String({
+              description:
+                "Working directory for the worker. Must be the current " +
+                "directory (the default) or one of its subdirectories.",
+            }),
+          ),
           model: Type.Optional(
             Type.String({
               description:
@@ -1613,6 +1629,10 @@ export default function (pi: ExtensionAPI) {
   }
   // ── Shared tools ─────────────────────────────────────────────────────────
   // Messaging and team status. Available to the team-lead and to workers.
+
+  // Hash-guarded read/edit/write overrides (see fs-tools.ts). These replace
+  // pi's built-ins so every session on the team holds fresh content hashes.
+  registerFsTools(pi);
 
   pi.registerCommand("keep_last", {
     description: "Remove all session history except the last user message",

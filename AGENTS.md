@@ -8,7 +8,7 @@ Team members sit idle until a message is delivered to them. Each agent listens o
 
 ## Tools
 
-All 12 tools are registered in `extensions/index.ts`, split by session identity into three sections: team-lead tools under `if (isLead)`, shared tools for every session, and worker tools under `if (isWorker)`. `isLead` is true when `PI_AGENT_TYPE` is unset or `"lead"`; `isWorker` is true for `PI_AGENT_TYPE` `"teammate"` or `"readonly-worker"` when the agent is not named `team-lead`.
+All 15 tools are registered in `extensions/index.ts`, split by session identity into three sections: team-lead tools under `if (isLead)`, shared tools for every session, and worker tools under `if (isWorker)`. `isLead` is true when `PI_AGENT_TYPE` is unset or `"lead"`; `isWorker` is true for `PI_AGENT_TYPE` `"teammate"` or `"readonly-worker"` when the agent is not named `team-lead`.
 
 | Tool                    | Section | What it does                                         | Supporting files                                                |
 | ----------------------- | ------- | ---------------------------------------------------- | --------------------------------------------------------------- |
@@ -24,12 +24,32 @@ All 12 tools are registered in `extensions/index.ts`, split by session identity 
 | `send_message`          | shared  | Deliver a message to one agent, or to all (`all`)    | `src/utils/messaging.ts`, `src/utils/transport.ts`              |
 | `list_teammates`        | shared  | Show members with status and socket availability     | `src/utils/teams.ts`, `src/utils/transport.ts`                  |
 | `close_myself`          | worker  | Terminate the calling agent                          | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
+| `read`                  | shared  | Read a file; text results end with `content_hash:`   | `extensions/fs-tools.ts`                                        |
+| `edit`                  | shared  | One targeted replacement; takes `readHash`           | `extensions/fs-tools.ts`                                        |
+| `write`                 | shared  | Full-file write; takes `readHash`                    | `extensions/fs-tools.ts`                                        |
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
 
 Flavors are `orchestrator` (orchestrating, planning, coordinating), `worker` (coding), and `swarm` (read-only information gathering), stored as `enabledModelsOrchestrator`, `enabledModelsWorker`, and `enabledModelsSwarm`. `spawn_teammate` picks from `worker` (and `orchestrator` for a planning or coordinating teammate). `spawn_readonly_worker` picks from `swarm`, then `worker`, then the lead's model. On the lead's `session_start`, `migrateLegacyFlavors` converts the legacy `enabledModelsHigh/Med/Fast` keys once (`high` to orchestrator, `med` and `fast` to worker), shows a warning that names the moved models, and queues the same warning onto the next `get_flavored_models` result. `pi-oneturnagent` keeps its own read-only reader for both key sets and never migrates.
 
 The dollar-prefixed one-turn model substitution inputs (`$<model> <prompt...>` and `$$<model> <prompt...>`) moved to the pi-oneturnagent package (`~/repos/pi/pi-oneturnagent`). pi-teams no longer registers them.
+
+## Stale-Write Guard
+
+`extensions/fs-tools.ts` registers hash-guarded `read`, `edit`, and `write`
+overrides (shared section of `extensions/index.ts`). Every text `read` result
+ends with a `content_hash: xxxxxxxx` line (first 8 hex chars of sha256 of the
+file bytes). `edit` and `write` take a required `readHash` parameter: if the
+file exists and the hash does not match its current on-disk content, the call
+is rejected and the agent must re-read. Successful `edit` and `write` results
+append the file's fresh hash, so follow-up edits need no extra read. Pass
+`"new"` as the hash for a file that does not exist yet. The tool ordering
+guarantee (`description` first per parameter) is tested in
+`extensions/fs-tools.test.ts`.
+
+This guard moved here from the pi-journal package; pi-journal now journals
+`edit`/`write` mutations passively from `tool_result` events and registers no
+tools itself.
 
 Read-only workers are additionally filtered by pi's `--tools` set at spawn, so they effectively see `read`, `grep`, `find`, `ls`, `send_message`, and `close_myself` only.
 
