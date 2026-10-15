@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { buildWorkerCommand, extensionLoadFlags, spawnWorkerProcess } from "./spawn";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { buildWorkerCommand, extensionLoadFlags, resolveSpawnDirectory, spawnWorkerProcess } from "./spawn";
 
 const FLAGS = extensionLoadFlags("/x/extensions/index.ts");
 import { Iterm2Adapter } from "../adapters/iterm2-adapter";
@@ -26,6 +29,40 @@ function fakeAdapter(overrides: Partial<TerminalAdapter> = {}): TerminalAdapter 
 describe("extensionLoadFlags", () => {
   it("shell-quotes the entry path", () => {
     expect(extensionLoadFlags("/a b/it's/index.ts")).toBe("-ne -e '/a b/it'\\''s/index.ts'");
+  });
+});
+
+describe("resolveSpawnDirectory", () => {
+  let base: string;
+
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), "resolve-spawn-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("defaults to the base directory", () => {
+    expect(resolveSpawnDirectory(undefined, base)).toBe(base);
+  });
+
+  it("accepts a subdirectory", () => {
+    fs.mkdirSync(path.join(base, "sub", "dir"), { recursive: true });
+    expect(resolveSpawnDirectory("sub/dir", base)).toBe(path.join(base, "sub", "dir"));
+  });
+
+  it("rejects a path outside the base directory", () => {
+    expect(() => resolveSpawnDirectory("../outside", base)).toThrow(
+      /not within the current directory/,
+    );
+    expect(() => resolveSpawnDirectory("/etc", base)).toThrow(
+      /not within the current directory/,
+    );
+  });
+
+  it("rejects a missing directory", () => {
+    expect(() => resolveSpawnDirectory("nope", base)).toThrow(/does not exist/);
   });
 });
 

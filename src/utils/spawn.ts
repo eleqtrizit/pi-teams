@@ -25,6 +25,38 @@ export function extensionLoadFlags(extensionEntry: string): string {
   return `-ne -e ${shQuote(extensionEntry)}`;
 }
 
+/**
+ * Resolve and validate the working directory for a spawned worker.
+ *
+ * The directory must be the lead's current directory or one of its
+ * subdirectories. An undefined request falls back to the lead's current
+ * directory.
+ *
+ * @param cwdRequest - Raw cwd input from the caller, or undefined
+ * @param base - The lead's current directory (defaults to process.cwd())
+ * @returns The absolute working directory for the worker
+ * @throws If the directory does not exist or is not within the lead's directory
+ */
+export function resolveSpawnDirectory(
+  cwdRequest: string | undefined,
+  base: string = process.cwd(),
+): string {
+  const resolvedBase = path.resolve(base);
+  const resolved = path.resolve(resolvedBase, cwdRequest?.trim() || ".");
+  const rel = path.relative(resolvedBase, resolved);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(
+      `Working directory '${resolved}' is not within the current directory ` +
+        `'${resolvedBase}'. The worker's cwd must be the current directory or ` +
+        `one of its subdirectories.`,
+    );
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    throw new Error(`Working directory '${resolved}' does not exist or is not a directory.`);
+  }
+  return resolved;
+}
+
 export const READONLY_WORKER_TOOLS = [
   "read",
   "grep",
