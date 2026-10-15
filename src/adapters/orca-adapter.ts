@@ -26,8 +26,9 @@ export class OrcaAdapter implements TerminalAdapter {
    * Spawn a new terminal tab in the active Orca worktree.
    *
    * Uses `orca terminal create --worktree active --title <title> --command <cmd> --json`.
-   * PI_ environment variables are passed as `env` prefixes in the command string,
-   * matching the pattern used by tmux/WezTerm/Zellij adapters.
+   * The command first changes to `options.cwd`, because Orca starts terminals in
+   * the worktree root. PI_ environment variables are passed as `env` prefixes in
+   * the command string, matching the pattern used by tmux/WezTerm/Zellij adapters.
    *
    * @param options - Spawn configuration
    * @returns Terminal ID in the format `orca_<handle>`
@@ -38,10 +39,13 @@ export class OrcaAdapter implements TerminalAdapter {
       .filter(([k]) => k.startsWith("PI_"))
       .map(([k, v]) => `${k}=${shQuote(v)}`);
 
-    const fullCommand =
+    const envCommand =
       envArgs.length > 0
         ? `env ${envArgs.join(" ")} ${options.command}`
         : options.command;
+    // `orca terminal create` starts in the worktree root and has no cwd flag,
+    // so cd first: the worker's cwd is its sandbox boundary.
+    const fullCommand = `cd ${shQuote(options.cwd)} && ${envCommand}`;
 
     const title = options.teamName
       ? `${options.teamName}: ${options.name}`

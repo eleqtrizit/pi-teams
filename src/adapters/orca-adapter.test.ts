@@ -130,7 +130,26 @@ describe("OrcaAdapter", () => {
       const callArgs = mockExecCommand.mock.calls[0][1] as string[];
       const commandIdx = callArgs.indexOf("--command");
       const cmd = callArgs[commandIdx + 1];
-      expect(cmd).toBe("pi");
+      expect(cmd).toBe("cd '/repo' && pi");
+    });
+
+    it("should start the command in the requested cwd, shell-quoted", () => {
+      mockExecCommand.mockReturnValue({
+        stdout: JSON.stringify({ ok: true, result: { terminal: { handle: "term_cwd" } } }),
+        stderr: "",
+        status: 0,
+      });
+
+      adapter.spawn({
+        name: "agent1",
+        cwd: "/repo/arenas/it's 2",
+        command: "pi",
+        env: { PI_AGENT_NAME: "agent1" },
+      });
+
+      const callArgs = mockExecCommand.mock.calls[0][1] as string[];
+      const cmd = callArgs[callArgs.indexOf("--command") + 1];
+      expect(cmd).toBe("cd '/repo/arenas/it'\\''s 2' && env PI_AGENT_NAME='agent1' pi");
     });
 
     it("should use agent name as title when no teamName", () => {
