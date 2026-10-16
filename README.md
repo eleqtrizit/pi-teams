@@ -22,15 +22,7 @@ pi install https://github.com/eleqtrizit/pi-tasks
 
 ## Quick Start
 
-Use simple phrasing in the chat window to make teams and workers:
-
-```
-Create a team called my-team.
-```
-
-```
-Create a team called research-team with model gpt-4o.
-```
+Use simple phrasing in the chat window to spawn workers and communicate:
 
 ```
 Spawn a teammate called security-bot to review the codebase.
@@ -48,6 +40,14 @@ Send a message to security-bot to focus on the auth module.
 Tell the entire team about the API endpoint change.
 ```
 
+```
+List agents to see who is online.
+```
+
+```
+Spawn a team lead in /home/user/other-project to get help there.
+```
+
 
 ## Core Tools
 
@@ -55,12 +55,10 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### Team Management
 
-- **`team_create`** - Create new agent team with custom name, description, default model, and window mode
-- **`team_shutdown`** - Shutdown entire team and close all panes/windows
-- **`list_teammates`** - List all teammates with their status (alive, active, listening)
+- **`list_agents`** - List all visible agents with their 8-char id and status (Online/Offline)
 - **`close_myself`** - Let an agent close itself
-  - Removes the agent from the team config, cleans up its pid and activity markers, and terminates its own process and terminal pane or window
-  - Available to teammates only; the lead closes the whole team with `team_shutdown`
+  - Removes the agent's registry record, cleans up its socket, and terminates its own process and terminal pane or window
+  - Available to teammates only; the lead closes workers with `close_worker` or `close_all_workers`
   - Do not run this unless your instructions told you to run it
 
 ### Agent Spawning
@@ -70,11 +68,14 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
   - Can spawn in separate windows for better isolation
   - Follows flavored-model guidance (see Flavored Models below)
 - **`spawn_readonly_worker`** - Launch a read-only worker restricted to `read`, `grep`, `find`, `ls`
-  - No `bash`, `write`, or `edit` access — safe for code review, auditing, exploration
+  - No `bash`, `write`, or `edit` access: safe for code review, auditing, exploration
   - Can still message the team lead via `send_message`
   - Accepts an optional `model` parameter; defaults to the `swarm` list, then the `worker` list, then the team leader's model
-- **`spawn_lead_window`** - Open team lead in a separate OS window
-- **`close_worker`** - Close one teammate: remove it from the team config, clean up its state, and terminate its process and pane
+- **`spawn_team_lead`** - Spawn a peer lead in another directory
+  - The new lead is independent: it does not join your team, you cannot close it with `close_worker`, and it runs its own extensions
+  - After it starts, talk to it with `send_message(recipient=<id>)`
+- **`close_worker`** - Close one of your own workers by its 8-character agent id or worker name
+- **`close_all_workers`** - Close every worker you spawned at once
 
 ### Model Categorization
 
@@ -84,7 +85,8 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### Messaging System
 
-- **`send_message`** - Send a message to one teammate. Use the recipient `all` to reach every other team member
+- **`send_message`** - Send a message to one agent. Use the recipient `all` to reach every visible agent
+  - Accepted recipients: an 8-char agent id from `list_agents`, one of your worker names, the alias `lead` (workers only), or `all`
   - The message arrives immediately as a user message
   - The tool fails at once when the recipient is not running
 
@@ -98,31 +100,28 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ## Features
 
-### 🏢 Team Management
-
-- Create teams with custom names, descriptions, and default AI models
-- Configure separate OS windows vs terminal panes for teammates
-- Persistent team configuration stored locally
-
 ### 🤖 Agent Spawning
 
 - Launch specialized teammates with different models and thinking levels
 - Support for separate OS windows (iTerm2, WezTerm) or terminal panes (tmux, Zellij)
 - Automatic model resolution with fuzzy matching
+- Spawn peer leads in other directories for cross-project collaboration
 
 ### 💬 Inter-Agent Messaging
 
 - Agents communicate autonomously over local Unix domain sockets
-- Direct messaging between specific teammates
-- Broadcasting to all team members with the recipient `all`
+- Direct messaging between specific agents by id or name
+- Broadcasting to all visible agents with the recipient `all`
 - Immediate delivery with an acknowledgement, and an instant error when the recipient is not running
+- Visibility rules keep leads from seeing other leads' workers
 
 ### 🔔 Automatic Reports
 
-- When a teammate finishes, its final reply goes to the team-lead automatically
-- A teammate that already messaged the team-lead during the run sends no duplicate
-- An interrupted run sends the team-lead an interruption notice
-- A teammate that closes itself with `close_myself` sends its last replies to the team-lead first
+- When a teammate finishes, its final reply goes to its lead automatically
+- A teammate that already messaged its lead during the run sends no duplicate
+- An interrupted run sends the lead an interruption notice
+- A teammate that closes itself with `close_myself` sends its last replies to its lead first
+- Leads auto-reply to peer leads once per cycle to acknowledge inbound messages
 
 ### 🖥️ Terminal Integration
 
@@ -130,12 +129,6 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - **Zellij** - Pane-based spawning with `zellij run`
 - **iTerm2** - macOS native with AppleScript window/pane management
 - **WezTerm** - Cross-platform with CLI-based pane and window management
-
-### 🔒 Lock System
-
-- Thread-safe operations with file-based locking
-- Automatic stale lock cleanup (30s timeout)
-- Race condition protection for multi-agent operations
 
 ### 🍦 Flavored Models
 
@@ -188,60 +181,60 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 ### Message Delivery
 
-Each agent listens on a socket. A message reaches the recipient as soon as the sender writes it, and a recipient that is idle wakes for a new turn. A recipient that is mid-run receives the message at the end of its current run.
+Each agent listens on a socket keyed by its 8-character agent id. A message reaches the recipient as soon as the sender writes it, and a recipient that is idle wakes for a new turn. A recipient that is mid-run receives the message at the end of its current run.
+
+A lead sees every lead (including itself) plus its own workers; it never sees workers owned by another lead. A worker sees its own lead plus its sibling workers; it never sees another lead. These visibility rules are enforced on both the sender and the receiver.
 
 ### Automatic Reports
 
-When a teammate's run settles (Pi has no retries, compaction, or queued work left), the extension sends the teammate's full final replies to the team-lead with the subject `Report from <agent>`. When a message starts a second run before the first run's report is sent, the report numbers each reply. Requires Pi 1.1.0 or later.
+When a teammate's run settles (Pi has no retries, compaction, or queued work left), the extension sends the teammate's full final replies to its lead by agent id with the subject `Report from <agent>`. When a message starts a second run before the first run's report is sent, the report numbers each reply. Requires Pi 1.1.0 or later.
 
-- If the teammate sent a message to `team-lead` during the run, no automatic report is sent.
-- If the run was aborted, the team-lead receives an interruption notice instead, with the replies attached when any exist.
-- If the run produced no text, the team-lead receives a note that the run finished without a text reply.
+- If the teammate sent a message to `lead` during the run, no automatic report is sent.
+- If the run was aborted, the lead receives an interruption notice instead, with the replies attached when any exist.
+- If the run produced no text, the lead receives a note that the run finished without a text reply.
+
+Leads also auto-reply to peer leads. When one lead messages another, the receiving lead sends a single reply at settle time with the subject `Reply from <label>`. This prevents infinite loops because the reply subject starts with `Reply from `, so no further auto-replies are sent.
 
 ### Context Injection
 
 Each teammate receives a custom system prompt including:
 
 - Their role and instructions
-- Team context (team name, member list)
 - Available tools
 - Model and thinking level information
 - Team environment guidelines
 
+Leads receive peer-lead collaboration guidance on every turn: instructions to run `list_agents`, spawn peer leads with `spawn_team_lead`, and message them by id.
+
 ### Non-Interactive Sessions (Run Hold)
 
-When the team-lead runs with `pi -p` (or `--mode json`), pi normally exits as soon as the lead's run settles, leaving spawned workers stranded. The extension holds the run open while the team is active:
+When the team-lead runs with `pi -p` (or `--mode json`), pi normally exits as soon as the lead's run settles, leaving spawned workers stranded. The extension holds the run open while the lead's workers are active:
 
 1. The lead spawns workers and ends its turn. The `agent_end` handler parks the run with no LLM activity.
 2. Worker messages arrive through the socket listener and are queued as follow-ups.
 3. A queued message releases the hold and continues the run, waking the lead with the results.
-4. When every worker has reported back, the lead calls `team_shutdown` and the session exits normally.
+4. When every worker has reported back, the lead calls `close_all_workers` and the session exits normally.
 
-Spawned workers start as plain pi sessions and load their own configured extensions, such as pi-teams and pi-sandbox. The spawn command passes no extension flags, because `-ne` would drop every configured extension. Configure pi-teams once, as a settings package or a project package, so a worker does not discover two copies. The hold releases when the team directory is removed, when the team has no workers, when no worker has been alive for three consecutive liveness checks, or when a follow-up is queued. Liveness uses the worker's pid file as the primary signal with pane probes as fallbacks. Decision logic lives in `src/utils/hold.ts`.
+Spawned workers start as plain pi sessions and load their own configured extensions, such as pi-teams and pi-sandbox. The spawn command passes no extension flags, because `-ne` would drop every configured extension. Configure pi-teams once, as a settings package or a project package, so a worker does not discover two copies. The hold releases when the lead has no workers, when no worker has been alive for three consecutive liveness checks, or when a follow-up is queued. Liveness uses the worker's pid file as the primary signal with pane probes as fallbacks. Decision logic lives in `src/utils/hold.ts`.
 
 ## Data Storage
 
-All team data is stored in `~/.pi/`:
+All agent data is stored in the per-user tmp directory:
 
 ```
-~/.pi/
-├── teams/
-│   └── <team-name>/
-│       ├── config.json          # Team configuration
-│       ├── <agent-name>.pid     # Process ID files
-│       └── <agent-name>.active  # Activity timestamps
-└── tasks/
-    └── <team-name>/             # Task storage (if using pi-tasks)
+$TMPDIR/pi-<uid>/
+├── agents/
+│   └── <id>.json            # Agent registry record
+└── s/
+    └── <id>.sock            # Unix domain socket for messaging
 ```
 
-Message sockets live outside `~/.pi/`, in `$TMPDIR/pi-teams-<uid>/`, because Unix socket paths have a short length limit. The directory has mode 0700 and each socket has mode 0600, so only your user can send messages to your agents. Messages are not stored on disk. If the recipient is not running, the sender gets an error.
+The directory has mode 0700 and each socket has mode 0600, so only your user can send messages to your agents. Messages are not stored on disk. If the recipient is not running, the sender gets an error.
 
 ## Security
 
-- **Lock files** prevent concurrent modifications with automatic stale lock cleanup (30s timeout)
-- **Race condition protection** for multi-agent operations
+- **File-based isolation** between agents through private directory permissions
 - **Input validation** on all task and message data
-- **File-based isolation** between teams
 - **Environment variable filtering** (only `PI_*` prefixed vars passed to teammates)
 
 ## Model Resolution Details
@@ -288,7 +281,7 @@ when spawning teammates:
    - `spawn_teammate` uses the `worker` list. It uses the `orchestrator` list
      only for a teammate that plans or coordinates other work.
    - `spawn_readonly_worker` uses the `swarm` list, then the `worker` list.
-   - Nothing spawns from the `swarm` list except read-only workers.
+     Nothing spawns from the `swarm` list except read-only workers.
 3. It prefers spreading teammates across different providers unless the user
    names specific models
 4. If no matching models are configured, it spawns the same model as the team
@@ -343,7 +336,10 @@ it migrates the settings once:
 ```
 pi-teams/
 ├── extensions/
-│   └── index.ts              # Main extension entry point
+│   ├── index.ts              # Main extension entry point
+│   ├── lead-tools.ts         # Lead-only tool registrations
+│   ├── shared-tools.ts       # Shared and worker tool registrations
+│   └── agents-tools.ts       # list_agents and spawn_team_lead registrations
 ├── src/
 │   ├── adapters/
 │   │   ├── terminal-adapter.ts      # Interface definition
@@ -353,11 +349,12 @@ pi-teams/
 │   │   ├── iterm2-adapter.ts        # iTerm2 implementation
 │   │   └── wezterm-adapter.ts       # WezTerm implementation
 │   └── utils/
-│       ├── teams.ts                 # Team management
+│       ├── teams.ts                 # Shared removal path
 │       ├── transport.ts             # Unix socket listener and acknowledged send
 │       ├── messaging.ts             # Send and broadcast
-│       ├── lock.ts                  # File-based locking
-│       ├── paths.ts                 # Path utilities
+│       ├── paths.ts                 # Registry and socket path utilities
+│       ├── registry.ts            # Agent record I/O and liveness
+│       ├── visibility.ts          # Lead/worker visibility rules
 │       └── models.ts                # TypeScript type definitions
 ├── docs/                          # Research and planning docs
 └── tests/                         # Test files
