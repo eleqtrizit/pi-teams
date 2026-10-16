@@ -33,13 +33,11 @@ import {
   generateAgentId,
   ensureRegistryDir,
   writeAgentRecord,
-  readAgentRecord,
   readAgentRecords,
   updateAgentRecord,
   isPidAlive,
 } from "../src/utils/registry";
 import { assertAgentId } from "../src/utils/paths";
-import { canMessage } from "../src/utils/visibility";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
 
@@ -387,11 +385,7 @@ export default function (pi: ExtensionAPI) {
     if (!selfRecord) {
       throw new Error("This session is not registered in the agent registry.");
     }
-    const sender = readAgentRecord(message.from);
-    // Guard against model mistakes, not malicious same-user processes that can forge `from`.
-    if (!sender || !canMessage(sender, agentId, readAgentRecords())) {
-      throw new Error(`Sender ${message.from} is unknown or not visible to this agent.`);
-    }
+    const sender = messaging.authorizeSender(message, agentId);
     if (
       isLead &&
       sender.kind === AgentKind.Lead &&

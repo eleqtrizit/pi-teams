@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LEAD_ALIAS,
   agentLabel,
+  authorizeSender,
   broadcastAgentMessage,
   resolveRecipient,
   sendAgentMessage,
@@ -298,5 +299,27 @@ describe("registry messaging", () => {
       const result = await broadcastAgentMessage(leadA, "s", "t", undefined, [leadA, leadB]);
       expect(result).toEqual({ delivered: [], failed: [] });
     });
+  });
+});
+
+describe("authorizeSender", () => {
+  const msg = (from: string, to: string): TeamMessage => ({
+    id: "m1",
+    from,
+    to,
+    fromLabel: "x",
+    subject: "s",
+    text: "t",
+    timestamp: new Date(0).toISOString(),
+  });
+
+  it("returns the sender when it may message the receiver", () => {
+    expect(authorizeSender(msg("leadbbbb", "leadaaaa"), "leadaaaa", registry())).toEqual(leadB);
+    expect(authorizeSender(msg("wrkeraa1", "leadaaaa"), "leadaaaa", registry())).toEqual(alice);
+  });
+
+  it("rejects an unknown sender and another lead's worker", () => {
+    expect(() => authorizeSender(msg("nope0001", "leadaaaa"), "leadaaaa", registry())).toThrow(/unknown or not visible/);
+    expect(() => authorizeSender(msg("wrkerbb1", "leadaaaa"), "leadaaaa", registry())).toThrow(/unknown or not visible/);
   });
 });

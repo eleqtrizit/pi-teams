@@ -5,6 +5,29 @@ import { readAgentRecords } from "./registry";
 import { RecipientUnreachableError, sendToAgent } from "./transport";
 import { broadcastTargets, canMessage } from "./visibility";
 
+/**
+ * Check that an incoming message comes from a registered agent that may message the receiver.
+ *
+ * This guards against model mistakes, not malicious same-user processes, which can forge `from`.
+ *
+ * @param message - The received message.
+ * @param receiverId - The receiving agent's id.
+ * @param records - All registered agent records.
+ * @returns The sender's record.
+ * @throws Error when the sender is unknown or not visible to the receiver.
+ */
+export function authorizeSender(
+  message: TeamMessage,
+  receiverId: string,
+  records: AgentRecord[] = readAgentRecords(),
+): AgentRecord {
+  const sender = records.find((record) => record.id === message.from);
+  if (!sender || !canMessage(sender, receiverId, records)) {
+    throw new Error(`Sender ${message.from} is unknown or not visible to this agent.`);
+  }
+  return sender;
+}
+
 export function nowIso(): string {
   return new Date().toISOString();
 }
