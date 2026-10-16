@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
+import { AgentEntry } from "./agentFormat";
 import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 
@@ -207,4 +208,118 @@ export async function agentStatus(
   }
   const listening = await probe(address, PROBE_TIMEOUT_MS);
   return listening ? AgentStatus.Online : AgentStatus.Offline;
+}
+
+/**
+ * Decide which registered agents survive a registry prune.
+ *
+ * Rules:
+ * - Offline worker records are removed; online workers are kept.
+ * - A directory (cwd) with at least one online lead discards every offline
+ *   lead record for that cwd.
+ * - A directory with no online lead keeps exactly one offline lead: the
+ *   newest by `startedAt`, ties broken by the lexicographically greatest id.
+ *
+ * A record whose status is missing from the map is treated as Offline.
+ *
+ * @param records - Agent records to evaluate; never modified
+ * @param statuses - Status of each record, keyed by agent id
+ * @returns The surviving records and the ids to remove, both in input order
+ */
+export function pruneRegistry(
+  records: AgentRecord[],
+  statuses: Map<string, AgentStatus>,
+): { keep: AgentRecord[]; remove: string[] } {
+  const statusOf = (rec: AgentRecord): AgentStatus =>
+    statuses.get(rec.id) ?? AgentStatus.Offline;
+
+  const cwdHasOnlineLead = new Set<string>();
+  for (const rec of records) {
+    if (rec.kind === AgentKind.Lead && statusOf(rec) === AgentStatus.Online) {
+      cwdHasOnlineLead.add(rec.cwd);
+    }
+  }
+
+  const newestOfflineLeadByCwd = new Map<string, AgentRecord>();
+  const isNewest = (rec: AgentRecord, current: AgentRecord): boolean =>
+    rec.startedAt > current.startedAt ||
+    (rec.startedAt === current.startedAt && rec.id > current.id);
+  for (const rec of records) {
+    if (rec.kind !== AgentKind.Lead || statusOf(rec) === AgentStatus.Online) continue;
+    const current = newestOfflineLeadByCwd.get(rec.cwd);
+    if (current === undefined || isNewest(rec, current)) {
+      newestOfflineLeadByCwd.set(rec.cwd, rec);
+    }
+  }
+
+  const keep: AgentRecord[] = [];
+  const remove: string[] = [];
+  for (const rec of records) {
+    if (rec.kind !== AgentKind.Lead) {
+      if (statusOf(rec) === AgentStatus.Online) keep.push(rec);
+      else remove.push(rec.id);
+      continue;
+    }
+    if (statusOf(rec) === AgentStatus.Online) {
+      keep.push(rec);
+      continue;
+    }
+    if (cwdHasOnlineLead.has(rec.cwd)) {
+      remove.push(rec.id);
+      continue;
+    }
+    if (newestOfflineLeadByCwd.get(rec.cwd)?.id === rec.id) keep.push(rec);
+    else remove.push(rec.id);
+  }
+
+  return { keep, remove };
+}
+
+/**
+ * Remove the stale socket file of a pruned agent.
+ *
+ * On Windows the address is a named pipe with no file to delete, so the
+ * call is a no-op there. Missing files (ENOENT) are ignored.
+ *
+ * @param id - Agent ID whose socket file to delete
+ * @throws Error when the file exists but cannot be removed
+ */
+function removeStaleSocket(id: string): void {
+  if (process.platform === "win32") return;
+  try {
+    fs.rmSync(agentSocketPath(id), { force: true });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code !== "ENOENT") throw e;
+  }
+}
+
+/**
+ * Prune the registry on disk and list the surviving agents.
+ *
+ * Computes each record's status, applies {@link pruneRegistry}, deletes every
+ * removed record along with its stale socket file, and returns the survivors
+ * paired with their statuses, in registry read order.
+ *
+ * @param statusOf - Status function; overridden in tests for determinism
+ * @returns One `{record, status}` entry per surviving agent
+ */
+export async function pruneAndList(
+  statusOf: (rec: AgentRecord) => Promise<AgentStatus> = (rec) => agentStatus(rec),
+): Promise<AgentEntry[]> {
+  const records = readAgentRecords();
+  const statuses = new Map<string, AgentStatus>();
+  await Promise.all(
+    records.map(async (rec) => {
+      statuses.set(rec.id, await statusOf(rec));
+    }),
+  );
+
+  const { keep, remove } = pruneRegistry(records, statuses);
+  for (const id of remove) {
+    removeAgentRecord(id);
+    removeStaleSocket(id);
+  }
+
+  return keep.map((rec) => ({ record: rec, status: statuses.get(rec.id) ?? AgentStatus.Offline }));
 }

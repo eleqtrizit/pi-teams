@@ -4,12 +4,15 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { AgentEntry } from "./agentFormat";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import {
   agentStatus,
   ensureRegistryDir,
   generateAgentId,
   isPidAlive,
+  pruneAndList,
+  pruneRegistry,
   readAgentRecord,
   readAgentRecords,
   removeAgentRecord,
@@ -18,6 +21,14 @@ import {
 import { agentRecordPath, agentSocketPath, registryDir } from "./paths";
 
 const posixOnly = process.platform === "win32" ? it.skip : it;
+
+function lead(id: string, cwd: string, startedAt: number): AgentRecord {
+  return { id, kind: AgentKind.Lead, cwd, pid: 1, startedAt };
+}
+
+function worker(id: string, startedAt: number, kind: AgentKind = AgentKind.Teammate): AgentRecord {
+  return { id, kind, cwd: "/w", pid: 1, leadId: "aa000001", name: `w-${id}`, startedAt };
+}
 
 describe("registry", () => {
   let tmpDir: string;
@@ -335,6 +346,204 @@ describe("registry", () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
       await expect(agentStatus(makeRecord({ id }))).resolves.toBe(AgentStatus.Offline);
+    });
+  });
+
+  describe("pruneRegistry", () => {
+    interface Case {
+      name: string;
+      records: AgentRecord[];
+      statuses: Array<[string, AgentStatus]>;
+      expectKeep: string[];
+      expectRemove: string[];
+    }
+
+    const cases: Case[] = [
+      {
+        name: "returns empty results for an empty registry",
+        records: [],
+        statuses: [],
+        expectKeep: [],
+        expectRemove: [],
+      },
+      {
+        name: "keeps an online worker and removes an offline worker",
+        records: [worker("bb000002", 2), worker("cc000003", 3, AgentKind.ReadonlyWorker)],
+        statuses: [
+          ["bb000002", AgentStatus.Online],
+          ["cc000003", AgentStatus.Offline],
+        ],
+        expectKeep: ["bb000002"],
+        expectRemove: ["cc000003"],
+      },
+      {
+        name: "removes every offline lead in a directory that has an online lead",
+        records: [lead("aa000001", "/a", 10), lead("bb000002", "/a", 50), lead("cc000003", "/a", 20)],
+        statuses: [
+          ["aa000001", AgentStatus.Online],
+          ["bb000002", AgentStatus.Offline],
+          ["cc000003", AgentStatus.Offline],
+        ],
+        expectKeep: ["aa000001"],
+        expectRemove: ["bb000002", "cc000003"],
+      },
+      {
+        name: "keeps only the newest offline lead in a directory with no online lead",
+        records: [lead("aa000001", "/a", 100), lead("bb000002", "/a", 300), lead("cc000003", "/a", 200)],
+        statuses: [
+          ["aa000001", AgentStatus.Offline],
+          ["bb000002", AgentStatus.Offline],
+          ["cc000003", AgentStatus.Offline],
+        ],
+        expectKeep: ["bb000002"],
+        expectRemove: ["aa000001", "cc000003"],
+      },
+      {
+        name: "breaks a startedAt tie by the lexicographically greatest id",
+        records: [lead("aaa00000", "/a", 500), lead("zzz99999", "/a", 500)],
+        statuses: [
+          ["aaa00000", AgentStatus.Offline],
+          ["zzz99999", AgentStatus.Offline],
+        ],
+        expectKeep: ["zzz99999"],
+        expectRemove: ["aaa00000"],
+      },
+      {
+        name: "keeps a lone offline lead in a directory with no online lead",
+        records: [lead("aa000001", "/c", 5)],
+        statuses: [["aa000001", AgentStatus.Offline]],
+        expectKeep: ["aa000001"],
+        expectRemove: [],
+      },
+      {
+        name: "applies the rules independently to two directories",
+        records: [
+          lead("aa000001", "/a", 10),
+          worker("bb000002", 60),
+          lead("cc000003", "/a", 50),
+          lead("dd000004", "/b", 100),
+          lead("ee000005", "/b", 200),
+          lead("ff000006", "/c", 5),
+        ],
+        statuses: [
+          ["aa000001", AgentStatus.Online],
+          ["bb000002", AgentStatus.Offline],
+          ["cc000003", AgentStatus.Offline],
+          ["dd000004", AgentStatus.Offline],
+          ["ee000005", AgentStatus.Offline],
+          ["ff000006", AgentStatus.Offline],
+        ],
+        expectKeep: ["aa000001", "ee000005", "ff000006"],
+        expectRemove: ["bb000002", "cc000003", "dd000004"],
+      },
+      {
+        name: "treats a record with no status as offline",
+        records: [lead("aa000001", "/a", 10), lead("bb000002", "/a", 50), worker("cc000003", 1)],
+        statuses: [["aa000001", AgentStatus.Online]],
+        expectKeep: ["aa000001"],
+        expectRemove: ["bb000002", "cc000003"],
+      },
+      {
+        name: "returns keep and remove in input order",
+        records: [
+          lead("aa000001", "/a", 300),
+          worker("bb000002", 1),
+          lead("cc000003", "/a", 100),
+          worker("dd000004", 2),
+        ],
+        statuses: [
+          ["aa000001", AgentStatus.Offline],
+          ["bb000002", AgentStatus.Offline],
+          ["cc000003", AgentStatus.Offline],
+          ["dd000004", AgentStatus.Online],
+        ],
+        expectKeep: ["aa000001", "dd000004"],
+        expectRemove: ["bb000002", "cc000003"],
+      },
+    ];
+
+    for (const c of cases) {
+      it(c.name, () => {
+        const { keep, remove } = pruneRegistry(c.records, new Map(c.statuses));
+        expect(keep.map((r) => r.id)).toEqual(c.expectKeep);
+        expect(remove).toEqual(c.expectRemove);
+      });
+    }
+
+    it("does not mutate its inputs", () => {
+      const records = [worker("bb000002", 2), lead("cc000003", "/a", 1)];
+      const statuses = new Map<string, AgentStatus>([["bb000002", AgentStatus.Online]]);
+      const snapshot = records.map((r) => ({ ...r }));
+      pruneRegistry(records, statuses);
+      expect(records).toEqual(snapshot);
+      expect(statuses.get("bb000002")).toBe(AgentStatus.Online);
+    });
+  });
+
+  describe("pruneAndList", () => {
+    function makeSocketFile(id: string): void {
+      ensureRegistryDir();
+      fs.writeFileSync(agentSocketPath(id), "");
+    }
+
+    it("removes offline records and their stale socket files, returns survivors with statuses", async () => {
+      const onlineLead: AgentRecord = lead("aa000001", "/a", 300);
+      const offlineWorker: AgentRecord = worker("bb000002", 400);
+      const onlineWorker: AgentRecord = worker("cc000003", 500);
+      const offlineLead: AgentRecord = lead("dd000004", "/a", 10);
+      for (const rec of [onlineLead, offlineWorker, onlineWorker, offlineLead]) {
+        writeAgentRecord(rec);
+        makeSocketFile(rec.id);
+      }
+
+      const entries: AgentEntry[] = await pruneAndList(async (rec) =>
+        Promise.resolve(
+          rec.id === "bb000002" || rec.id === "dd000004"
+            ? AgentStatus.Offline
+            : AgentStatus.Online,
+        ),
+      );
+
+      expect(entries).toEqual([
+        { record: onlineLead, status: AgentStatus.Online },
+        { record: onlineWorker, status: AgentStatus.Online },
+      ]);
+      for (const id of ["bb000002", "dd000004"]) {
+        expect(fs.existsSync(agentRecordPath(id))).toBe(false);
+        expect(fs.existsSync(agentSocketPath(id))).toBe(false);
+      }
+      for (const id of ["aa000001", "cc000003"]) {
+        expect(fs.existsSync(agentRecordPath(id))).toBe(true);
+        expect(fs.existsSync(agentSocketPath(id))).toBe(true);
+      }
+    });
+
+    it("ignores a missing socket file when pruning an offline record", async () => {
+      const offlineWorker: AgentRecord = worker("dd000004", 1);
+      writeAgentRecord(offlineWorker);
+      // No socket file exists for dd000004.
+      const entries = await pruneAndList(async () => Promise.resolve(AgentStatus.Offline));
+      expect(entries).toEqual([]);
+      expect(fs.existsSync(agentRecordPath("dd000004"))).toBe(false);
+    });
+
+    it("keeps the newest offline lead per directory using the default status check", async () => {
+      // Dead pid and no socket make agentStatus deterministically Offline.
+      const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+      const pid = child.pid as number;
+      await new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+      });
+
+      const older: AgentRecord = { id: "ee000005", kind: AgentKind.Lead, cwd: "/b", pid, startedAt: 1 };
+      const newer: AgentRecord = { id: "ff000006", kind: AgentKind.Lead, cwd: "/b", pid, startedAt: 2 };
+      writeAgentRecord(older);
+      writeAgentRecord(newer);
+
+      const entries = await pruneAndList();
+      expect(entries).toEqual([{ record: newer, status: AgentStatus.Offline }]);
+      expect(fs.existsSync(agentRecordPath("ee000005"))).toBe(false);
+      expect(fs.existsSync(agentRecordPath("ff000006"))).toBe(true);
     });
   });
 });
