@@ -1,36 +1,57 @@
 /**
  * Registration of the `list_agents` tool for every session (leads and
- * workers). Kept separate from `shared-tools.ts` so the registry-backed
- * listing stays independently testable.
+ * workers) and the lead-only `spawn_team_lead` tool. Kept separate from
+ * `shared-tools.ts` so the registry-backed listing stays independently
+ * testable.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgentEntry } from "../src/utils/agentFormat";
 import { formatAgentLine, sortAgentLines } from "../src/utils/agentFormat";
 import { AgentStatus, type AgentRecord } from "../src/utils/models";
-import { pruneAndList } from "../src/utils/registry";
+import { generateAgentId, pruneAndList } from "../src/utils/registry";
+import { buildLeadCommand, buildLeadEnv, resolveLeadFolder, resolveSpawnModel } from "../src/utils/spawn";
+import type { TerminalAdapter } from "../src/utils/terminal-adapter";
+import { waitForListener } from "../src/utils/transport";
 import { visibleTo } from "../src/utils/visibility";
 
 /** Session state required by the agent tools registration. */
 export interface AgentToolDeps {
   /** Returns this session's registry record, or null before it registers. */
   getSelfRecord: () => AgentRecord | null;
+  /**
+   * Whether this session may spawn peer leads. The registry record is set at
+   * session_start, after tool registration, so the caller passes its own
+   * lead identity here. Defaults to false: workers never see the tool.
+   */
+  isLead?: boolean;
+  /** Terminal adapter used to launch spawned leads. Null when none is detected. */
+  terminal?: TerminalAdapter | null;
 }
+
+/** Time spawn_team_lead waits for the new lead's socket, mirroring worker spawns. */
+const LEAD_LISTEN_TIMEOUT_MS = 30_000;
 
 function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
   return schema as TSchemaLike;
 }
 
 /**
- * Register `list_agents` for a session.
+ * Register `list_agents` for a session, plus `spawn_team_lead` for leads.
  *
- * The tool prunes stale registry records, filters the survivors by visibility
- * rules, and renders one line per agent. The calling agent is always listed
- * with status Online. Registered for every session, lead and worker alike.
+ * `list_agents` prunes stale registry records, filters the survivors by
+ * visibility rules, and renders one line per agent. The calling agent is
+ * always listed with status Online. Registered for every session, lead and
+ * worker alike.
+ *
+ * `spawn_team_lead` launches an independent peer lead in an existing folder.
+ * It is registered only when `deps.isLead` is true; the registry record is
+ * created at `session_start`, after tool registration, so lead identity comes
+ * from the caller.
  *
  * @param pi - The extension API to register the tool on.
- * @param deps - Provides this session's registry record lazily, because the
- *   record is created at `session_start`, after tool registration.
+ * @param deps - Provides this session's registry record lazily, plus the
+ *   caller's lead identity and terminal adapter for spawn_team_lead.
  */
 export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void {
   pi.registerTool({
@@ -80,4 +101,86 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
       };
     },
   });
+
+  // ── Lead-only tools ─────────────────────────────────────────────────────
+  // The registry record is written at session_start, after registration, so
+  // the caller decides lead identity through deps.isLead.
+  if (deps.isLead === true) {
+    pi.registerTool({
+      name: "spawn_team_lead",
+      label: "Spawn Team Lead",
+      description:
+        "Spawn a peer Pi lead agent (not a worker) in a terminal pane or separate " +
+        "window. Use it to bring an Offline directory back online, or to add another " +
+        "lead's help in a directory. The new lead is independent: it does not join " +
+        "your team, you cannot close it with close_worker, and it runs its own " +
+        "extensions. After it starts, talk to it with send_message(recipient=<id>).",
+      parameters: asPiToolSchema(
+        Type.Object({
+          folder: Type.String({
+            description:
+              "Working directory for the new lead. A leading ~ expands to the home " +
+              "directory. The directory must already exist.",
+          }),
+          model: Type.Optional(
+            Type.String({
+              description:
+                "Fully-qualified provider/model, e.g. from resolve_model. " +
+                "Omit to use your own model.",
+            }),
+          ),
+          separate_window: Type.Optional(
+            Type.Boolean({
+              default: false,
+              description: "Open the new lead in a separate OS window instead of a pane",
+            }),
+          ),
+        }),
+      ) as any,
+      async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
+        const terminal = deps.terminal ?? null;
+        if (!terminal) {
+          throw new Error("No terminal adapter detected.");
+        }
+        const folder = resolveLeadFolder(params.folder);
+        const model = resolveSpawnModel(ctx, params.model);
+        const useSeparateWindow = params.separate_window ?? false;
+        if (useSeparateWindow && !terminal.supportsWindows()) {
+          throw new Error(
+            `Separate windows mode is not supported in ${terminal.name}.`,
+          );
+        }
+
+        const id = generateAgentId();
+        const name = `pi-lead-${id}`;
+        const env = buildLeadEnv(process.env, id);
+        const command = buildLeadCommand(model);
+
+        // The spawner does not own the new lead: no member record, no seeded
+        // state, no roll-back path. A failed launch surfaces the adapter error.
+        let terminalId = "";
+        try {
+          terminalId = useSeparateWindow
+            ? terminal.spawnWindow({ name, cwd: folder, command, env })
+            : terminal.spawn({ name, cwd: folder, command, env });
+        } catch (e) {
+          throw new Error(
+            `Failed to spawn ${terminal.name} ${useSeparateWindow ? "window" : "pane"}: ${e}`,
+          );
+        }
+
+        const listening = await waitForListener(id, LEAD_LISTEN_TIMEOUT_MS);
+        const status = listening ? "Online" : "started but not listening yet";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Pi Agent in ${folder}: ${id}: ${status}`,
+            },
+          ],
+          details: { id, cwd: folder, terminalId, isWindow: useSeparateWindow, listening },
+        };
+      },
+    });
+  }
 }
