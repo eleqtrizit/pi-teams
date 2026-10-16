@@ -716,9 +716,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   // agent_settled means Pi will not continue on its own. For a worker, that is
-  // the moment to report to the team-lead, unless the worker already did.
+  // the moment to report to the lead, unless the worker already did.
   pi.on("agent_settled", async (event) => {
-    if (!isWorker || !teamName) return;
+    if (!isWorker || !selfRecord?.leadId) return;
     const replies = cycleReplies;
     const alreadyReported = reportedToLead;
     cycleReplies = [];
@@ -726,11 +726,9 @@ export default function (pi: ExtensionAPI) {
     if (alreadyReported && !event.aborted) return;
     const report = buildWorkerReport(agentName, replies, event.aborted);
     try {
-      await messaging.sendPlainMessage(
-        teamName,
-        agentId,
-        agentName,
-        "team-lead",
+      await messaging.sendAgentMessage(
+        selfRecord,
+        messaging.LEAD_ALIAS,
         report.subject,
         report.text,
       );

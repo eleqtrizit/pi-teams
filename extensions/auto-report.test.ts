@@ -28,14 +28,14 @@ function loadWorker(): { handlers: Map<string, any>; tools: Map<string, any> } {
 const assistantMessage = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 
 const leadRecord: AgentRecord = {
-  id: "lead1111",
+  id: "autold01",
   kind: AgentKind.Lead,
   cwd: "/tmp/report-lead",
   pid: 1,
   startedAt: 1,
 };
 const workerRecord: AgentRecord = {
-  id: "work1111",
+  id: "autowk01",
   kind: AgentKind.Teammate,
   cwd: "/tmp/report-worker",
   pid: 2,
@@ -44,7 +44,7 @@ const workerRecord: AgentRecord = {
   startedAt: 1,
 };
 const siblingRecord: AgentRecord = {
-  id: "work2222",
+  id: "autowk02",
   kind: AgentKind.Teammate,
   cwd: "/tmp/report-sibling",
   pid: 3,
@@ -73,9 +73,10 @@ describe("worker auto-report on agent_settled", () => {
   beforeEach(() => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_AGENT_ID", "work1111");
+    vi.stubEnv("PI_AGENT_ID", workerRecord.id);
+    vi.stubEnv("PI_LEAD_ID", leadRecord.id);
     vi.stubEnv("PI_TEAM_NAME", "report-team");
-    sendSpy = vi.spyOn(messaging, "sendPlainMessage").mockResolvedValue(undefined);
+    sendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
   });
 
   afterEach(() => {
@@ -83,17 +84,16 @@ describe("worker auto-report on agent_settled", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends the full final reply to the team-lead when the run settles", async () => {
+  it("sends the full final reply to the registered lead when the run settles", async () => {
     const { handlers } = loadWorker();
+    await initializeWorkerSession(handlers);
     await handlers.get("agent_end")({ messages: [assistantMessage("Here are the results.")] });
     await handlers.get("agent_settled")({ aborted: false });
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
     expect(sendSpy).toHaveBeenCalledWith(
-      "report-team",
-      "work1111",
-      "worker-1",
-      "team-lead",
+      expect.objectContaining({ id: workerRecord.id, leadId: leadRecord.id }),
+      messaging.LEAD_ALIAS,
       "Report from worker-1",
       "Here are the results.",
     );
@@ -101,29 +101,30 @@ describe("worker auto-report on agent_settled", () => {
 
   it("reports every run's reply when several runs settle together", async () => {
     const { handlers } = loadWorker();
+    await initializeWorkerSession(handlers);
     await handlers.get("agent_end")({ messages: [assistantMessage("first")] });
     await handlers.get("agent_end")({ messages: [{ role: "assistant", content: [] }] });
     await handlers.get("agent_end")({ messages: [assistantMessage("second")] });
     await handlers.get("agent_settled")({ aborted: false });
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    const body = sendSpy.mock.calls[0][5] as string;
-    expect(body).toContain("Reply 1 of 2:\n\nfirst");
-    expect(body).toContain("Reply 2 of 2:\n\nsecond");
+    expect(sendSpy.mock.calls[0][3]).toContain("Reply 1 of 2:\n\nfirst");
+    expect(sendSpy.mock.calls[0][3]).toContain("Reply 2 of 2:\n\nsecond");
   });
 
   it("starts the next cycle with no replies from the last one", async () => {
     const { handlers } = loadWorker();
+    await initializeWorkerSession(handlers);
     await handlers.get("agent_end")({ messages: [assistantMessage("old")] });
     await handlers.get("agent_settled")({ aborted: false });
     sendSpy.mockClear();
     await handlers.get("agent_end")({ messages: [assistantMessage("new")] });
     await handlers.get("agent_settled")({ aborted: false });
 
-    expect(sendSpy.mock.calls[0][5]).toBe("new");
+    expect(sendSpy.mock.calls[0][3]).toBe("new");
   });
 
-  it("skips the report when the worker already messaged the team-lead", async () => {
+  it("skips the report when the worker already messaged the lead", async () => {
     const { handlers, tools } = loadWorker();
     await initializeWorkerSession(handlers);
     const manualSendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
@@ -166,20 +167,22 @@ describe("worker auto-report on agent_settled", () => {
     expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("counts a broadcast that reached the team-lead as a report", async () => {
+  it("counts a broadcast that reached the lead as a report", async () => {
     const { handlers, tools } = loadWorker();
     await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
     const broadcastSpy = vi.spyOn(messaging, "broadcastAgentMessage").mockResolvedValue({ delivered: [leadRecord, siblingRecord], failed: [] });
     await tools.get("send_message").execute("id", { recipient: "all", subject: "s", content: "c" });
     expect(broadcastSpy).toHaveBeenCalledOnce();
+    sendSpy.mockClear();
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
     await handlers.get("agent_settled")({ aborted: false });
 
-    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy).not.toHaveBeenCalled();
     expect(broadcastSpy).toHaveBeenCalledOnce();
   });
 
-  it("does not count a broadcast that missed the team-lead as a report", async () => {
+  it("does not count a broadcast that missed the lead as a report", async () => {
     const { handlers, tools } = loadWorker();
     await initializeWorkerSession(handlers);
     vi.spyOn(messaging, "broadcastAgentMessage").mockResolvedValue({
@@ -206,7 +209,7 @@ describe("worker auto-report on agent_settled", () => {
     ).rejects.toThrow(/reached no one/);
   });
 
-  it("does not count a failed send to the team-lead as a report", async () => {
+  it("does not count a failed send to the lead as a report", async () => {
     const { handlers, tools } = loadWorker();
     await initializeWorkerSession(handlers);
     vi.spyOn(messaging, "sendAgentMessage").mockRejectedValueOnce(new Error("not reachable"));
@@ -229,14 +232,23 @@ describe("worker auto-report on agent_settled", () => {
     await handlers.get("agent_settled")({ aborted: true });
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(sendSpy.mock.calls[0][5]).toContain("interrupted");
+    expect(sendSpy.mock.calls[0][3]).toContain("interrupted");
   });
 
   it("survives a send failure", async () => {
     const { handlers } = loadWorker();
-    sendSpy.mockRejectedValue(new Error("Team not found"));
+    sendSpy.mockRejectedValue(new Error("Lead not found"));
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
     await expect(handlers.get("agent_settled")({ aborted: false })).resolves.toBeUndefined();
+  });
+
+  it("skips silently when no lead id is registered", async () => {
+    vi.stubEnv("PI_LEAD_ID", "");
+    const { handlers } = loadWorker();
+    await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
+    await handlers.get("agent_settled")({ aborted: false });
+
+    expect(sendSpy).not.toHaveBeenCalled();
   });
 
   it("does nothing for the team-lead session", async () => {

@@ -232,8 +232,16 @@ export function registerWorkerTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
         deps.agentName,
         appendReply(deps.cycleReplies, deps.currentRunText),
       );
+      const selfRecord = deps.selfRecord;
       try {
-        await messaging.sendPlainMessage(activeTeam, deps.agentId, deps.agentName, "team-lead", report.subject, report.text);
+        if (selfRecord?.leadId) {
+          await messaging.sendAgentMessage(
+            selfRecord,
+            messaging.LEAD_ALIAS,
+            report.subject,
+            report.text,
+          );
+        }
       } catch (_e) {
         // The lead or the team can be gone already. Closing still proceeds.
       }
