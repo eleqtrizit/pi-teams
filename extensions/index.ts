@@ -19,7 +19,6 @@ import * as teams from "../src/utils/teams";
 import {
   buildWorkerCommand,
   spawnWorkerProcess,
-  seedWorkerStateFiles,
   resolveSpawnModel,
   resolveSpawnDirectory,
 } from "../src/utils/spawn";
@@ -38,6 +37,7 @@ import {
   writeAgentRecord,
   readAgentRecord,
   readAgentRecords,
+  updateAgentRecord,
   isPidAlive,
 } from "../src/utils/registry";
 import { assertAgentId } from "../src/utils/paths";
@@ -223,28 +223,20 @@ export default function (pi: ExtensionAPI) {
     agentName !== "team-lead";
 
   // ── Spawn plumbing ────────────────────────────────────────────────────
-  // spawn_teammate and spawn_readonly_worker share this path: model
-  // resolution, member record, state pre-seed, then launch through the
-  // terminal adapter.
+  // Workers belong to this lead through registry records. Spawn setup does
+  // not depend on a team config or per-team state files.
 
   async function spawnTeamWorker(
     ctx: ExtensionContext,
     goals: SpawnWorkerGoals,
   ): Promise<SpawnedWorker> {
     const safeName = paths.sanitizeName(goals.name);
-    const safeTeamName = paths.sanitizeName(goals.team);
-    if (!teams.teamExists(safeTeamName)) {
-      throw new Error(`Team ${goals.team} does not exist`);
-    }
     if (!terminal) {
       throw new Error("No terminal adapter detected.");
     }
-    const teamConfig = await teams.readConfig(safeTeamName);
     const cwd = resolveSpawnDirectory(goals.cwd);
     const model = resolveSpawnModel(ctx, goals.modelRequest);
-    const useSeparateWindow =
-      !goals.readonlyWorker &&
-      (goals.separateWindow ?? teamConfig.separateWindows ?? false);
+    const useSeparateWindow = !goals.readonlyWorker && (goals.separateWindow ?? false);
     if (useSeparateWindow && !terminal.supportsWindows()) {
       throw new Error(
         `Separate windows mode is not supported in ${terminal.name}.`,
@@ -252,68 +244,45 @@ export default function (pi: ExtensionAPI) {
     }
 
     const { piCmd, agentType } = buildWorkerCommand(goals, model);
-    // Reject duplicate names up front: two members with the same name would
-    // share an inbox and pid file, and removeMember would remove both records.
-    if (teamConfig.members.some((m) => m.name === safeName)) {
-      throw new Error(`A member named "${safeName}" already exists in team "${goals.team}".`);
+    const ownWorkers = readAgentRecords().filter((record) => record.leadId === agentId);
+    if (ownWorkers.some((record) => record.name === safeName)) {
+      throw new Error(`A worker named "${safeName}" already exists under this lead.`);
     }
     const workerId = generateAgentId();
-    const member: Member = {
-      agentId: `${safeName}@${safeTeamName}`,
-      registryId: workerId,
-      name: safeName,
-      agentType,
-      model,
-      joinedAt: Date.now(),
-      tmuxPaneId: "",
-      cwd,
-      subscriptions: [],
-      color: goals.readonlyWorker ? "green" : "blue",
-      thinking: goals.readonlyWorker ? undefined : goals.thinking,
-    };
-    await teams.addMember(safeTeamName, member);
+    const env = { ...process.env } as Record<string, string | undefined>;
+    delete env.PI_TEAM_NAME;
+    env.PI_AGENT_NAME = safeName;
+    env.PI_AGENT_TYPE = agentType;
+    env.PI_AGENT_ID = workerId;
+    env.PI_LEAD_ID = agentId;
 
-    const env: Record<string, string> = {
-      ...process.env,
-      PI_TEAM_NAME: safeTeamName,
-      PI_AGENT_NAME: safeName,
-      PI_AGENT_TYPE: agentType,
-      PI_AGENT_ID: workerId,
-      PI_LEAD_ID: agentId,
-    };
-    seedWorkerStateFiles(safeTeamName, safeName);
-
-    let terminalId = "";
+    let terminalId: string;
     try {
       terminalId = spawnWorkerProcess(terminal, {
-        teamName: safeTeamName,
         name: safeName,
         cwd,
         piCmd,
-        env,
-        members: teamConfig.members,
+        env: Object.fromEntries(
+          Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+        ),
+        agents: ownWorkers,
         useSeparateWindow,
         readonlyWorker: goals.readonlyWorker,
       });
     } catch (e) {
-      // Roll back the member record and seeded state so a failed spawn does
-      // not leave a ghost member in the config.
-      await teams.removeMember(safeTeamName, safeName).catch(() => {});
-      teams.resetAgentState(safeTeamName, safeName);
       throw new Error(
         `Failed to spawn ${terminal.name} ${useSeparateWindow ? "window" : "pane"}: ${e}`,
       );
     }
-    await teams.updateMember(safeTeamName, safeName, {
-      registryId: workerId,
-      ...(useSeparateWindow ? { windowId: terminalId } : { tmuxPaneId: terminalId }),
-    });
 
-    // The first message can arrive before the worker boots. Wait for its
-    // socket so a send right after the spawn does not fail.
     const listening = await waitForListener(workerId, WORKER_LISTEN_TIMEOUT_MS);
+    // shortcut: a worker that boots after the wait keeps no terminal ids, so close_worker
+    // kills its pid but leaves the pane open; pass the ids via env if that matters.
+    if (listening) {
+      updateAgentRecord(workerId, useSeparateWindow ? { windowId: terminalId } : { paneId: terminalId });
+    }
 
-    return { member, terminalId, isWindow: useSeparateWindow, model, listening };
+    return { agentId: workerId, terminalId, isWindow: useSeparateWindow, model, listening };
   }
 
   const terminal = getTerminalAdapter();

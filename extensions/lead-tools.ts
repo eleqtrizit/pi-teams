@@ -24,10 +24,8 @@ import * as teams from "../src/utils/teams";
 import { getTopModelMatches, resolveModelWithProvider } from "../src/utils/modelSearch";
 import { READONLY_WORKER_TOOLS } from "../src/utils/spawn";
 import { shQuote, type TerminalAdapter } from "../src/utils/terminal-adapter";
-import type { Member } from "../src/utils/models";
 
 export interface SpawnWorkerGoals {
-  team: string;
   name: string;
   cwd?: string;
   modelRequest?: string;
@@ -37,7 +35,7 @@ export interface SpawnWorkerGoals {
 }
 
 export interface SpawnedWorker {
-  member: Member;
+  agentId: string;
   terminalId: string;
   isWindow: boolean;
   model: string;
@@ -253,7 +251,6 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
     description: "Create a new agent team.",
     parameters: asPiToolSchema(
       Type.Object({
-        team_name: Type.String(),
         description: Type.Optional(Type.String()),
         default_model: Type.Optional(Type.String()),
         separate_windows: Type.Optional(
@@ -341,7 +338,6 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       "provider/model. Use resolve_model first if you only know a model name.",
     parameters: asPiToolSchema(
       Type.Object({
-        team_name: Type.String(),
         name: Type.String(),
         cwd: Type.Optional(
           Type.String({
@@ -364,7 +360,6 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
     ) as any,
     async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
       const spawned = await deps.spawnTeamWorker(ctx, {
-        team: params.team_name,
         name: params.name,
         cwd: params.cwd,
         modelRequest: params.model,
@@ -376,12 +371,11 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         content: [
           {
             type: "text",
-            text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId} (agent ID: ${spawned.member.registryId}).${listeningNote(spawned)}`,
+            text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId} (agent ID: ${spawned.agentId}).${listeningNote(spawned)}`,
           },
         ],
         details: {
-          agentId: spawned.member.agentId,
-          registryId: spawned.member.registryId,
+          agentId: spawned.agentId,
           terminalId: spawned.terminalId,
           isWindow: spawned.isWindow,
           listening: spawned.listening,
@@ -402,7 +396,6 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       "unless the user names specific models.",
     parameters: asPiToolSchema(
       Type.Object({
-        team_name: Type.String(),
         name: Type.String(),
         cwd: Type.Optional(
           Type.String({
@@ -422,7 +415,6 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
     ) as any,
     async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
       const spawned = await deps.spawnTeamWorker(ctx, {
-        team: params.team_name,
         name: params.name,
         cwd: params.cwd,
         modelRequest: params.model,
@@ -432,12 +424,11 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         content: [
           {
             type: "text",
-            text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId} (agent ID: ${spawned.member.registryId}). Restricted to: read, grep, find, ls, messaging (send_message), and close_myself.${listeningNote(spawned)}`,
+            text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId} (agent ID: ${spawned.agentId}). Restricted to: read, grep, find, ls, messaging (send_message), and close_myself.${listeningNote(spawned)}`,
           },
         ],
         details: {
-          agentId: spawned.member.agentId,
-          registryId: spawned.member.registryId,
+          agentId: spawned.agentId,
           terminalId: spawned.terminalId,
           listening: spawned.listening,
           tools: [...READONLY_WORKER_TOOLS],

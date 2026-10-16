@@ -12,6 +12,7 @@ import {
 } from "./spawn";
 import { Iterm2Adapter } from "../adapters/iterm2-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
+import { AgentKind, type AgentRecord } from "./models";
 
 /** Minimal terminal adapter that records spawn calls. */
 function fakeAdapter(overrides: Partial<TerminalAdapter> = {}): TerminalAdapter {
@@ -206,12 +207,11 @@ describe("resolveLeadFolder", () => {
 
 describe("spawnWorkerProcess", () => {
   const base = {
-    teamName: "team",
     name: "worker",
     cwd: "/tmp",
     piCmd: "pi",
-    env: { PI_TEAM_NAME: "team" },
-    members: [],
+    env: { PI_AGENT_NAME: "worker", PI_LEAD_ID: "lead1234" },
+    agents: [] as AgentRecord[],
     useSeparateWindow: false,
     readonlyWorker: false,
   };
@@ -220,7 +220,12 @@ describe("spawnWorkerProcess", () => {
     const terminal = fakeAdapter();
     const id = spawnWorkerProcess(terminal, { ...base, useSeparateWindow: true });
     expect(id).toBe("win-1");
-    expect(terminal.spawnWindow).toHaveBeenCalled();
+    expect(terminal.spawnWindow).toHaveBeenCalledWith({
+      name: "worker",
+      cwd: "/tmp",
+      command: "pi",
+      env: { PI_AGENT_NAME: "worker", PI_LEAD_ID: "lead1234" },
+    });
     expect(terminal.spawn).not.toHaveBeenCalled();
   });
 
@@ -237,27 +242,49 @@ describe("spawnWorkerProcess", () => {
     vi.spyOn(adapter, "spawn").mockReturnValue("iterm_new");
     spawnWorkerProcess(adapter, {
       ...base,
-      members: [
+      agents: [
         {
-          name: "lead",
-          agentId: "lead",
-          agentType: "lead",
-          joinedAt: 0,
-          tmuxPaneId: "iterm_abc",
+          id: "lead1234",
+          kind: AgentKind.Lead,
           cwd: "/tmp",
-          subscriptions: [],
+          pid: 1,
+          startedAt: 0,
+          paneId: "iterm_abc",
         },
         {
+          id: "work1234",
+          kind: AgentKind.Teammate,
+          leadId: "lead1234",
           name: "w1",
-          agentId: "w1",
-          agentType: "teammate",
-          joinedAt: 0,
-          tmuxPaneId: "iterm_def",
           cwd: "/tmp",
-          subscriptions: [],
+          pid: 2,
+          startedAt: 1,
+          paneId: "iterm_def",
         },
       ],
     });
     expect(setContext).toHaveBeenCalledWith({ lastSessionId: "def" });
+  });
+
+  it("does not use a pane belonging to another lead", () => {
+    const adapter = new Iterm2Adapter();
+    const setContext = vi.spyOn(adapter, "setSpawnContext");
+    vi.spyOn(adapter, "spawn").mockReturnValue("iterm_new");
+    spawnWorkerProcess(adapter, {
+      ...base,
+      agents: [
+        {
+          id: "other123",
+          kind: AgentKind.Teammate,
+          leadId: "otherlead",
+          name: "peer-worker",
+          cwd: "/tmp",
+          pid: 3,
+          startedAt: 2,
+          paneId: "iterm_peer",
+        },
+      ],
+    });
+    expect(setContext).toHaveBeenCalledWith({});
   });
 });

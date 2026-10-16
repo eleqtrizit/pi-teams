@@ -11,8 +11,7 @@ import { Iterm2Adapter } from "../adapters/iterm2-adapter";
 import { shQuote, type TerminalAdapter } from "./terminal-adapter";
 import { getAvailableModels } from "./modelSearch";
 import * as paths from "./paths";
-import * as teams from "./teams";
-import { Member } from "./models";
+import type { AgentRecord } from "./models";
 
 /**
  * Resolve and validate the working directory for a spawned worker.
@@ -240,22 +239,20 @@ export function resolveLeadFolder(folder: string): string {
  * Launch a worker process through the terminal adapter.
  *
  * Spawns a separate OS window when requested; otherwise spawns a pane next to
- * the last matching teammate pane in iTerm2.
+ * the last registered worker pane in iTerm2.
  *
  * @param terminal - Detected terminal adapter
- * @param args - Launch details: sanitized names, command, environment, and team members
+ * @param args - Launch details: name, command, environment, and own worker records
  * @returns The spawned terminal id (a window id or a pane id)
  */
-
 export function spawnWorkerProcess(
   terminal: TerminalAdapter,
   args: {
-    teamName: string;
     name: string;
     cwd: string;
     piCmd: string;
     env: Record<string, string>;
-    members: Member[];
+    agents: AgentRecord[];
     useSeparateWindow: boolean;
     readonlyWorker: boolean;
   },
@@ -266,22 +263,19 @@ export function spawnWorkerProcess(
       cwd: args.cwd,
       command: args.piCmd,
       env: args.env,
-      teamName: args.teamName,
     });
   }
   if (terminal instanceof Iterm2Adapter) {
-    // iTerm2 panes spawn next to the last teammate pane; read-only workers
-    // also follow teammates.
-    const candidates = args.members.filter(
-      (m) =>
-        m.tmuxPaneId.startsWith("iterm_") &&
-        (args.readonlyWorker || m.agentType === "teammate"),
+    const candidates = args.agents.filter(
+      (record) =>
+        record.leadId === args.env.PI_LEAD_ID &&
+        record.paneId?.startsWith("iterm_") &&
+        record.kind !== "lead",
     );
-    const lastCandidate =
-      candidates.length > 0 ? candidates[candidates.length - 1] : null;
+    const lastCandidate = candidates.length > 0 ? candidates[candidates.length - 1] : null;
     terminal.setSpawnContext(
-      lastCandidate?.tmuxPaneId
-        ? { lastSessionId: lastCandidate.tmuxPaneId.replace("iterm_", "") }
+      lastCandidate?.paneId
+        ? { lastSessionId: lastCandidate.paneId.replace("iterm_", "") }
         : {},
     );
   }
@@ -291,25 +285,4 @@ export function spawnWorkerProcess(
     command: args.piCmd,
     env: args.env,
   });
-}
-
-/**
- * Pre-seed a worker's state files before its terminal process starts.
- *
- * Stamping the first-activation file makes the worker's session_start skip the
- * stale-state cleanup, so the pid and activity markers written during its boot
- * are preserved.
- *
- * @param safeTeamName - Sanitized team name
- * @param safeName - Sanitized worker name
- */
-export function seedWorkerStateFiles(safeTeamName: string, safeName: string): void {
-  // Clear state left by an earlier agent of the same name, then stamp first
-  // activation so session_start skips the stale-state cleanup.
-  teams.resetAgentState(safeTeamName, safeName, { keepFirstActivation: true });
-  fs.mkdirSync(path.dirname(paths.firstActivationPath(safeTeamName, safeName)), { recursive: true });
-  fs.writeFileSync(
-    paths.firstActivationPath(safeTeamName, safeName),
-    Date.now().toString(),
-  );
 }

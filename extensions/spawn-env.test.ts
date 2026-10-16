@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SpawnOptions, TerminalAdapter } from "../src/utils/terminal-adapter";
-import * as teams from "../src/utils/teams";
 import * as spawn from "../src/utils/spawn";
+import * as registry from "../src/utils/registry";
 import * as transport from "../src/utils/transport";
 import * as terminalRegistry from "../src/adapters/terminal-registry";
+import { AgentKind, type AgentRecord } from "../src/utils/models";
 import extension from "./index";
 
 const leadId = "lead1234";
@@ -28,6 +29,14 @@ const fakeTerminal: TerminalAdapter = {
   isWindowAlive: () => false,
 };
 
+const leadRecord: AgentRecord = {
+  id: leadId,
+  kind: AgentKind.Lead,
+  cwd: process.cwd(),
+  pid: process.pid,
+  startedAt: 1,
+};
+
 describe("spawned worker identity environment", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -35,42 +44,37 @@ describe("spawned worker identity environment", () => {
     capturedOptions.length = 0;
   });
 
-  it("passes a distinct worker ID and the lead ID to the terminal adapter", async () => {
+  it("passes worker identity variables and stores its pane in the registry", async () => {
     vi.stubEnv("PI_AGENT_ID", leadId);
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
     vi.stubEnv("PI_TEAM_NAME", "");
-    vi.spyOn(teams, "teamExists").mockReturnValue(true);
-    vi.spyOn(teams, "readConfig").mockResolvedValue({
-      name: "team",
-      description: "",
-      createdAt: Date.now(),
-      leadAgentId: leadId,
-      leadSessionId: "session",
-      members: [],
+    const workerRecord: AgentRecord = {
+      id: "work1234",
+      kind: AgentKind.Teammate,
+      leadId,
+      name: "worker",
+      cwd: process.cwd(),
+      pid: process.pid,
+      startedAt: 2,
+    };
+    const readRecords = vi.spyOn(registry, "readAgentRecords").mockReturnValue([leadRecord]);
+    const updateRecord = vi.spyOn(registry, "updateAgentRecord").mockImplementation((_id, patch) => {
+      Object.assign(workerRecord, patch);
+      readRecords.mockReturnValue([leadRecord, workerRecord]);
     });
-    vi.spyOn(teams, "addMember").mockResolvedValue();
-    vi.spyOn(teams, "updateMember").mockResolvedValue();
-    vi.spyOn(teams, "removeMember").mockResolvedValue();
-    vi.spyOn(teams, "resetAgentState").mockImplementation(() => {});
+    vi.spyOn(registry, "generateAgentId").mockReturnValue("work1234");
     vi.spyOn(spawn, "resolveSpawnDirectory").mockReturnValue(process.cwd());
     vi.spyOn(spawn, "resolveSpawnModel").mockReturnValue("provider/model");
-    vi.spyOn(spawn, "seedWorkerStateFiles").mockImplementation(() => {});
     vi.spyOn(spawn, "spawnWorkerProcess").mockImplementation((_terminal, args) => {
-      capturedOptions.push({
-        name: args.name,
-        cwd: args.cwd,
-        command: args.piCmd,
-        env: args.env,
-      });
+      capturedOptions.push({ name: args.name, cwd: args.cwd, command: args.piCmd, env: args.env });
       return "pane-1";
     });
     vi.spyOn(transport, "waitForListener").mockResolvedValue(true);
 
-    const handlers = new Map<string, (...args: any[]) => any>();
     const tools = new Map<string, { execute: (...args: any[]) => Promise<any> }>();
     const api = {
-      on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
+      on: vi.fn(),
       registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<any> }) =>
         tools.set(tool.name, tool),
       registerCommand: vi.fn(),
@@ -84,7 +88,7 @@ describe("spawned worker identity environment", () => {
     expect(spawnTool).toBeDefined();
     await spawnTool!.execute(
       "call",
-      { team_name: "team", name: "worker" },
+      { name: "worker" },
       undefined,
       undefined,
       {
@@ -94,9 +98,59 @@ describe("spawned worker identity environment", () => {
       } as unknown as ExtensionContext,
     );
 
-    const workerEnv = capturedOptions[0].env;
-    expect(workerEnv.PI_AGENT_ID).toMatch(/^[a-z0-9]{8}$/);
-    expect(workerEnv.PI_AGENT_ID).not.toBe(leadId);
-    expect(workerEnv.PI_LEAD_ID).toBe(leadId);
+    expect(capturedOptions[0].env).toMatchObject({
+      PI_AGENT_NAME: "worker",
+      PI_AGENT_TYPE: "teammate",
+      PI_AGENT_ID: "work1234",
+      PI_LEAD_ID: leadId,
+    });
+    expect(capturedOptions[0].env).not.toHaveProperty("PI_TEAM_NAME");
+    expect(updateRecord).toHaveBeenCalledWith("work1234", { paneId: "pane-1" });
+  });
+
+  it("rejects a same-name worker owned by this lead", async () => {
+    vi.stubEnv("PI_AGENT_ID", leadId);
+    vi.stubEnv("PI_AGENT_NAME", "");
+    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_TEAM_NAME", "");
+    vi.spyOn(registry, "readAgentRecords").mockReturnValue([
+      leadRecord,
+      {
+        id: "work1234",
+        kind: AgentKind.Teammate,
+        leadId,
+        name: "worker",
+        cwd: process.cwd(),
+        pid: process.pid,
+        startedAt: 2,
+      },
+    ]);
+    vi.spyOn(spawn, "resolveSpawnDirectory").mockReturnValue(process.cwd());
+    vi.spyOn(spawn, "resolveSpawnModel").mockReturnValue("provider/model");
+    vi.spyOn(terminalRegistry, "getTerminalAdapter").mockReturnValue(fakeTerminal);
+
+    const tools = new Map<string, { execute: (...args: any[]) => Promise<any> }>();
+    extension({
+      on: vi.fn(),
+      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<any> }) =>
+        tools.set(tool.name, tool),
+      registerCommand: vi.fn(),
+      registerEntryRenderer: vi.fn(),
+      sendUserMessage: vi.fn(),
+    } as unknown as ExtensionAPI);
+
+    await expect(
+      tools.get("spawn_teammate")!.execute(
+        "call",
+        { name: "worker" },
+        undefined,
+        undefined,
+        {
+          hasUI: true,
+          model: { provider: "provider", id: "model" },
+          modelRegistry: { getAvailable: () => [{ provider: "provider", id: "model" }] },
+        } as unknown as ExtensionContext,
+      ),
+    ).rejects.toThrow(/already exists/);
   });
 });
