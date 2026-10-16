@@ -70,7 +70,7 @@ export interface MessageListener {
 function parseTeamMessage(value: unknown, agentName: string): TeamMessage {
   if (typeof value !== "object" || value === null) throw new Error("message is not an object");
   const record = value as Record<string, unknown>;
-  for (const key of ["id", "from", "to", "subject", "text", "timestamp"]) {
+  for (const key of ["id", "from", "to", "fromLabel", "subject", "text", "timestamp"]) {
     if (typeof record[key] !== "string") throw new Error(`field "${key}" must be a string`);
   }
   if (record.summary !== undefined && typeof record.summary !== "string") {

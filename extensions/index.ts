@@ -43,8 +43,9 @@ export function formatDeliveredMessages(messages: TeamMessage[]): string {
       .replace("T", " ")
       .slice(0, 19);
     return [
-      `**From:** ${m.from}`,
+      `**From:** ${m.fromLabel} (${m.from})`,
       `**To:** ${m.to}`,
+      `Reply with send_message(recipient="${m.from}").`,
       `**Subject:** ${m.subject}`,
       `**Timestamp:** ${ts}`,
       "",

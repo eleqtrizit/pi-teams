@@ -22,6 +22,7 @@ function makeMessage(to: string, overrides: Partial<TeamMessage> = {}): TeamMess
     id: "abcd1234",
     from: "team-lead",
     to,
+    fromLabel: "team-lead",
     subject: "subject",
     text: "body",
     timestamp: new Date().toISOString(),
@@ -107,6 +108,21 @@ describe("socket transport", () => {
     listener = await startListener(team, "worker", () => {});
     const reply = await sendRaw(team, "worker", `${JSON.stringify(makeMessage("someone-else"))}\n`);
     expect(reply).toMatch(/^error:.*someone-else/);
+  });
+
+  it("requires fromLabel to be a string", async () => {
+    let calls = 0;
+    listener = await startListener(team, "worker", () => {
+      calls++;
+    });
+    const valid = makeMessage("worker");
+    expect(
+      await sendRaw(team, "worker", `${JSON.stringify({ ...valid, fromLabel: undefined })}\n`),
+    ).toMatch(/^error:.*fromLabel/);
+    expect(await sendRaw(team, "worker", `${JSON.stringify({ ...valid, fromLabel: 5 })}\n`)).toMatch(
+      /^error:.*fromLabel/,
+    );
+    expect(calls).toBe(0);
   });
 
   it("rejects malformed JSON and invalid fields without calling the handler", async () => {

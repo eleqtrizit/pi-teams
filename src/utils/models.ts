@@ -71,10 +71,12 @@ export interface TeamConfig {
 export interface TeamMessage {
   /** Short unique identifier of the message. */
   id: string;
-  /** Name of the sending agent. */
+  /** Identifier of the sending agent. */
   from: string;
-  /** Name of the receiving agent. */
+  /** Identifier of the receiving agent. */
   to: string;
+  /** Human-readable sender label, such as "Worker alice in /path". */
+  fromLabel: string;
   subject: string;
   text: string;
   /** ISO 8601 time the sender created the message. */

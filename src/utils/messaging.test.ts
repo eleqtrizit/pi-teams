@@ -62,6 +62,7 @@ describe("messaging over sockets", () => {
       expect(received[0]).toMatchObject({
         from: "alice",
         to: "bob",
+        fromLabel: "alice",
         subject: "Greeting",
         text: "Hello Bob!",
         summary: "hi there",

@@ -253,8 +253,9 @@ describe("formatDeliveredMessages", () => {
     const messages: TeamMessage[] = [
       {
         id: "aaa11111",
-        from: "worker",
-        to: "team-lead",
+        from: "worker-id",
+        to: "team-lead-id",
+        fromLabel: "Worker alice in /workspace",
         subject: "Status update",
         text: "first report",
         timestamp: "2026-05-28T10:00:00.000Z",
@@ -263,8 +264,9 @@ describe("formatDeliveredMessages", () => {
     ];
 
     const output = formatDeliveredMessages(messages);
-    expect(output).toContain("**From:** worker");
-    expect(output).toContain("**To:** team-lead");
+    expect(output).toContain("**From:** Worker alice in /workspace (worker-id)");
+    expect(output).toContain("**To:** team-lead-id");
+    expect(output).toContain('Reply with send_message(recipient="worker-id").');
     expect(output).toContain("**Subject:** Status update");
     expect(output).toContain("**Timestamp:** 2026-05-28 10:00:00");
     expect(output).toContain("first report");
@@ -275,16 +277,18 @@ describe("formatDeliveredMessages", () => {
     const messages: TeamMessage[] = [
       {
         id: "aaa11111",
-        from: "worker",
-        to: "team-lead",
+        from: "worker-id",
+        to: "team-lead-id",
+        fromLabel: "Worker alice in /workspace",
         subject: "First",
         text: "body one",
         timestamp: "2026-05-28T10:00:00.000Z",
       },
       {
         id: "bbb22222",
-        from: "worker",
-        to: "team-lead",
+        from: "worker-id",
+        to: "team-lead-id",
+        fromLabel: "Worker alice in /workspace",
         subject: "Second",
         text: "body two",
         timestamp: "2026-05-28T10:01:00.000Z",

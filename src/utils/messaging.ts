@@ -40,6 +40,7 @@ function buildMessage(
     id: randomUUID().slice(0, 8),
     from: fromName,
     to: toName,
+    fromLabel: fromName,
     subject,
     text,
     timestamp: nowIso(),

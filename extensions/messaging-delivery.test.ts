@@ -39,6 +39,7 @@ const message = (to: string, text: string): TeamMessage => ({
   id: "abcd1234",
   from: "peer",
   to,
+  fromLabel: "peer",
   subject: "Subject",
   text,
   timestamp: "2026-05-28T10:00:00.000Z",
@@ -75,7 +76,8 @@ describe("immediate message delivery", () => {
       await sendToAgent(team, message("worker-1", "please review"));
       await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledTimes(1));
       const [text, options] = sendUserMessage.mock.calls[0];
-      expect(text).toContain("**From:** peer");
+      expect(text).toContain("**From:** peer (peer)");
+      expect(text).toContain('Reply with send_message(recipient="peer").');
       expect(text).toContain("please review");
       expect(options).toEqual({ deliverAs: "followUp" });
     } finally {
