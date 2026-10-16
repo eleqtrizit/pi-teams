@@ -481,56 +481,6 @@ export function getLastUserMessageText(entries: SessionEntry[]): string | null {
 /** Tools granted to read-only workers at spawn and reported in spawn results. */
 
 
-/**
- * Resolve the worker's model from raw spawn input.
- *
- * An undefined request or one matching "default" falls back to the team-lead's
- * current model. Any other request must be fully qualified as provider/model
- * and present in the model registry.
- *
- * @param ctx - Extension context providing the current model and registry
- * @param modelRequest - Raw model input from the caller, or undefined
- * @returns The fully qualified provider/model for the worker
- * @throws If no model resolves or the request is not registry-qualified
- */
-
-
-/**
- * Build the pi launch command and member identity for a spawned worker.
- *
- * Read-only workers receive the restricted tool list; teammates honor the
- * thinking level in the combined --model provider/model:thinking form.
- *
- * @param goals - Worker goals including readonlyWorker and thinking
- * @param chosenModel - Fully qualified provider/model resolved for the worker
- * @returns The launch command and the member agent type
- */
-
-
-/**
- * Launch a worker process through the terminal adapter.
- *
- * Spawns a separate OS window when requested; otherwise spawns a pane next to
- * the last matching teammate pane in iTerm2.
- *
- * @param terminal - Detected terminal adapter
- * @param args - Launch details: sanitized names, command, environment, and team members
- * @returns The spawned terminal id (a window id or a pane id)
- */
-
-
-/**
- * Pre-seed a worker's state files before its terminal process starts.
- *
- * Stamping the first-activation file makes the worker's session_start skip the
- * inbox-deletion cleanup, so messages delivered to the worker before or during
- * its boot are preserved.
- *
- * @param safeTeamName - Sanitized team name
- * @param safeName - Sanitized worker name
- */
-
-
 export default function (pi: ExtensionAPI) {
   const isTeammate = !!process.env.PI_AGENT_NAME;
   const agentType = process.env.PI_AGENT_TYPE || "lead";
