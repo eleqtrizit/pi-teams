@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { AgentKind, AgentRecord } from "./models";
+import { spawn } from "node:child_process";
+import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import {
+  agentStatus,
   ensureRegistryDir,
   generateAgentId,
+  isPidAlive,
   readAgentRecord,
   readAgentRecords,
   removeAgentRecord,
   writeAgentRecord,
 } from "./registry";
-import { agentRecordPath, registryDir } from "./paths";
+import { agentRecordPath, agentSocketPath, registryDir } from "./paths";
 
 const posixOnly = process.platform === "win32" ? it.skip : it;
 
@@ -21,7 +25,7 @@ describe("registry", () => {
 
   beforeEach(() => {
     originalTmpdir = process.env.TMPDIR;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "registry-test-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "r"));
     process.env.TMPDIR = tmpDir;
   });
 
@@ -246,6 +250,91 @@ describe("registry", () => {
 
     it("ignores ENOENT", () => {
       expect(() => removeAgentRecord("ab12cd34")).not.toThrow();
+    });
+  });
+
+  describe("isPidAlive", () => {
+    it("returns true for the current process", () => {
+      expect(isPidAlive(process.pid)).toBe(true);
+    });
+
+    it("counts a pid owned by another user as alive (EPERM)", () => {
+      // pid 1 belongs to root; a non-root caller gets EPERM, which is alive.
+      expect(isPidAlive(1)).toBe(true);
+    });
+
+    it("returns false for a dead pid", async () => {
+      const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+      const pid = child.pid as number;
+      await new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+      });
+      expect(isPidAlive(pid)).toBe(false);
+    });
+  });
+
+  describe("agentStatus", () => {
+    function makeRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
+      return {
+        id: "ab12cd34",
+        kind: AgentKind.Teammate,
+        cwd: "/tmp",
+        pid: process.pid,
+        startedAt: 1000,
+        leadId: "ef56gh78",
+        name: "worker",
+        ...overrides,
+      };
+    }
+
+    it("is Online when the pid is alive and the socket accepts connections", async () => {
+      const calls: string[] = [];
+      const status = await agentStatus(
+        makeRecord(),
+        async (address) => {
+          calls.push(address);
+          return address === agentSocketPath("ab12cd34");
+        },
+        (pid) => {
+          calls.push(String(pid));
+          return pid === process.pid;
+        },
+      );
+      expect(status).toBe(AgentStatus.Online);
+      expect(calls).toEqual([String(process.pid), agentSocketPath("ab12cd34")]);
+    });
+
+    it("is Offline when the pid is alive but nothing listens on the socket", async () => {
+      const status = await agentStatus(makeRecord(), async () => false, () => true);
+      expect(status).toBe(AgentStatus.Offline);
+    });
+
+    it("is Offline for a dead pid even when the probe says the socket accepts connections", async () => {
+      let probes = 0;
+      const status = await agentStatus(
+        makeRecord({ pid: 999999 }),
+        async () => {
+          probes++;
+          return true;
+        },
+        () => false,
+      );
+      expect(status).toBe(AgentStatus.Offline);
+      expect(probes).toBe(0);
+    });
+
+    it("probes the agent's real socket with the default probe", async () => {
+      ensureRegistryDir();
+      const id = "ab12cd35";
+      const address = agentSocketPath(id);
+      const server = net.createServer(() => {});
+      await new Promise<void>((resolve) => server.listen(address, () => resolve()));
+      try {
+        await expect(agentStatus(makeRecord({ id }))).resolves.toBe(AgentStatus.Online);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+      await expect(agentStatus(makeRecord({ id }))).resolves.toBe(AgentStatus.Offline);
     });
   });
 });

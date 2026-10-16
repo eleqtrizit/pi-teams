@@ -9,6 +9,7 @@ import {
   MessageListener,
   RecipientUnreachableError,
   isListening,
+  isSocketListening,
   sendToAgent,
   startListener,
   waitForListener,
@@ -149,6 +150,24 @@ describe("socket transport", () => {
 
   it("reports isListening false for an agent without a socket", async () => {
     expect(await isListening(team, "ghost")).toBe(false);
+  });
+
+  it("isSocketListening accepts the listener's raw address", async () => {
+    listener = await startListener(team, "worker", () => {});
+    expect(await isSocketListening(listener.path)).toBe(true);
+  });
+
+  it("isSocketListening reports false for an address nothing listens on", async () => {
+    const address = `${socketDir()}/nothing-here.sock`;
+    expect(await isSocketListening(address)).toBe(false);
+  });
+
+  it("isSocketListening reports false after the listener closes", async () => {
+    listener = await startListener(team, "worker", () => {});
+    const address = listener.path;
+    await listener.close();
+    listener = undefined;
+    expect(await isSocketListening(address)).toBe(false);
   });
 
   it("replaces a stale socket file left by a dead process", async () => {

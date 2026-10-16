@@ -26,6 +26,9 @@ export const SEND_TIMEOUT_MS = 5000;
 /** Time a listener waits for a client to finish sending its message. */
 export const RECEIVE_TIMEOUT_MS = 5000;
 
+/** Default time a liveness probe waits for a socket connection. */
+export const PROBE_TIMEOUT_MS = 500;
+
 /** Acknowledgement line a listener returns after it accepts a message. */
 const ACK_LINE = "ok";
 
@@ -274,6 +277,30 @@ export async function sendToAgent(
 }
 
 /**
+ * Check whether anything accepts connections at a socket address.
+ *
+ * Opens and closes a connection without sending data. A listener ignores
+ * such probes.
+ *
+ * @param address - Socket path or named-pipe address to probe
+ * @param timeoutMs - Time to wait for the connection
+ * @returns True when a process accepts connections at the address
+ */
+export async function isSocketListening(address: string, timeoutMs: number = PROBE_TIMEOUT_MS): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = net.createConnection(address);
+    const finish = (listening: boolean): void => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(listening);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    socket.on("connect", () => finish(true));
+    socket.on("error", () => finish(false));
+  });
+}
+
+/**
  * Check whether an agent has a listening socket.
  *
  * Opens and closes a connection without sending data. The listener ignores
@@ -289,24 +316,11 @@ export async function isListening(
   agentName: string,
   timeoutMs: number = SEND_TIMEOUT_MS,
 ): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    let address: string;
-    try {
-      address = socketPath(teamName, agentName);
-    } catch {
-      resolve(false);
-      return;
-    }
-    const socket = net.createConnection(address);
-    const finish = (listening: boolean): void => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(listening);
-    };
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    socket.on("connect", () => finish(true));
-    socket.on("error", () => finish(false));
-  });
+  try {
+    return await isSocketListening(socketPath(teamName, agentName), timeoutMs);
+  } catch {
+    return false;
+  }
 }
 
 /** Pause between probes while waiting for an agent to start listening. */

@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { AgentKind, AgentRecord } from "./models";
-import { agentRecordPath, agentRecordsDir, registryDir, AGENT_ID_PATTERN } from "./paths";
-import { ensurePrivateDir } from "./transport";
+import { AgentKind, AgentRecord, AgentStatus } from "./models";
+import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
+import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const ID_LENGTH = 8;
@@ -159,4 +159,52 @@ export function removeAgentRecord(id: string): void {
     const err = e as NodeJS.ErrnoException;
     if (err.code !== "ENOENT") throw e;
   }
+}
+
+/**
+ * Check whether a process with the given pid exists.
+ *
+ * Signal 0 performs no signal delivery; it only checks existence and
+ * permission. An EPERM error means the process exists but belongs to
+ * another user, which still proves it is alive.
+ *
+ * @param pid - Process id to check
+ * @returns True when the process exists
+ */
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    return err.code === "EPERM";
+  }
+}
+
+/**
+ * Check whether a registered agent is online.
+ *
+ * The agent is online only when its pid is alive and something accepts
+ * connections on its socket address. The socket check defends against a
+ * reused pid: a live pid that does not own the agent's socket is offline.
+ *
+ * @param rec - Agent record to check
+ * @param probe - Socket probe; overridden in tests
+ * @param pidAlive - Pid check; overridden in tests
+ * @returns Online when the process is alive and listening, otherwise Offline
+ */
+export async function agentStatus(
+  rec: AgentRecord,
+  probe: (address: string, timeoutMs: number) => Promise<boolean> = isSocketListening,
+  pidAlive: (pid: number) => boolean = isPidAlive,
+): Promise<AgentStatus> {
+  if (!pidAlive(rec.pid)) return AgentStatus.Offline;
+  let address: string;
+  try {
+    address = agentSocketPath(rec.id);
+  } catch {
+    return AgentStatus.Offline;
+  }
+  const listening = await probe(address, PROBE_TIMEOUT_MS);
+  return listening ? AgentStatus.Online : AgentStatus.Offline;
 }
