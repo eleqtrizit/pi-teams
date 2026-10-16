@@ -29,6 +29,7 @@ describe("worker auto-report on agent_settled", () => {
   beforeEach(() => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
+    vi.stubEnv("PI_AGENT_ID", "work1111");
     vi.stubEnv("PI_TEAM_NAME", "report-team");
     sendSpy = vi.spyOn(messaging, "sendPlainMessage").mockResolvedValue(undefined);
   });
@@ -46,6 +47,7 @@ describe("worker auto-report on agent_settled", () => {
     expect(sendSpy).toHaveBeenCalledTimes(1);
     expect(sendSpy).toHaveBeenCalledWith(
       "report-team",
+      "work1111",
       "worker-1",
       "team-lead",
       "Report from worker-1",
@@ -61,7 +63,7 @@ describe("worker auto-report on agent_settled", () => {
     await handlers.get("agent_settled")({ aborted: false });
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    const body = sendSpy.mock.calls[0][4] as string;
+    const body = sendSpy.mock.calls[0][5] as string;
     expect(body).toContain("Reply 1 of 2:\n\nfirst");
     expect(body).toContain("Reply 2 of 2:\n\nsecond");
   });
@@ -74,7 +76,7 @@ describe("worker auto-report on agent_settled", () => {
     await handlers.get("agent_end")({ messages: [assistantMessage("new")] });
     await handlers.get("agent_settled")({ aborted: false });
 
-    expect(sendSpy.mock.calls[0][4]).toBe("new");
+    expect(sendSpy.mock.calls[0][5]).toBe("new");
   });
 
   it("skips the report when the worker already messaged the team-lead", async () => {
@@ -169,7 +171,7 @@ describe("worker auto-report on agent_settled", () => {
     await handlers.get("agent_settled")({ aborted: true });
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    expect(sendSpy.mock.calls[0][4]).toContain("interrupted");
+    expect(sendSpy.mock.calls[0][5]).toContain("interrupted");
   });
 
   it("survives a send failure", async () => {

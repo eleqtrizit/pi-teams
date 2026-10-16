@@ -45,7 +45,7 @@ function loadExtension(): { handlers: HandlerMap; tools: Map<string, any>; sendU
 
 const message = (to: string, text: string): TeamMessage => ({
   id: "abcd1234",
-  from: "peer",
+  from: "peer1234",
   to,
   fromLabel: "peer",
   subject: "Subject",
@@ -64,6 +64,8 @@ describe("immediate message delivery", () => {
     vi.stubEnv("PI_TEAM_NAME", team);
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
+    vi.stubEnv("PI_AGENT_ID", "work1111");
+    vi.stubEnv("PI_LEAD_ID", "lead1111");
     vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
     vi.spyOn(paths, "teamDir").mockReturnValue(teamDir);
     vi.spyOn(paths, "pidPath").mockImplementation((_t, a) => path.join(teamDir, `${a}.pid`));
@@ -81,11 +83,11 @@ describe("immediate message delivery", () => {
     const { handlers, sendUserMessage } = loadExtension();
     await handlers.get("session_start")({}, { ui, hasUI: false });
     try {
-      await sendToAgent(team, message("worker-1", "please review"));
+      await sendToAgent(message("work1111", "please review"));
       await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledTimes(1));
       const [text, options] = sendUserMessage.mock.calls[0];
-      expect(text).toContain("**From:** peer (peer)");
-      expect(text).toContain('Reply with send_message(recipient="peer").');
+      expect(text).toContain("**From:** peer (peer1234)");
+      expect(text).toContain('Reply with send_message(recipient="peer1234").');
       expect(text).toContain("please review");
       expect(options).toEqual({ deliverAs: "followUp" });
     } finally {
@@ -98,7 +100,7 @@ describe("immediate message delivery", () => {
     await handlers.get("session_start")({}, { ui, hasUI: false });
     try {
       await handlers.get("agent_start")({}, {});
-      await sendToAgent(team, message("worker-1", "mid-run note"));
+      await sendToAgent(message("work1111", "mid-run note"));
       expect(sendUserMessage).not.toHaveBeenCalled();
 
       await handlers.get("agent_end")({ messages: [] }, { hasUI: true });
@@ -113,7 +115,7 @@ describe("immediate message delivery", () => {
     const { handlers } = loadExtension();
     await handlers.get("session_start")({}, { ui, hasUI: false });
     await handlers.get("session_shutdown")({}, {});
-    await expect(sendToAgent(team, message("worker-1", "late"))).rejects.toThrow(/not reachable/);
+    await expect(sendToAgent(message("work1111", "late"))).rejects.toThrow(/not reachable/);
   });
 
   it("registers send_message but not broadcast_message", () => {
@@ -133,7 +135,8 @@ describe("lead window takeover", () => {
     teamDir = fs.mkdtempSync(path.join(os.tmpdir(), "takeover-"));
     vi.stubEnv("PI_TEAM_NAME", team);
     vi.stubEnv("PI_AGENT_NAME", "");
-    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_AGENT_TYPE", "lead");
+    vi.stubEnv("PI_AGENT_ID", "lead1111");
     vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
     vi.spyOn(paths, "teamDir").mockReturnValue(teamDir);
   });
@@ -147,10 +150,11 @@ describe("lead window takeover", () => {
   it("sends messages to the newest team-lead session", async () => {
     const original = loadExtension();
     await original.handlers.get("session_start")({}, { ui, hasUI: true });
+    vi.stubEnv("PI_AGENT_ID", "lead2222");
     const window = loadExtension();
     await window.handlers.get("session_start")({}, { ui, hasUI: true });
     try {
-      await sendToAgent(team, message("team-lead", "for the window"));
+      await sendToAgent(message("lead2222", "for the window"));
       await vi.waitFor(() => expect(window.sendUserMessage).toHaveBeenCalledTimes(1));
       expect(original.sendUserMessage).not.toHaveBeenCalled();
     } finally {
@@ -162,11 +166,12 @@ describe("lead window takeover", () => {
   it("keeps the newest session reachable when the older session shuts down first", async () => {
     const original = loadExtension();
     await original.handlers.get("session_start")({}, { ui, hasUI: true });
+    vi.stubEnv("PI_AGENT_ID", "lead2222");
     const window = loadExtension();
     await window.handlers.get("session_start")({}, { ui, hasUI: true });
     try {
       await original.handlers.get("session_shutdown")({}, {});
-      await sendToAgent(team, message("team-lead", "still there"));
+      await sendToAgent(message("lead2222", "still there"));
       await vi.waitFor(() => expect(window.sendUserMessage).toHaveBeenCalledTimes(1));
     } finally {
       await window.handlers.get("session_shutdown")({}, {});

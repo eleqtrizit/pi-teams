@@ -15,7 +15,8 @@ export function createTeam(
   leadAgentId: string,
   description = "",
   defaultModel?: string,
-  separateWindows?: boolean
+  separateWindows?: boolean,
+  leadRegistryId?: string,
 ): TeamConfig {
   // Refuse to overwrite a live team: its workers would be orphaned (running
   // with a deleted config, inboxes, and pid files) and its task list erased.
@@ -34,6 +35,7 @@ export function createTeam(
 
   const leadMember: Member = {
     agentId: leadAgentId,
+    ...(leadRegistryId ? { registryId: leadRegistryId } : {}),
     name: "team-lead",
     agentType: "lead",
     joinedAt: Date.now(),
@@ -116,7 +118,6 @@ function agentStateFiles(team: string, agentName: string): string[] {
     paths.pidPath(team, agentName),
     paths.activePath(team, agentName),
     paths.firstActivationPath(team, agentName),
-    paths.socketPath(team, agentName),
   ];
 }
 

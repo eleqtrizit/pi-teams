@@ -14,6 +14,8 @@ const LEAD_TOOLS = [
 ];
 const SHARED_TOOLS = ["send_message", "list_teammates"];
 const WORKER_TOOLS = ["close_myself"];
+/** Registered for every session, lead and worker alike. */
+const AGENT_TOOLS = ["list_agents"];
 
 /**
  * Load the extension into a mock pi API and return the registered tool names.
@@ -46,6 +48,7 @@ describe("tool registration by identity", () => {
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of SHARED_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(false);
   });
 
@@ -56,6 +59,7 @@ describe("tool registration by identity", () => {
 
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(false);
   });
 
@@ -67,6 +71,7 @@ describe("tool registration by identity", () => {
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(false);
     for (const name of SHARED_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(true);
   });
 
@@ -78,6 +83,7 @@ describe("tool registration by identity", () => {
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(false);
     for (const name of SHARED_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(true);
   });
 
@@ -88,6 +94,7 @@ describe("tool registration by identity", () => {
 
     const names = registeredToolNames();
     expect(names.has("close_myself")).toBe(false);
+    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
   });
 });
 

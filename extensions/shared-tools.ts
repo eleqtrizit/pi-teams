@@ -15,6 +15,7 @@ import { getLastUserMessageText } from "./index";
 /** Session state required by shared and worker tool registrations. */
 export interface SharedToolDeps {
   agentName: string;
+  agentId: string;
   isTeammate: boolean;
   getTeamName: () => string | undefined;
   messageListener: MessageListener | null;
@@ -106,6 +107,7 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
       if (params.recipient === messaging.BROADCAST_RECIPIENT) {
         const result = await messaging.broadcastMessage(
           resolvedTeam,
+          deps.agentId,
           deps.agentName,
           params.subject,
           params.content,
@@ -131,6 +133,7 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
 
       await messaging.sendPlainMessage(
         resolvedTeam,
+        deps.agentId,
         deps.agentName,
         params.recipient,
         params.subject,
@@ -170,7 +173,9 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
           const listening =
             member.name === deps.agentName && deps.messageListener
               ? true
-              : await isListening(params.team_name, member.name, LISTEN_PROBE_TIMEOUT_MS);
+              : member.registryId
+                ? await isListening(member.registryId, LISTEN_PROBE_TIMEOUT_MS)
+                : false;
           const active = deps.isAgentActive(params.team_name, member.name);
           return {
             name: member.name,
@@ -215,7 +220,7 @@ export function registerWorkerTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
         appendReply(deps.cycleReplies, deps.currentRunText),
       );
       try {
-        await messaging.sendPlainMessage(activeTeam, deps.agentName, "team-lead", report.subject, report.text);
+        await messaging.sendPlainMessage(activeTeam, deps.agentId, deps.agentName, "team-lead", report.subject, report.text);
       } catch (_e) {
         // The lead or the team can be gone already. Closing still proceeds.
       }

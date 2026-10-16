@@ -271,10 +271,10 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         params.description,
         params.default_model,
         params.separate_windows,
+        process.env.PI_AGENT_ID,
       );
       deps.setTeamName(params.team_name);
       process.env.PI_TEAM_NAME = params.team_name;
-      await deps.ensureListener();
       return {
         content: [{ type: "text", text: `Team ${params.team_name} created.` }],
         details: { config },

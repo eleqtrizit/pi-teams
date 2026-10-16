@@ -24,7 +24,6 @@ describe("S5 pid verification command shapes", () => {
       for (const fn of ["pidPath", "activePath", "firstActivationPath"] as const) {
         vi.spyOn(paths, fn).mockImplementation((_t: string, a: string) => path.join(dir, `${a}.${fn}`));
       }
-      vi.spyOn(paths, "socketPath").mockImplementation((_t, a) => path.join(dir, `${a}.sock`));
       fs.writeFileSync(path.join(dir, "w.pidPath"), "424242");
       vi.spyOn(ta, "execCommand").mockReturnValue({ stdout: cmd, stderr: "", status: 0 });
       const kill = vi.spyOn(process, "kill").mockImplementation(() => true);

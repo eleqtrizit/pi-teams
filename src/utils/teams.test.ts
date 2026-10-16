@@ -67,9 +67,6 @@ describe("removeAgent", () => {
     vi.spyOn(paths, "taskDir").mockImplementation(
       () => path.join(testDir, "tasks"),
     );
-    vi.spyOn(paths, "socketPath").mockImplementation((_t, agentName) =>
-      path.join(testDir, `${agentName}.sock`),
-    );
     vi.spyOn(paths, "pidPath").mockImplementation((_t, agentName) =>
       path.join(testDir, `${agentName}.pid`),
     );
@@ -94,7 +91,6 @@ describe("removeAgent", () => {
       path.join(testDir, `${agentName}.pid`),
       path.join(testDir, `${agentName}.active`),
       path.join(testDir, `${agentName}.firstActivation`),
-      path.join(testDir, `${agentName}.sock`),
     ];
     for (const statePath of statePaths) {
       fs.writeFileSync(statePath, "x");
@@ -216,6 +212,11 @@ describe("createTeam overwrite guard", () => {
     expect(fs.existsSync(path.join(testDir, "junk.json"))).toBe(false);
     expect(fs.existsSync(path.join(testDir, "config.json"))).toBe(true);
   });
+
+  it("stores the lead registry ID on its member record", () => {
+    const config = createTeam("t1", "sess-1", "lead-agent", "", undefined, false, "lead1234");
+    expect(config.members[0].registryId).toBe("lead1234");
+  });
 });
 
 describe("removeAgent pid verification", () => {
@@ -224,7 +225,6 @@ describe("removeAgent pid verification", () => {
     fs.mkdirSync(testDir, { recursive: true });
     vi.spyOn(paths, "teamDir").mockReturnValue(testDir);
     vi.spyOn(paths, "configPath").mockImplementation(() => path.join(testDir, "config.json"));
-    vi.spyOn(paths, "socketPath").mockImplementation((_t, a) => path.join(testDir, `${a}.sock`));
     vi.spyOn(paths, "firstActivationPath").mockImplementation((_t, a) => path.join(testDir, `${a}.firstActivation`));
   });
   afterEach(() => vi.restoreAllMocks());

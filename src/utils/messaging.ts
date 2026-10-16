@@ -18,28 +18,26 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
-/**
- * Build a message with a fresh identifier and the current time.
- *
- * @param fromName - Name of the sender
- * @param toName - Name of the recipient
- * @param subject - Short subject line
- * @param text - Full message body
- * @param summary - Optional brief summary
- * @returns The message, ready to send
- */
+function memberId(member: { name: string; registryId?: string }): string {
+  if (!member.registryId) {
+    throw new Error(`${member.name} has no agent id; it was spawned before the registry existed.`);
+  }
+  return member.registryId;
+}
+
+/** Build a message using sender and recipient agent IDs. */
 function buildMessage(
+  fromId: string,
   fromName: string,
-  toName: string,
+  toId: string,
   subject: string,
   text: string,
   summary?: string,
 ): TeamMessage {
   return {
-    // 8-char hex prefix of a v4 UUID: 32 bits of entropy, unambiguous in practice.
     id: randomUUID().slice(0, 8),
-    from: fromName,
-    to: toName,
+    from: fromId,
+    to: toId,
     fromLabel: fromName,
     subject,
     text,
@@ -49,50 +47,46 @@ function buildMessage(
 }
 
 /**
- * Send a message to one team member and wait until the member accepted it.
+ * Send a message to one named team member, addressed by the member's agent ID.
  *
- * @param teamName - Name of the team
- * @param fromName - Name of the sender
- * @param toName - Name of the recipient, who must be a member of the team
+ * @param teamName - Team that contains the recipient
+ * @param fromId - Sender agent ID
+ * @param fromName - Sender display name
+ * @param toName - Recipient member name
  * @param subject - Short subject line
- * @param text - Full message body
+ * @param text - Message body
  * @param summary - Optional brief summary
- * @throws Error when the team does not exist or the recipient is not a member
- * @throws RecipientUnreachableError when the recipient is not running
+ * @throws Error when the team or recipient does not exist, or the recipient has no registry ID
  */
 export async function sendPlainMessage(
   teamName: string,
+  fromId: string,
   fromName: string,
   toName: string,
   subject: string,
   text: string,
   summary?: string,
 ): Promise<void> {
-  // Validate the recipient first: a typo should produce a clear error, not a
-  // connection failure.
   const config = await readConfig(teamName);
-  if (!config.members.some((m) => m.name === toName)) {
-    throw new Error(`Recipient "${toName}" is not a member of team "${teamName}".`);
-  }
-  await sendToAgent(teamName, buildMessage(fromName, toName, subject, text, summary));
+  const recipient = config.members.find((member) => member.name === toName);
+  if (!recipient) throw new Error(`Recipient "${toName}" is not a member of team "${teamName}".`);
+  await sendToAgent(buildMessage(fromId, fromName, memberId(recipient), subject, text, summary));
 }
 
 /**
  * Send a message to every team member except the sender.
  *
- * Members that cannot be reached do not stop the broadcast. The result lists
- * them so the caller can tell the sender.
- *
- * @param teamName - Name of the team
- * @param fromName - Name of the sender
+ * @param teamName - Team whose members receive the message
+ * @param fromId - Sender agent ID
+ * @param fromName - Sender display name
  * @param subject - Short subject line
- * @param text - Full message body
+ * @param text - Message body
  * @param summary - Optional brief summary
- * @returns The members that received the message and the members that did not
- * @throws Error when the team does not exist
+ * @returns Names of delivered and failed recipients
  */
 export async function broadcastMessage(
   teamName: string,
+  fromId: string,
   fromName: string,
   subject: string,
   text: string,
@@ -101,8 +95,8 @@ export async function broadcastMessage(
   const config = await readConfig(teamName);
   const recipients = config.members.filter((member) => member.name !== fromName);
   const outcomes = await Promise.allSettled(
-    recipients.map((member) =>
-      sendToAgent(teamName, buildMessage(fromName, member.name, subject, text, summary)),
+    recipients.map(async (member) =>
+      sendToAgent(buildMessage(fromId, fromName, memberId(member), subject, text, summary)),
     ),
   );
 

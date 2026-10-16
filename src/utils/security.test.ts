@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { teamDir, socketPath, sanitizeName } from "./paths";
+import { teamDir, agentSocketPath, sanitizeName } from "./paths";
 
 describe("Security Audit - Path Traversal (Prevention Check)", () => {
   it("should throw an error for path traversal via teamName", () => {
@@ -7,16 +7,12 @@ describe("Security Audit - Path Traversal (Prevention Check)", () => {
     expect(() => teamDir(maliciousTeamName)).toThrow();
   });
 
-  it("should throw an error for path traversal via agentName", () => {
-    const teamName = "audit-team";
-    const maliciousAgentName = "../../../.ssh/id_rsa";
-    expect(() => socketPath(teamName, maliciousAgentName)).toThrow();
+  it("should reject path traversal via an agent ID", () => {
+    expect(() => agentSocketPath("../../etc/passwd")).toThrow(/Invalid agent ID/);
   });
 
   it("should throw an error for path traversal via taskId", () => {
     const maliciousTaskId = "../../../etc/passwd";
-    // We need to import readTask/updateTask or just sanitizeName directly if we want to test the logic
-    // But since we already tested sanitizeName via other paths, this is just for completeness.
     expect(() => sanitizeName(maliciousTaskId)).toThrow();
   });
 });
@@ -28,11 +24,7 @@ describe("Security Audit - Command Injection (Fixed)", () => {
     const team_name = "audit-team";
     const piBinary = "pi";
     const cmd = `PI_TEAM_NAME=${team_name} PI_AGENT_NAME=${name} ${piBinary}`;
-    
-    // Simulating what happens in spawn_teammate (extensions/index.ts)
     const itermCmd = `cd '${maliciousCwd}' && ${cmd}`;
-    
-    // The command becomes: cd '; rm -rf / ;' && PI_TEAM_NAME=audit-team PI_AGENT_NAME=attacker pi
     expect(itermCmd).toContain("cd '; rm -rf / ;' &&");
     expect(itermCmd).not.toContain("cd ; rm -rf / ; &&");
   });

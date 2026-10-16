@@ -31,6 +31,7 @@ import {
 } from "./lead-tools";
 export { classifyModel, executeGetModels } from "./lead-tools";
 import { registerSharedTools, registerWorkerTools } from "./shared-tools";
+import { registerAgentTools } from "./agents-tools";
 import { generateAgentId, ensureRegistryDir, writeAgentRecord } from "../src/utils/registry";
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
@@ -285,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 
     // The first message can arrive before the worker boots. Wait for its
     // socket so a send right after the spawn does not fail.
-    const listening = await waitForListener(safeTeamName, safeName, WORKER_LISTEN_TIMEOUT_MS);
+    const listening = await waitForListener(workerId, WORKER_LISTEN_TIMEOUT_MS);
 
     return { member, terminalId, isWindow: useSeparateWindow, model, listening };
   }
@@ -293,8 +294,6 @@ export default function (pi: ExtensionAPI) {
   const terminal = getTerminalAdapter();
   /** Socket listener that receives messages for this agent. */
   let messageListener: MessageListener | null = null;
-  /** Team the current listener belongs to, so a new team replaces it. */
-  let listenerTeam: string | undefined;
   /** Timer that retries a follow-up that could not be queued. */
   let followUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
@@ -405,23 +404,15 @@ export default function (pi: ExtensionAPI) {
     deliverPendingMessage(formatDeliveredMessages([message]));
   }
 
-  /**
-   * Listen for messages addressed to this agent. Starts a new listener when
-   * the team changed since the last call and does nothing otherwise.
-   *
-   * @throws Error when the socket cannot be created
-   */
+  /** Start the current agent-ID listener once, independently of team membership. */
   async function ensureListener(): Promise<void> {
-    if (!teamName || (messageListener && listenerTeam === teamName)) return;
-    await closeListener();
-    messageListener = await startListener(teamName, agentName, receiveTeamMessage);
-    listenerTeam = teamName;
+    if (messageListener) return;
+    messageListener = await startListener(agentId, receiveTeamMessage);
   }
 
   async function closeListener(): Promise<void> {
     const current = messageListener;
     messageListener = null;
-    listenerTeam = undefined;
     await current?.close();
   }
 
@@ -738,6 +729,7 @@ export default function (pi: ExtensionAPI) {
     try {
       await messaging.sendPlainMessage(
         teamName,
+        agentId,
         agentName,
         "team-lead",
         report.subject,
@@ -839,6 +831,7 @@ export default function (pi: ExtensionAPI) {
   // ── Shared and worker tools ───────────────────────────────────────────────
   const sharedToolDeps = {
     agentName,
+    agentId,
     isTeammate,
     getTeamName: () => teamName,
     get messageListener() {
@@ -860,6 +853,7 @@ export default function (pi: ExtensionAPI) {
       return selfRecord;
     },
   };
+  registerAgentTools(pi, { getSelfRecord: () => selfRecord });
   registerSharedTools(pi, sharedToolDeps);
   if (isWorker) {
     registerWorkerTools(pi, sharedToolDeps);

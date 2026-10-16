@@ -168,11 +168,11 @@ describe("close_myself execute", () => {
     await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
 
     expect(order).toEqual(["report", "remove"]);
-    const body = sendSpy.mock.calls[0][4] as string;
+    const body = sendSpy.mock.calls[0][5] as string;
     expect(body).toContain("first run");
     expect(body).toContain("wrote the file");
     expect(body).toContain("closed itself");
-    expect(sendSpy.mock.calls[0][2]).toBe("team-lead");
+    expect(sendSpy.mock.calls[0][3]).toBe("team-lead");
   });
 
   it("still removes itself when the report cannot be sent", async () => {
@@ -194,7 +194,7 @@ describe("close_myself execute", () => {
     await handlers.get("message_end")({ message: { role: "assistant", content: [{ type: "toolCall", name: "close_myself" }] } });
     await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
 
-    expect(sendSpy.mock.calls[0][4]).toContain("kept");
+    expect(sendSpy.mock.calls[0][5]).toContain("kept");
   });
 
   it("throws when no team is active for this agent", async () => {
