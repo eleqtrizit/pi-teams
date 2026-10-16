@@ -36,10 +36,12 @@ import {
   generateAgentId,
   ensureRegistryDir,
   writeAgentRecord,
+  readAgentRecord,
   readAgentRecords,
   isPidAlive,
 } from "../src/utils/registry";
 import { assertAgentId } from "../src/utils/paths";
+import { canMessage } from "../src/utils/visibility";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
 
@@ -95,6 +97,7 @@ const FOLLOW_UP_RETRY_MS = 2000;
 
 /** Longest time a spawn tool waits for a new worker to start listening. */
 const WORKER_LISTEN_TIMEOUT_MS = 30_000;
+const PEER_AUTO_REPLY_PREFIX = "Reply from ";
 
 export class FollowUpMessageQueue {
   private messages: string[] = [];
@@ -310,6 +313,10 @@ export default function (pi: ExtensionAPI) {
   let currentRunText: string | null = null;
   /** True once this worker messaged its registered lead during the current run cycle. */
   let reportedToLead = false;
+  /** Peer leads whose inbound messages require a reply at the end of this cycle. */
+  const peerLeadsToReply = new Set<string>();
+  /** Peer leads already answered manually during this cycle. */
+  const repliedToPeerLeads = new Set<string>();
   /** Migration warning shown to the model on its next get_flavored_models call */
   let pendingMigrationNotice: string | undefined;
   // Captured from the first context that carries a model registry, so the
@@ -407,6 +414,21 @@ export default function (pi: ExtensionAPI) {
    * back to the sender.
    */
   function receiveTeamMessage(message: TeamMessage): void {
+    if (!selfRecord) {
+      throw new Error("This session is not registered in the agent registry.");
+    }
+    const sender = readAgentRecord(message.from);
+    // Guard against model mistakes, not malicious same-user processes that can forge `from`.
+    if (!sender || !canMessage(sender, agentId, readAgentRecords())) {
+      throw new Error(`Sender ${message.from} is unknown or not visible to this agent.`);
+    }
+    if (
+      isLead &&
+      sender.kind === AgentKind.Lead &&
+      !message.subject.startsWith(PEER_AUTO_REPLY_PREFIX)
+    ) {
+      peerLeadsToReply.add(sender.id);
+    }
     deliverPendingMessage(formatDeliveredMessages([message]));
   }
 
@@ -710,30 +732,52 @@ export default function (pi: ExtensionAPI) {
   // agent_end fires once per low-level run; retries and queued work can start
   // more runs before the session settles. Keep every run's reply, in order.
   pi.on("agent_end", async (event) => {
-    if (!isWorker) return;
     cycleReplies = appendReply(cycleReplies, extractFinalReply(event.messages));
     currentRunText = null;
   });
 
-  // agent_settled means Pi will not continue on its own. For a worker, that is
-  // the moment to report to the lead, unless the worker already did.
+  // agent_settled means Pi will not continue on its own. Workers report to
+  // their lead; leads reply to peer leads that contacted them during the cycle.
   pi.on("agent_settled", async (event) => {
-    if (!isWorker || !selfRecord?.leadId) return;
     const replies = cycleReplies;
-    const alreadyReported = reportedToLead;
     cycleReplies = [];
-    reportedToLead = false;
-    if (alreadyReported && !event.aborted) return;
-    const report = buildWorkerReport(agentName, replies, event.aborted);
-    try {
-      await messaging.sendAgentMessage(
-        selfRecord,
-        messaging.LEAD_ALIAS,
-        report.subject,
-        report.text,
-      );
-    } catch (_e) {
-      // The team directory can be gone after team_shutdown or close_worker.
+
+    if (isWorker && selfRecord?.leadId) {
+      const alreadyReported = reportedToLead;
+      reportedToLead = false;
+      if (alreadyReported && !event.aborted) return;
+      const report = buildWorkerReport(agentName, replies, event.aborted);
+      try {
+        await messaging.sendAgentMessage(
+          selfRecord,
+          messaging.LEAD_ALIAS,
+          report.subject,
+          report.text,
+        );
+      } catch (_e) {
+        // The team directory can be gone after close_all_workers or close_worker.
+      }
+      return;
+    }
+
+    const peerIds = [...peerLeadsToReply];
+    peerLeadsToReply.clear();
+    const alreadyReplied = new Set(repliedToPeerLeads);
+    repliedToPeerLeads.clear();
+    if (!isLead || !selfRecord || peerIds.length === 0) return;
+    const report = buildWorkerReport(messaging.agentLabel(selfRecord), replies, false);
+    for (const peerId of peerIds) {
+      if (alreadyReplied.has(peerId)) continue;
+      try {
+        await messaging.sendAgentMessage(
+          selfRecord,
+          peerId,
+          `${PEER_AUTO_REPLY_PREFIX}${messaging.agentLabel(selfRecord)}`,
+          report.text,
+        );
+      } catch (_e) {
+        // The peer can stop listening before the automatic reply is sent.
+      }
     }
   });
 
@@ -759,7 +803,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     // Lead running in an auto-exit host mode: the extension holds the run open
     // while the team is active. Tell the lead so it ends its turn instead of
-    // polling, and releases the session through team_shutdown when done.
+    // polling, and releases the session through close_all_workers when done.
     if (
       !isTeammate &&
       holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })
@@ -767,7 +811,7 @@ export default function (pi: ExtensionAPI) {
       return {
         systemPrompt:
           event.systemPrompt +
-          `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call team_shutdown with the team name; the team closes and the session exits normally.`,
+          `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`,
       };
     }
 
@@ -838,6 +882,9 @@ export default function (pi: ExtensionAPI) {
     isAgentActive,
     setReportedToLead: (reported: boolean) => {
       reportedToLead = reported;
+    },
+    markRepliedToPeer: (id: string) => {
+      repliedToPeerLeads.add(id);
     },
     get cycleReplies() {
       return cycleReplies;

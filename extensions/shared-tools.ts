@@ -23,6 +23,7 @@ export interface SharedToolDeps {
   isMemberAlive: (team: string, member: Member) => boolean;
   isAgentActive: (team: string, agent: string) => boolean;
   setReportedToLead: (reported: boolean) => void;
+  markRepliedToPeer: (id: string) => void;
   cycleReplies: readonly string[];
   currentRunText: string | null;
   terminal: TerminalAdapter | null;
@@ -124,6 +125,9 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
         if (result.delivered.some((record) => record.id === selfRecord.leadId)) {
           deps.setReportedToLead(true);
         }
+        for (const record of result.delivered) {
+          if (record.kind === "lead") deps.markRepliedToPeer(record.id);
+        }
         if (result.delivered.length === 0 && result.failed.length > 0) {
           throw new Error(
             `Broadcast reached no one. ${formatBroadcastFailures(result.failed)}`,
@@ -154,6 +158,7 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
         records,
       );
       if (recipient.id === selfRecord.leadId) deps.setReportedToLead(true);
+      if (recipient.kind === "lead") deps.markRepliedToPeer(recipient.id);
       return {
         content: [
           {

@@ -36,6 +36,7 @@ function loadTool(selfRecord: AgentRecord | null) {
     isMemberAlive: () => false,
     isAgentActive: () => false,
     setReportedToLead: vi.fn(),
+    markRepliedToPeer: vi.fn(),
     cycleReplies: [],
     currentRunText: null,
     terminal: null,

@@ -6,7 +6,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import deliveryExtension from "./index";
 import * as paths from "../src/utils/paths";
 import { sendToAgent } from "../src/utils/transport";
-import type { TeamMessage } from "../src/utils/models";
+import { AgentKind, type AgentRecord, type TeamMessage } from "../src/utils/models";
+
+const selfRecord: AgentRecord = {
+  id: "dlvr1111",
+  kind: AgentKind.Teammate,
+  cwd: "/tmp/delivery-worker",
+  pid: 1,
+  leadId: "lead1111",
+  name: "worker-1",
+  startedAt: 1,
+};
+const peerRecord: AgentRecord = {
+  id: "peer1234",
+  kind: AgentKind.Teammate,
+  cwd: "/tmp/delivery-peer",
+  pid: 2,
+  leadId: "lead1111",
+  name: "peer",
+  startedAt: 1,
+};
+const unrelatedWorker: AgentRecord = {
+  ...peerRecord,
+  id: "other222",
+  leadId: "otherld1",
+};
+const registryRecords: AgentRecord[] = [selfRecord, peerRecord, unrelatedWorker];
 
 vi.mock("../src/adapters/terminal-registry", () => ({
   getTerminalAdapter: () => null,
@@ -17,8 +42,8 @@ vi.mock("../src/utils/registry", () => ({
   generateAgentId: vi.fn(() => "abc12345"),
   ensureRegistryDir: vi.fn(),
   writeAgentRecord: vi.fn(),
-  readAgentRecord: vi.fn(),
-  readAgentRecords: vi.fn(() => []),
+  readAgentRecord: vi.fn((id: string) => registryRecords.find((record) => record.id === id)),
+  readAgentRecords: vi.fn(() => registryRecords),
   removeAgentRecord: vi.fn(),
   isPidAlive: vi.fn(() => false),
 }));
@@ -97,6 +122,18 @@ describe("immediate message delivery", () => {
     }
   });
 
+  it("rejects a message from a worker owned by another lead", async () => {
+    const { handlers, sendUserMessage } = loadExtension();
+    await handlers.get("session_start")({}, { ui, hasUI: false });
+    try {
+      await expect(sendToAgent({ ...message("dlvr1111", "not visible"), from: unrelatedWorker.id }))
+        .rejects.toThrow(/unknown or not visible/);
+      expect(sendUserMessage).not.toHaveBeenCalled();
+    } finally {
+      await handlers.get("session_shutdown")({}, {});
+    }
+  });
+
   it("holds a message that arrives mid-run until the run ends", async () => {
     const { handlers, sendUserMessage } = loadExtension();
     await handlers.get("session_start")({}, { ui, hasUI: false });
@@ -133,6 +170,10 @@ describe("lead window takeover", () => {
   const ui = { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() };
 
   beforeEach(() => {
+    registryRecords.splice(0, registryRecords.length,
+      { ...selfRecord, id: "lead1111", kind: AgentKind.Lead, leadId: undefined },
+      { ...peerRecord, id: "peer1234", leadId: undefined },
+    );
     team = `t${randomUUID().replace(/-/g, "").slice(0, 12)}`;
     teamDir = fs.mkdtempSync(path.join(os.tmpdir(), "takeover-"));
     vi.stubEnv("PI_TEAM_NAME", team);
@@ -153,10 +194,11 @@ describe("lead window takeover", () => {
     const original = loadExtension();
     await original.handlers.get("session_start")({}, { ui, hasUI: true });
     vi.stubEnv("PI_AGENT_ID", "lead2222");
+    registryRecords.push({ ...selfRecord, id: "lead2222", kind: AgentKind.Lead, leadId: undefined });
     const window = loadExtension();
     await window.handlers.get("session_start")({}, { ui, hasUI: true });
     try {
-      await sendToAgent(message("lead2222", "for the window"));
+      await sendToAgent({ ...message("lead2222", "for the window"), from: "lead1111" });
       await vi.waitFor(() => expect(window.sendUserMessage).toHaveBeenCalledTimes(1));
       expect(original.sendUserMessage).not.toHaveBeenCalled();
     } finally {
@@ -169,11 +211,12 @@ describe("lead window takeover", () => {
     const original = loadExtension();
     await original.handlers.get("session_start")({}, { ui, hasUI: true });
     vi.stubEnv("PI_AGENT_ID", "lead2222");
+    registryRecords.push({ ...selfRecord, id: "lead2222", kind: AgentKind.Lead, leadId: undefined });
     const window = loadExtension();
     await window.handlers.get("session_start")({}, { ui, hasUI: true });
     try {
       await original.handlers.get("session_shutdown")({}, {});
-      await sendToAgent(message("lead2222", "still there"));
+      await sendToAgent({ ...message("lead2222", "still there"), from: "lead1111" });
       await vi.waitFor(() => expect(window.sendUserMessage).toHaveBeenCalledTimes(1));
     } finally {
       await window.handlers.get("session_shutdown")({}, {});
