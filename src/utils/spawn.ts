@@ -4,6 +4,7 @@
  * spawn_readonly_worker.
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Iterm2Adapter } from "../adapters/iterm2-adapter";
@@ -109,6 +110,19 @@ export function resolveSpawnModel(
 }
 
 /**
+ * Build the pi binary portion of a launch command.
+ *
+ * Uses the running pi entrypoint (`node <argv[1]>`) when available, falling
+ * back to the bare `pi` command on PATH. Every launch command shares this
+ * helper so leads and workers start the same binary.
+ *
+ * @returns The quoted pi binary invocation
+ */
+export function piBinaryCommand(): string {
+  return process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
+}
+
+/**
  * Build the pi launch command and member identity for a spawned worker.
  *
  * Read-only workers receive the restricted tool list; teammates honor the
@@ -118,7 +132,6 @@ export function resolveSpawnModel(
  * @param chosenModel - Fully qualified provider/model resolved for the worker
  * @returns The launch command and the member agent type
  */
-
 export function buildWorkerCommand(
   goals: {
     readonlyWorker: boolean;
@@ -130,7 +143,7 @@ export function buildWorkerCommand(
   // Workers start like any pi session and load their own configured
   // extensions (pi-teams, pi-sandbox, ...). No extension flags: -ne would drop
   // every configured extension. Use the combined --model provider/model:thinking format.
-  const piBinary = process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
+  const piBinary = piBinaryCommand();
   let piCmd = `${piBinary} --model ${shQuote(chosenModel)}`;
   if (!goals.readonlyWorker && goals.thinking) {
     piCmd = `${piCmd}:${goals.thinking}`;
@@ -139,6 +152,88 @@ export function buildWorkerCommand(
     piCmd = `${piCmd} --tools ${READONLY_WORKER_TOOLS.join(",")}`;
   }
   return { piCmd, agentType };
+}
+
+/** Environment keys stripped from the base env before a lead is spawned. */
+const LEAD_ENV_STRIP: readonly string[] = [
+  "PI_TEAM_NAME",
+  "PI_AGENT_NAME",
+  "PI_LEAD_ID",
+  "PI_AGENT_ID",
+];
+
+/**
+ * Build the environment for a spawned lead session.
+ *
+ * Inherits the spawning session's environment minus the identity variables of
+ * any team the spawner belongs to, so the new session starts as an independent
+ * lead. Undefined values are dropped. PI_AGENT_ID is set to the new lead's ID
+ * and PI_AGENT_TYPE is forced to "lead", overriding any inherited value.
+ *
+ * @param base - The spawning session's environment (usually process.env)
+ * @param agentId - The new lead's agent ID
+ * @returns A fresh environment for the lead process
+ * @throws If the agent ID is invalid (see assertAgentId)
+ */
+export function buildLeadEnv(
+  base: NodeJS.ProcessEnv,
+  agentId: string,
+): Record<string, string> {
+  paths.assertAgentId(agentId);
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (LEAD_ENV_STRIP.includes(key) || value === undefined) {
+      continue;
+    }
+    env[key] = value;
+  }
+  env.PI_AGENT_ID = agentId;
+  env.PI_AGENT_TYPE = "lead";
+  return env;
+}
+
+/**
+ * Build the pi launch command for a spawned lead session.
+ *
+ * Uses the same pi binary logic as buildWorkerCommand. An optional model is
+ * appended, shell-quoted for safety. The lead loads its own configured
+ * extensions, so no -ne or --tools flags appear.
+ *
+ * @param model - Fully qualified provider/model for the lead, or undefined
+ * @returns The launch command
+ */
+export function buildLeadCommand(model?: string): string {
+  let piCmd = piBinaryCommand();
+  const chosenModel = model?.trim();
+  if (chosenModel) {
+    piCmd = `${piCmd} --model ${shQuote(chosenModel)}`;
+  }
+  return piCmd;
+}
+
+/**
+ * Resolve and validate the working directory for a spawned lead.
+ *
+ * Unlike resolveSpawnDirectory, any existing directory is allowed: a lead runs
+ * wherever the caller points it. A leading "~" or "~/" expands to the current
+ * user's home directory.
+ *
+ * @param folder - Raw folder input from the caller
+ * @returns The absolute working directory for the lead
+ * @throws If the expanded directory does not exist or is not a directory
+ */
+export function resolveLeadFolder(folder: string): string {
+  let expanded = folder.trim();
+  if (expanded === "~") {
+    expanded = os.homedir();
+  } else if (expanded.startsWith("~/")) {
+    expanded = path.join(os.homedir(), expanded.slice(2));
+  }
+  const resolved = path.resolve(expanded);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    throw new Error(`Directory '${resolved}' does not exist or is not a directory.`);
+  }
+  return resolved;
 }
 
 /**

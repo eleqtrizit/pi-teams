@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildWorkerCommand, resolveSpawnDirectory, spawnWorkerProcess } from "./spawn";
+import {
+  buildLeadCommand,
+  buildLeadEnv,
+  buildWorkerCommand,
+  resolveLeadFolder,
+  resolveSpawnDirectory,
+  spawnWorkerProcess,
+} from "./spawn";
 import { Iterm2Adapter } from "../adapters/iterm2-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
 
@@ -101,6 +108,99 @@ describe("buildWorkerCommand", () => {
     const result = buildWorkerCommand({ readonlyWorker: false }, "prov/model");
     expect(result.agentType).toBe("teammate");
     expect(result.piCmd).not.toContain("--tools");
+  });
+});
+
+describe("buildLeadEnv", () => {
+  it("strips the spawner's identity variables and sets the lead identity", () => {
+    const env = buildLeadEnv(
+      {
+        PI_TEAM_NAME: "old-team",
+        PI_AGENT_NAME: "old-name",
+        PI_LEAD_ID: "old-lead",
+        PI_AGENT_ID: "old-agent",
+        PATH: "/usr/bin",
+        HOME: "/home/test",
+      },
+      "abc12345",
+    );
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/test",
+      PI_AGENT_ID: "abc12345",
+      PI_AGENT_TYPE: "lead",
+    });
+  });
+
+  it("forces PI_AGENT_TYPE to lead over an inherited value", () => {
+    const env = buildLeadEnv({ PI_AGENT_TYPE: "teammate" }, "abc12345");
+    expect(env.PI_AGENT_TYPE).toBe("lead");
+  });
+
+  it("drops undefined values from the base environment", () => {
+    const env = buildLeadEnv({ UNDEF_VAR: undefined, PATH: "/bin" }, "abc12345");
+    expect(env).toEqual({ PATH: "/bin", PI_AGENT_ID: "abc12345", PI_AGENT_TYPE: "lead" });
+  });
+
+  it("rejects an invalid agent ID", () => {
+    expect(() => buildLeadEnv({}, "not an id")).toThrow(/Invalid agent ID/);
+  });
+});
+
+describe("buildLeadCommand", () => {
+  it("returns the bare pi binary when no model is given", () => {
+    expect(buildLeadCommand()).not.toContain("--model");
+    expect(buildLeadCommand("")).not.toContain("--model");
+  });
+
+  it("appends a shell-quoted model when given", () => {
+    expect(buildLeadCommand("prov/model")).toContain("--model 'prov/model'");
+    expect(buildLeadCommand("prov/model; rm -rf /")).toContain(
+      "--model 'prov/model; rm -rf /'",
+    );
+  });
+
+  it("passes no extension or tools flags", () => {
+    const cmd = buildLeadCommand("prov/model");
+    expect(cmd).not.toMatch(/\s(-ne|--no-extensions|-e|--extension|--tools)\s/);
+  });
+});
+
+describe("resolveLeadFolder", () => {
+  let base: string;
+
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), "resolve-lead-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("expands a leading tilde to the home directory", () => {
+    expect(resolveLeadFolder("~")).toBe(path.resolve(os.homedir()));
+    expect(resolveLeadFolder("~/")).toBe(path.resolve(os.homedir()));
+  });
+
+  it("rejects a missing directory under the expanded home path", () => {
+    expect(() => resolveLeadFolder("~/no-such-dir-for-pi-teams-test")).toThrow(
+      /does not exist or is not a directory/,
+    );
+  });
+
+  it("accepts any existing directory, not only subdirectories", () => {
+    expect(resolveLeadFolder(base)).toBe(base);
+    expect(resolveLeadFolder("/tmp")).toBe("/tmp");
+  });
+
+  it("resolves a relative path against the current working directory", () => {
+    const sub = fs.mkdtempSync(path.join(base, "sub-"));
+    const rel = path.relative(process.cwd(), sub);
+    expect(resolveLeadFolder(rel)).toBe(sub);
+  });
+
+  it("rejects a missing directory", () => {
+    expect(() => resolveLeadFolder("nope")).toThrow(/does not exist/);
   });
 });
 
