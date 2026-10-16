@@ -66,7 +66,7 @@ describe("immediate message delivery", () => {
     vi.stubEnv("PI_TEAM_NAME", team);
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_AGENT_ID", "work1111");
+    vi.stubEnv("PI_AGENT_ID", "dlvr1111");
     vi.stubEnv("PI_LEAD_ID", "lead1111");
     vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
     vi.spyOn(paths, "teamDir").mockReturnValue(teamDir);
@@ -85,7 +85,7 @@ describe("immediate message delivery", () => {
     const { handlers, sendUserMessage } = loadExtension();
     await handlers.get("session_start")({}, { ui, hasUI: false });
     try {
-      await sendToAgent(message("work1111", "please review"));
+      await sendToAgent(message("dlvr1111", "please review"));
       await vi.waitFor(() => expect(sendUserMessage).toHaveBeenCalledTimes(1));
       const [text, options] = sendUserMessage.mock.calls[0];
       expect(text).toContain("**From:** peer (peer1234)");
@@ -102,7 +102,7 @@ describe("immediate message delivery", () => {
     await handlers.get("session_start")({}, { ui, hasUI: false });
     try {
       await handlers.get("agent_start")({}, {});
-      await sendToAgent(message("work1111", "mid-run note"));
+      await sendToAgent(message("dlvr1111", "mid-run note"));
       expect(sendUserMessage).not.toHaveBeenCalled();
 
       await handlers.get("agent_end")({ messages: [] }, { hasUI: true });
@@ -117,7 +117,7 @@ describe("immediate message delivery", () => {
     const { handlers } = loadExtension();
     await handlers.get("session_start")({}, { ui, hasUI: false });
     await handlers.get("session_shutdown")({}, {});
-    await expect(sendToAgent(message("work1111", "late"))).rejects.toThrow(/not reachable/);
+    await expect(sendToAgent(message("dlvr1111", "late"))).rejects.toThrow(/not reachable/);
   });
 
   it("registers send_message but not broadcast_message", () => {
