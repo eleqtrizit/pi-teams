@@ -18,7 +18,9 @@ vi.mock("../src/utils/registry", () => ({
   ensureRegistryDir: vi.fn(),
   writeAgentRecord: vi.fn(),
   readAgentRecord: vi.fn(),
+  readAgentRecords: vi.fn(() => []),
   removeAgentRecord: vi.fn(),
+  isPidAlive: vi.fn(() => false),
 }));
 
 /** Handlers by event name. An event can have several handlers, which run in registration order. */

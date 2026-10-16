@@ -32,7 +32,13 @@ import {
 export { classifyModel, executeGetModels } from "./lead-tools";
 import { registerSharedTools, registerWorkerTools } from "./shared-tools";
 import { registerAgentTools } from "./agents-tools";
-import { generateAgentId, ensureRegistryDir, writeAgentRecord } from "../src/utils/registry";
+import {
+  generateAgentId,
+  ensureRegistryDir,
+  writeAgentRecord,
+  readAgentRecords,
+  isPidAlive,
+} from "../src/utils/registry";
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
@@ -606,28 +612,20 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
-   * Capture what the hold loop needs to know about a team's state. A config
-   * read error returns null so a transient file-lock wait never releases the
-   * run by mistake.
+   * Capture what the hold loop needs to know about this lead's workers.
+   * A registry read error returns null so a transient failure never releases
+   * the run by mistake.
    *
-   * @param team - Name of the team to evaluate
-   * @returns Team-liveness snapshot, or null when the config cannot be read
+   * @returns Liveness snapshot, or null when the registry cannot be read
    */
-  async function teamLivenessSnapshot(
-    team: string,
-  ): Promise<holdRun.TeamLivenessSnapshot | null> {
-    if (!teams.teamExists(team)) {
-      return { teamExists: false, workerCount: 0, liveWorkerCount: 0 };
-    }
+  function teamLivenessSnapshot(): holdRun.TeamLivenessSnapshot | null {
     try {
-      const config = await teams.readConfig(team);
-      const workers = config.members.filter((m) => m.name !== "team-lead");
+      const workers = readAgentRecords().filter(
+        (r) => r.kind !== AgentKind.Lead && r.leadId === agentId,
+      );
       return {
-        teamExists: true,
         workerCount: workers.length,
-        liveWorkerCount: holdRun.countLiveWorkers(config, (member) =>
-          isMemberAlive(team, member),
-        ),
+        liveWorkerCount: holdRun.countLiveWorkers(workers, isPidAlive),
       };
     } catch (_err) {
       return null;
@@ -635,8 +633,8 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
-   * Hold the agent run open while the team is active so the host process does
-   * not exit before workers report back.
+   * Hold the agent run open while this lead's workers are active so the host
+   * process does not exit before workers report back.
    *
    * In print-like host modes pi exits as soon as the run settles, which would
    * strand spawned workers. Parking inside the agent_end handler keeps the run
@@ -652,23 +650,24 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     epochAtEntry: number,
   ): Promise<void> {
+    const ownWorkers = readAgentRecords().filter(
+      (r) => r.kind !== AgentKind.Lead && r.leadId === agentId,
+    );
     if (
       !holdRun.shouldHoldWhileTeamActive({
         hasUI: ctx.hasUI,
         isTeammate,
-        teamName,
+        ownWorkerCount: ownWorkers.length,
       })
     ) {
       return;
     }
-    const activeTeam = teamName;
-    if (!activeTeam) return;
 
     let livenessFailures = 0;
     for (let poll = 0; ; poll++) {
       if (followUpEpoch !== epochAtEntry) return;
       if (poll % holdRun.RUN_HOLD_LIVENESS_POLL_EVERY === 0) {
-        const snapshot = await teamLivenessSnapshot(activeTeam);
+        const snapshot = teamLivenessSnapshot();
         if (snapshot !== null) {
           livenessFailures =
             snapshot.liveWorkerCount > 0 ? 0 : livenessFailures + 1;
