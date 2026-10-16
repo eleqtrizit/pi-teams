@@ -456,8 +456,6 @@ export default function (pi: ExtensionAPI) {
       }
     }
     pendingInboxNotifications.clear();
-    paths.ensureDirs();
-
     const shouldSkipRegistration =
       isLead && !ctx.hasUI && !idWasPreassigned;
     if (!shouldSkipRegistration) {

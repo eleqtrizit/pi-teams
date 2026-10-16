@@ -116,7 +116,6 @@ describe("buildLeadEnv", () => {
   it("strips the spawner's identity variables and sets the lead identity", () => {
     const env = buildLeadEnv(
       {
-        PI_TEAM_NAME: "old-team",
         PI_AGENT_NAME: "old-name",
         PI_LEAD_ID: "old-lead",
         PI_AGENT_ID: "old-agent",

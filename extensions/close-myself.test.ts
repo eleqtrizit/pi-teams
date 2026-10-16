@@ -1,24 +1,14 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import * as paths from "../src/utils/paths";
 import closeMyselfExtension from "./index";
 import * as messaging from "../src/utils/messaging";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
 const teamsMocks = vi.hoisted(() => ({
-  readConfig: vi.fn(),
-  removeMember: vi.fn(),
   removeAgent: vi.fn(),
 }));
 
 vi.mock("../src/utils/teams", () => ({
-  teamExists: vi.fn(() => true),
-  readConfig: teamsMocks.readConfig,
-  removeMember: teamsMocks.removeMember,
   removeAgent: teamsMocks.removeAgent,
-  createTeam: vi.fn(),
-  addMember: vi.fn(),
-  updateMember: vi.fn(),
-  resetAgentState: vi.fn(),
 }));
 
 vi.mock("../src/adapters/terminal-registry", () => ({
@@ -113,7 +103,6 @@ function registerWithHandlers(): { tools: Map<string, any>; handlers: { get(name
 async function initializeWorkerSession(
   handlers: { get(name: string): (...args: any[]) => Promise<void> },
 ): Promise<void> {
-  paths.ensureDirs();
   await handlers.get("session_start")({}, {
     ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
     hasUI: false,

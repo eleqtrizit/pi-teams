@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import autoReportExtension from "./index";
 import * as messaging from "../src/utils/messaging";
 import * as registry from "../src/utils/registry";
-import * as paths from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
 vi.mock("../src/adapters/terminal-registry", () => ({
@@ -54,7 +53,6 @@ const siblingRecord: AgentRecord = {
 const agentRecords = [leadRecord, workerRecord, siblingRecord];
 
 async function initializeWorkerSession(handlers: Map<string, any>): Promise<void> {
-  paths.ensureDirs();
   await handlers.get("session_start")({}, {
     ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
     hasUI: false,

@@ -84,14 +84,14 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
     label: "Send Message",
     description:
       "Send a message to a teammate/worker/subagent. The message arrives immediately as a user message. " +
-      `Set recipient to "${messaging.BROADCAST_RECIPIENT}" to send it to every other team member. ` +
+      `Set recipient to "all" to send it to every visible agent. ` +
       "Do not use a broadcast just to answer the team-lead. Name the team-lead as the recipient instead. " +
       "The tool fails at once when the recipient is not running.",
     parameters: asPiToolSchema(
       Type.Object({
         recipient: Type.String({
           description:
-            `An 8-character agent id from list_agents, one of your worker names, "${messaging.LEAD_ALIAS}" for your lead, or "${messaging.BROADCAST_RECIPIENT}".`,
+            `An 8-character agent id from list_agents, one of your worker names, "${messaging.LEAD_ALIAS}" for your lead, or "all".`,
         }),
         subject: Type.String({
           description: "Short subject line for the message.",
@@ -109,7 +109,7 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
       }
 
       const records = readAgentRecords();
-      if (params.recipient === messaging.BROADCAST_RECIPIENT) {
+      if (params.recipient === "all") {
         const result = await messaging.broadcastAgentMessage(
           selfRecord,
           params.subject,

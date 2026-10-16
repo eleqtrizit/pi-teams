@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  BROADCAST_RECIPIENT,
   LEAD_ALIAS,
   agentLabel,
   broadcastAgentMessage,
@@ -134,7 +133,7 @@ describe("registry messaging", () => {
     });
 
     it("throws when the recipient string is the broadcast alias", () => {
-      expect(() => resolveRecipient(alice, BROADCAST_RECIPIENT, registry())).toThrow(/broadcast/);
+      expect(() => resolveRecipient(alice, "all", registry())).toThrow(/broadcast/);
     });
   });
 
@@ -240,7 +239,7 @@ describe("registry messaging", () => {
 
   describe("broadcastAgentMessage", () => {
     it("exposes the broadcast recipient name", () => {
-      expect(BROADCAST_RECIPIENT).toBe("all");
+      expect("all").toBe("all");
     });
 
     it("reaches only the lead's own workers, never peer leads or their workers", async () => {

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import deliveryExtension from "./index";
-import * as paths from "../src/utils/paths";
 import { sendToAgent } from "../src/utils/transport";
 import { AgentKind, type AgentRecord, type TeamMessage } from "../src/utils/models";
 
@@ -84,7 +83,6 @@ describe("immediate message delivery", () => {
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
     vi.stubEnv("PI_AGENT_ID", "dlvr1111");
     vi.stubEnv("PI_LEAD_ID", "lead1111");
-    vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
   });
 
   afterEach(() => {

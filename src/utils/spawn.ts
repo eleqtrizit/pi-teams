@@ -155,7 +155,6 @@ export function buildWorkerCommand(
 
 /** Environment keys stripped from the base env before a lead is spawned. */
 const LEAD_ENV_STRIP: readonly string[] = [
-  "PI_TEAM_NAME",
   "PI_AGENT_NAME",
   "PI_LEAD_ID",
   "PI_AGENT_ID",
