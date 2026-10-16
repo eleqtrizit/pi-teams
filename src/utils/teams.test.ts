@@ -10,7 +10,7 @@ import { AgentKind, AgentRecord } from "./models";
 import { writeAgentRecord } from "./registry";
 import { agentRecordPath, agentSocketPath } from "./paths";
 
-const tmpDir = path.join(os.tmpdir(), "ptr-" + Date.now());
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "r"));
 
 function fakeTerminal(): TerminalAdapter {
   return {
