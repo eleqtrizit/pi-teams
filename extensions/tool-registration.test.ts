@@ -11,6 +11,7 @@ const LEAD_TOOLS = [
   "close_worker",
   "get_flavored_models",
   "get_models",
+  "spawn_team_lead",
 ];
 const SHARED_TOOLS = ["send_message", "list_teammates"];
 const WORKER_TOOLS = ["close_myself"];

@@ -308,7 +308,7 @@ export default function (pi: ExtensionAPI) {
   let cycleReplies: string[] = [];
   /** Newest assistant text of the run in progress, kept so close_myself can report it. */
   let currentRunText: string | null = null;
-  /** True once this worker messaged the team-lead during the current run cycle. */
+  /** True once this worker messaged its registered lead during the current run cycle. */
   let reportedToLead = false;
   /** Migration warning shown to the model on its next get_flavored_models call */
   let pendingMigrationNotice: string | undefined;
@@ -852,7 +852,7 @@ export default function (pi: ExtensionAPI) {
       return selfRecord;
     },
   };
-  registerAgentTools(pi, { getSelfRecord: () => selfRecord });
+  registerAgentTools(pi, { getSelfRecord: () => selfRecord, isLead, terminal });
   registerSharedTools(pi, sharedToolDeps);
   if (isWorker) {
     registerWorkerTools(pi, sharedToolDeps);

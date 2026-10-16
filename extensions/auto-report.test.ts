@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import autoReportExtension from "./index";
+import * as fs from "node:fs";
 import * as messaging from "../src/utils/messaging";
+import * as registry from "../src/utils/registry";
+import * as paths from "../src/utils/paths";
+import { AgentKind, type AgentRecord } from "../src/utils/models";
 
 vi.mock("../src/adapters/terminal-registry", () => ({
   getTerminalAdapter: () => null,
@@ -22,6 +26,46 @@ function loadWorker(): { handlers: Map<string, any>; tools: Map<string, any> } {
 }
 
 const assistantMessage = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+
+const leadRecord: AgentRecord = {
+  id: "lead1111",
+  kind: AgentKind.Lead,
+  cwd: "/tmp/report-lead",
+  pid: 1,
+  startedAt: 1,
+};
+const workerRecord: AgentRecord = {
+  id: "work1111",
+  kind: AgentKind.Teammate,
+  cwd: "/tmp/report-worker",
+  pid: 2,
+  leadId: leadRecord.id,
+  name: "worker-1",
+  startedAt: 1,
+};
+const siblingRecord: AgentRecord = {
+  id: "work2222",
+  kind: AgentKind.Teammate,
+  cwd: "/tmp/report-sibling",
+  pid: 3,
+  leadId: leadRecord.id,
+  name: "worker-2",
+  startedAt: 1,
+};
+const agentRecords = [leadRecord, workerRecord, siblingRecord];
+
+async function initializeWorkerSession(handlers: Map<string, any>): Promise<void> {
+  paths.ensureDirs();
+  const teamDirectory = paths.teamDir("report-team");
+  if (!fs.existsSync(teamDirectory)) {
+    fs.mkdirSync(teamDirectory, { recursive: true });
+  }
+  await handlers.get("session_start")({}, {
+    ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
+    hasUI: false,
+  });
+  vi.spyOn(registry, "readAgentRecords").mockReturnValue(agentRecords);
+}
 
 describe("worker auto-report on agent_settled", () => {
   let sendSpy: ReturnType<typeof vi.spyOn>;
@@ -81,21 +125,26 @@ describe("worker auto-report on agent_settled", () => {
 
   it("skips the report when the worker already messaged the team-lead", async () => {
     const { handlers, tools } = loadWorker();
+    await initializeWorkerSession(handlers);
+    const manualSendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
     await tools.get("send_message").execute("id", {
-      recipient: "team-lead",
+      recipient: "lead",
       subject: "s",
       content: "manual report",
     });
-    sendSpy.mockClear();
+    expect(manualSendSpy).toHaveBeenCalledOnce();
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
     await handlers.get("agent_settled")({ aborted: false });
 
-    expect(sendSpy).not.toHaveBeenCalled();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(manualSendSpy).toHaveBeenCalledOnce();
   });
 
   it("reports again on the next cycle after skipping once", async () => {
     const { handlers, tools } = loadWorker();
-    await tools.get("send_message").execute("id", { recipient: "team-lead", subject: "s", content: "c" });
+    await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
+    await tools.get("send_message").execute("id", { recipient: "lead", subject: "s", content: "c" });
     await handlers.get("agent_settled")({ aborted: false });
     sendSpy.mockClear();
 
@@ -107,6 +156,8 @@ describe("worker auto-report on agent_settled", () => {
 
   it("does not count a message to another worker as a report", async () => {
     const { handlers, tools } = loadWorker();
+    await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(siblingRecord);
     await tools.get("send_message").execute("id", { recipient: "worker-2", subject: "s", content: "c" });
     sendSpy.mockClear();
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
@@ -117,23 +168,26 @@ describe("worker auto-report on agent_settled", () => {
 
   it("counts a broadcast that reached the team-lead as a report", async () => {
     const { handlers, tools } = loadWorker();
-    vi.spyOn(messaging, "broadcastMessage").mockResolvedValue({ delivered: ["team-lead", "worker-2"], failed: [] });
+    await initializeWorkerSession(handlers);
+    const broadcastSpy = vi.spyOn(messaging, "broadcastAgentMessage").mockResolvedValue({ delivered: [leadRecord, siblingRecord], failed: [] });
     await tools.get("send_message").execute("id", { recipient: "all", subject: "s", content: "c" });
-    sendSpy.mockClear();
+    expect(broadcastSpy).toHaveBeenCalledOnce();
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
     await handlers.get("agent_settled")({ aborted: false });
 
-    expect(sendSpy).not.toHaveBeenCalled();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(broadcastSpy).toHaveBeenCalledOnce();
   });
 
   it("does not count a broadcast that missed the team-lead as a report", async () => {
     const { handlers, tools } = loadWorker();
-    vi.spyOn(messaging, "broadcastMessage").mockResolvedValue({
-      delivered: ["worker-2"],
-      failed: [{ name: "team-lead", reason: "not reachable" }],
+    await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "broadcastAgentMessage").mockResolvedValue({
+      delivered: [siblingRecord],
+      failed: [{ record: leadRecord, reason: "not reachable" }],
     });
     const result = await tools.get("send_message").execute("id", { recipient: "all", subject: "s", content: "c" });
-    expect(result.content[0].text).toContain("Not reached: team-lead");
+    expect(result.content[0].text).toContain(`${messaging.agentLabel(leadRecord)} (${leadRecord.id})`);
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
     await handlers.get("agent_settled")({ aborted: false });
 
@@ -141,10 +195,11 @@ describe("worker auto-report on agent_settled", () => {
   });
 
   it("fails a broadcast that reached no one", async () => {
-    const { tools } = loadWorker();
-    vi.spyOn(messaging, "broadcastMessage").mockResolvedValue({
+    const { handlers, tools } = loadWorker();
+    await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "broadcastAgentMessage").mockResolvedValue({
       delivered: [],
-      failed: [{ name: "team-lead", reason: "not reachable" }],
+      failed: [{ record: leadRecord, reason: "not reachable" }],
     });
     await expect(
       tools.get("send_message").execute("id", { recipient: "all", subject: "s", content: "c" }),
@@ -153,9 +208,10 @@ describe("worker auto-report on agent_settled", () => {
 
   it("does not count a failed send to the team-lead as a report", async () => {
     const { handlers, tools } = loadWorker();
-    sendSpy.mockRejectedValueOnce(new Error("not reachable"));
+    await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "sendAgentMessage").mockRejectedValueOnce(new Error("not reachable"));
     await expect(
-      tools.get("send_message").execute("id", { recipient: "team-lead", subject: "s", content: "c" }),
+      tools.get("send_message").execute("id", { recipient: "lead", subject: "s", content: "c" }),
     ).rejects.toThrow(/not reachable/);
     sendSpy.mockClear();
     await handlers.get("agent_end")({ messages: [assistantMessage("done")] });
@@ -166,7 +222,9 @@ describe("worker auto-report on agent_settled", () => {
 
   it("sends an interruption notice for an aborted run even after a manual report", async () => {
     const { handlers, tools } = loadWorker();
-    await tools.get("send_message").execute("id", { recipient: "team-lead", subject: "s", content: "c" });
+    await initializeWorkerSession(handlers);
+    vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
+    await tools.get("send_message").execute("id", { recipient: "lead", subject: "s", content: "c" });
     sendSpy.mockClear();
     await handlers.get("agent_settled")({ aborted: true });
 

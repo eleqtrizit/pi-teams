@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as messaging from "../src/utils/messaging";
+import { readAgentRecords } from "../src/utils/registry";
 import { appendReply, buildClosingReport } from "../src/utils/report";
 import type { AgentRecord, Member } from "../src/utils/models";
 import * as teams from "../src/utils/teams";
@@ -34,8 +35,16 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
   return schema as TSchemaLike;
 }
 
-function formatBroadcastFailures(failed: { name: string; reason: string }[]): string {
-  return failed.map((f) => `${f.name} (${f.reason})`).join("; ");
+function formatAgent(record: AgentRecord): string {
+  return `${messaging.agentLabel(record)} (${record.id})`;
+}
+
+function formatBroadcastFailures(
+  failed: { record: AgentRecord; reason: string }[],
+): string {
+  return failed
+    .map(({ record, reason }) => `${formatAgent(record)}: ${reason}`)
+    .join("; ");
 }
 
 /** Register shared messaging, status, filesystem tools, and the keep_last command. */
@@ -84,11 +93,9 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
       "The tool fails at once when the recipient is not running.",
     parameters: asPiToolSchema(
       Type.Object({
-        team_name: Type.Optional(
-          Type.String({ description: "Defaults to your current team." }),
-        ),
         recipient: Type.String({
-          description: `A team member name, or "${messaging.BROADCAST_RECIPIENT}" for every other member.`,
+          description:
+            `An 8-character agent id from list_agents, one of your worker names, "${messaging.LEAD_ALIAS}" for your lead, or "${messaging.BROADCAST_RECIPIENT}".`,
         }),
         subject: Type.String({
           description: "Short subject line for the message.",
@@ -100,55 +107,61 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
       }),
     ) as any,
     async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const resolvedTeam = params.team_name || deps.getTeamName();
-      if (!resolvedTeam)
-        throw new Error("team_name is required (no team is currently active).");
+      const selfRecord = deps.selfRecord;
+      if (!selfRecord) {
+        throw new Error("This session is not registered in the agent registry.");
+      }
 
+      const records = readAgentRecords();
       if (params.recipient === messaging.BROADCAST_RECIPIENT) {
-        const result = await messaging.broadcastMessage(
-          resolvedTeam,
-          deps.agentId,
-          deps.agentName,
+        const result = await messaging.broadcastAgentMessage(
+          selfRecord,
           params.subject,
           params.content,
           params.summary,
+          records,
         );
-        // A broadcast reaches the lead, so it counts as a report.
-        if (result.delivered.includes("team-lead")) deps.setReportedToLead(true);
-        if (result.delivered.length === 0 && result.failed.length > 0) {
-          throw new Error(`Broadcast reached no one. ${formatBroadcastFailures(result.failed)}`);
+        if (result.delivered.some((record) => record.id === selfRecord.leadId)) {
+          deps.setReportedToLead(true);
         }
+        if (result.delivered.length === 0 && result.failed.length > 0) {
+          throw new Error(
+            `Broadcast reached no one. ${formatBroadcastFailures(result.failed)}`,
+          );
+        }
+        const delivered = result.delivered.map(formatAgent).join(", ") || "no one";
         const failureNote =
-          result.failed.length > 0 ? `\nNot reached: ${formatBroadcastFailures(result.failed)}` : "";
+          result.failed.length > 0
+            ? `\nNot reached: ${formatBroadcastFailures(result.failed)}`
+            : "";
         return {
           content: [
             {
               type: "text",
-              text: `Message sent to ${result.delivered.join(", ") || "no one"}.${failureNote}`,
+              text: `Message sent to ${delivered}.${failureNote}`,
             },
           ],
           details: { delivered: result.delivered, failed: result.failed },
         };
       }
 
-      await messaging.sendPlainMessage(
-        resolvedTeam,
-        deps.agentId,
-        deps.agentName,
+      const recipient = await messaging.sendAgentMessage(
+        selfRecord,
         params.recipient,
         params.subject,
         params.content,
         params.summary,
+        records,
       );
-      if (params.recipient === "team-lead") deps.setReportedToLead(true);
+      if (recipient.id === selfRecord.leadId) deps.setReportedToLead(true);
       return {
         content: [
           {
             type: "text",
-            text: `Message sent to ${params.recipient}.\n\n${params.content}`,
+            text: `Message sent to ${formatAgent(recipient)}.\n\n${params.content}`,
           },
         ],
-        details: {},
+        details: { recipient },
       };
     },
   });
