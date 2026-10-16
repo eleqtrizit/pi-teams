@@ -92,6 +92,22 @@ export function mergeQueuedMessages(messages: readonly string[]): string {
   ].join("\n\n");
 }
 
+/**
+ * Peer-lead collaboration guidance appended to every lead's system prompt.
+ *
+ * @param self - Identity for the first line: this agent's id and working directory.
+ * @returns The guidance block describing peer leads and how to reach them.
+ */
+export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
+  return [
+    `You are Pi Agent in ${self.cwd} (id ${self.id}).`,
+    "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and Online/Offline status.",
+    'When work belongs to another directory, or you need help: if no agent there is Online, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
+    "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
+    "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",
+  ].join("\n");
+}
+
 /** Delay before a follow-up that failed to queue is flushed again while no run is active. */
 const FOLLOW_UP_RETRY_MS = 2000;
 
@@ -801,18 +817,20 @@ export default function (pi: ExtensionAPI) {
 
   let firstTurn = true;
   pi.on("before_agent_start", async (event, ctx) => {
-    // Lead running in an auto-exit host mode: the extension holds the run open
-    // while the team is active. Tell the lead so it ends its turn instead of
-    // polling, and releases the session through close_all_workers when done.
-    if (
-      !isTeammate &&
-      holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })
-    ) {
-      return {
-        systemPrompt:
-          event.systemPrompt +
-          `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`,
-      };
+    // Every lead turn gets the peer-lead collaboration guidance. A lead in
+    // an auto-exit host mode also gets the run-hold note: the extension
+    // holds the run open while the team is active, so the lead ends its
+    // turn instead of polling and releases the session when done.
+    if (isLead) {
+      let systemPrompt = event.systemPrompt;
+      if (holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })) {
+        systemPrompt +=
+          `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`;
+      }
+      systemPrompt += `\n\n${buildPeerLeadPrompt(
+        selfRecord ?? { id: agentId, cwd: process.cwd() },
+      )}`;
+      return { systemPrompt };
     }
 
     if (isTeammate && firstTurn) {
