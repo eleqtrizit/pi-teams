@@ -109,3 +109,70 @@ export function socketPath(teamName: string, agentName: string): string {
   }
   return socket;
 }
+
+/** Pattern every agent ID must match. Fixed-width lowercase hex-style IDs keep paths predictable and block traversal. */
+export const AGENT_ID_PATTERN = /^[a-z0-9]{8}$/;
+
+/**
+ * Validate one agent ID.
+ *
+ * @param id - Agent ID to check
+ * @throws Error when the ID is not exactly 8 lowercase alphanumeric characters
+ */
+export function assertAgentId(id: string): void {
+  if (!AGENT_ID_PATTERN.test(id)) {
+    throw new Error(`Invalid agent ID: "${id}". Agent IDs must match ${AGENT_ID_PATTERN.source}.`);
+  }
+}
+
+/**
+ * Directory that holds the per-user agent registry.
+ *
+ * @returns Absolute path of the per-user registry directory
+ */
+export function registryDir(): string {
+  return path.join(os.tmpdir(), `pi-${socketUserId()}`);
+}
+
+/**
+ * Directory that holds one JSON record per registered agent.
+ *
+ * @returns Absolute path of the agent records directory
+ */
+export function agentRecordsDir(): string {
+  return path.join(registryDir(), "agents");
+}
+
+/**
+ * Path of one agent's JSON record file.
+ *
+ * @param id - Agent ID
+ * @returns Absolute path of the agent record
+ * @throws Error when the ID is invalid
+ */
+export function agentRecordPath(id: string): string {
+  assertAgentId(id);
+  return path.join(agentRecordsDir(), `${id}.json`);
+}
+
+/**
+ * Address of one agent's socket, keyed by agent ID instead of team and name.
+ *
+ * @param id - Agent ID
+ * @returns A Unix socket path, or a named pipe path on Windows
+ * @throws Error when the ID is invalid or the path is too long
+ */
+export function agentSocketPath(id: string): string {
+  assertAgentId(id);
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\pi-${socketUserId()}-${id}`;
+  }
+  const socket = path.join(registryDir(), "s", `${id}.sock`);
+  if (socket.length > MAX_UNIX_SOCKET_PATH) {
+    throw new Error(
+      `Socket path is ${socket.length} characters, over the ${MAX_UNIX_SOCKET_PATH} limit. ` +
+        "Set TMPDIR to a shorter directory.",
+    );
+  }
+  return socket;
+}
