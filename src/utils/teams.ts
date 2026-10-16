@@ -4,6 +4,7 @@ import * as paths from "./paths";
 import { withLock } from "./lock";
 import { execCommand } from "./terminal-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
+import { readAgentRecord, removeAgentRecord, removeStaleSocket } from "./registry";
 
 export function teamExists(teamName: string) {
   return fs.existsSync(paths.configPath(teamName));
@@ -152,43 +153,50 @@ export function resetAgentState(
 }
 
 /**
- * Read the process id recorded in an agent's pid file.
+ * Find a team config member by its registry identifier.
  *
- * The extension writes the agent's process id to the file at session start.
+ * Scans every existing team config for a member whose {@link Member.registryId}
+ * matches the given id. This is a best-effort helper while the legacy team
+ * config still exists; once the config is retired this scan becomes a no-op.
  *
- * @param teamDirectory - Team directory holding the pid file
- * @param agentName - Name of the agent
- * @returns The recorded process id, or null when the file is missing or malformed
+ * @param registryId - Agent registry id to look up
+ * @returns The team name and matching member, or null when not found
  */
-function readPidFromPidFile(
-  team: string,
-  agentName: string,
-): number | null {
-  const pidFile = paths.pidPath(team, agentName);
-  if (!fs.existsSync(pidFile)) return null;
-  try {
-    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-    return Number.isFinite(pid) ? pid : null;
-  } catch (_e) {
-    return null;
+export function findConfigMemberByRegistryId(registryId: string): { team: string; member: Member } | null {
+  const root = paths.teamsDir();
+  if (!fs.existsSync(root)) return null;
+  for (const entry of fs.readdirSync(root)) {
+    let configFile: string;
+    try {
+      configFile = paths.configPath(entry);
+    } catch {
+      continue; // not a valid team name
+    }
+    if (!fs.existsSync(configFile)) continue;
+    try {
+      const config: TeamConfig = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      const member = config.members.find((m) => m.registryId === registryId);
+      if (member) return { team: entry, member };
+    } catch {
+      // ignore unreadable configs
+    }
   }
+  return null;
 }
 
 /**
- * Options for removing an agent from its team and terminating it.
+ * Options for removing an agent from the registry and terminating it.
  */
 export interface RemoveAgentOptions {
-  /** Name of the team the agent belongs to */
-  team: string;
-  /** Name of the agent to remove and terminate */
-  agentName: string;
-  /** Process id to terminate when the caller knows it, for example its own process. When omitted, the pid is read from the agent's pid file */
+  /** 8-character agent registry identifier. */
+  agentId: string;
+  /** Process id to terminate when the caller knows it, for example its own process. When omitted, the pid is read from the registry record. */
   ownPid?: number;
-  /** Terminal window id when the caller already holds it; otherwise it is read from the team config */
-  windowId?: string;
-  /** Terminal pane id when the caller already holds it; otherwise it is read from the team config */
+  /** Terminal pane id when the caller already holds it; otherwise it is read from the registry record. */
   paneId?: string;
-  /** Terminal adapter used to close the agent's pane or window. When omitted, only config, state, and pid removal run */
+  /** Terminal window id when the caller already holds it; otherwise it is read from the registry record. */
+  windowId?: string;
+  /** Terminal adapter used to close the agent's pane or window. When omitted, only registry and pid removal run. */
   terminal?: TerminalAdapter | null;
 }
 
@@ -220,46 +228,41 @@ function pidLooksLikePiWorker(pid: number): boolean {
 }
 
 /**
- * Remove an agent from its team, clean up its state, and terminate it.
+ * Remove an agent from the registry and terminate it.
  *
- * This is the single removal path for worker termination: team shutdown,
- * approved shutdown, and an agent closing itself all run these steps. The
- * team-lead is never removed because the lead coordinates shutdowns itself.
+ * This is the single removal path for worker termination: close_worker,
+ * close_all_workers, and an agent closing itself all run these steps.
  *
- * Every step is tolerant to missing state: a missing team config, member
- * record, state file, or process does not stop the remaining steps.
+ * Every step is tolerant to missing state: a missing registry record, team
+ * config, state file, or process does not stop the remaining steps.
  *
- * @param options - Team, agent name, optional explicit pid and terminal ids, and an optional terminal adapter
+ * @param options - Agent id, optional explicit pid and terminal ids, and an optional terminal adapter
  */
 export async function removeAgent(options: RemoveAgentOptions): Promise<void> {
-  const { team, agentName } = options;
-  // The lead coordinates shutdowns itself and is never removed.
-  if (agentName === "team-lead") return;
+  const { agentId } = options;
+  const record = readAgentRecord(agentId);
 
-  // Capture the pid before state cleanup; the pid file is deleted below.
-  const pid = options.ownPid ?? readPidFromPidFile(team, agentName);
-
-  // Capture terminal ids from the team config when the caller did not pass
-  // them: the member record disappears from the config after removal.
-  let windowId = options.windowId ?? "";
-  let paneId = options.paneId ?? "";
-  try {
-    const config = await readConfig(team);
-    const member = config.members.find((m) => m.name === agentName);
-    windowId = windowId || member?.windowId || "";
-    paneId = paneId || member?.tmuxPaneId || "";
-  } catch (_e) {
-    // A missing team config does not stop removal.
+  // Remove registry record and stale socket.
+  if (record) {
+    removeAgentRecord(agentId);
+    removeStaleSocket(agentId);
   }
 
-  try {
-    await removeMember(team, agentName);
-  } catch (_e) {
-    // The config may already be gone; termination still matters.
+  // Best-effort: while the legacy team config still exists, find the member
+  // by registry id and remove it along with its per-team state files.
+  const found = findConfigMemberByRegistryId(agentId);
+  if (found) {
+    resetAgentState(found.team, found.member.name);
+    try {
+      await removeMember(found.team, found.member.name);
+    } catch (_e) {
+      // The config may already be gone; termination still matters.
+    }
   }
 
-  resetAgentState(team, agentName);
-
+  // Terminal cleanup.
+  const paneId = options.paneId ?? record?.paneId ?? found?.member.tmuxPaneId ?? "";
+  const windowId = options.windowId ?? record?.windowId ?? found?.member.windowId ?? "";
   const terminal = options.terminal ?? null;
   if (terminal) {
     try {
@@ -274,9 +277,11 @@ export async function removeAgent(options: RemoveAgentOptions): Promise<void> {
     }
   }
 
+  // PID cleanup.
+  const pid = options.ownPid ?? record?.pid ?? null;
   if (pid !== null) {
     // Only a pid the caller vouches for (close_myself passes its own pid) is
-    // killed without verification; pid-file pids are checked against the pi
+    // killed without verification; registry pids are checked against the pi
     // command line so pid reuse cannot make us kill an unrelated process.
     if (options.ownPid === pid || pidLooksLikePiWorker(pid)) {
       try {

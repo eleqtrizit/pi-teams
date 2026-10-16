@@ -9,7 +9,8 @@ import {
   Text,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import * as fs from "node:fs";
+import { readAgentRecords } from "../src/utils/registry";
+import { AgentKind } from "../src/utils/models";
 import * as flavoredModels from "../src/utils/flavoredModels";
 import {
   FLAVOR_VALUES,
@@ -493,54 +494,85 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
   });
 
   pi.registerTool({
-    name: "team_shutdown",
-    label: "Shutdown Team",
-    description: "Shutdown the entire team and close all panes/windows.",
-    parameters: asPiToolSchema(Type.Object({ team_name: Type.String() })) as any,
-    async execute(_toolCallId, params: any) {
-      const teamName = params.team_name;
-      try {
-        const config = await teams.readConfig(teamName);
-        for (const member of config.members) {
-          await teams.removeAgent({
-            team: teamName,
-            agentName: member.name,
-            terminal: deps.terminal,
-          });
-        }
-        const dir = paths.teamDir(teamName);
-        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
-        return {
-          content: [{ type: "text", text: `Team ${teamName} shut down.` }],
-          details: {},
-        };
-      } catch (error) {
-        throw new Error(`Failed to shutdown team: ${error}`);
+    name: "close_all_workers",
+    label: "Close All Workers",
+    description: "Close every worker you spawned.",
+    parameters: asPiToolSchema(Type.Object({})) as any,
+    async execute() {
+      const callerId = process.env.PI_AGENT_ID;
+      if (!callerId) throw new Error("PI_AGENT_ID is not set");
+
+      const records = readAgentRecords();
+      const ownWorkers = records.filter(
+        (r) => r.leadId === callerId && r.kind !== AgentKind.Lead,
+      );
+
+      for (const worker of ownWorkers) {
+        await teams.removeAgent({
+          agentId: worker.id,
+          terminal: deps.terminal,
+        });
       }
+
+      return {
+        content: [{ type: "text", text: `Closed ${ownWorkers.length} worker(s).` }],
+        details: { closed: ownWorkers.length },
+      };
     },
   });
 
   pi.registerTool({
     name: "close_worker",
     label: "Close Worker",
-    description: "Process a teammate/worker/subagent's shutdown.",
-    parameters: asPiToolSchema(
-      Type.Object({ team_name: Type.String(), agent_name: Type.String() }),
-    ) as any,
+    description: "Close one of your own workers by its 8-character agent id or worker name.",
+    parameters: asPiToolSchema(Type.Object({ agent: Type.String() })) as any,
     async execute(_toolCallId, params: any) {
-      const config = await teams.readConfig(params.team_name);
-      const member = config.members.find((candidate) => candidate.name === params.agent_name);
-      if (!member) throw new Error(`Teammate ${params.agent_name} not found`);
+      const callerId = process.env.PI_AGENT_ID;
+      if (!callerId) throw new Error("PI_AGENT_ID is not set");
+
+      const records = readAgentRecords();
+      const ownWorkers = records.filter(
+        (r) => r.leadId === callerId && r.kind !== AgentKind.Lead,
+      );
+
+      // Resolve agent param to a record among the caller's own workers.
+      let target: typeof ownWorkers[0] | undefined;
+      if (/^[a-z0-9]{8}$/.test(params.agent)) {
+        target = ownWorkers.find((r) => r.id === params.agent);
+      } else {
+        target = ownWorkers.find((r) => r.name === params.agent);
+      }
+
+      if (!target) {
+        // Provide a clear error for peer leads and other leads' workers.
+        const allMatching = records.filter(
+          (r) => r.id === params.agent || r.name === params.agent,
+        );
+        const peerLead = allMatching.find((r) => r.kind === AgentKind.Lead);
+        if (peerLead) {
+          throw new Error(`Cannot close a peer lead (${peerLead.id})`);
+        }
+        const otherWorker = allMatching.find((r) => r.leadId !== callerId);
+        if (otherWorker) {
+          throw new Error(
+            `Cannot close another lead's worker (${otherWorker.id})`,
+          );
+        }
+        throw new Error(
+          `Worker ${params.agent} not found among your workers`,
+        );
+      }
+
       await teams.removeAgent({
-        team: params.team_name,
-        agentName: params.agent_name,
+        agentId: target.id,
         terminal: deps.terminal,
       });
+
       return {
         content: [
           {
             type: "text",
-            text: `Teammate ${params.agent_name} has been shut down.`,
+            text: `Worker ${target.name ?? target.id} has been shut down.`,
           },
         ],
         details: {},

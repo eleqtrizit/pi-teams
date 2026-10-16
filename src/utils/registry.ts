@@ -70,6 +70,20 @@ export function writeAgentRecord(rec: AgentRecord): void {
 }
 
 /**
+ * Patch an existing agent record and persist the updated version.
+ *
+ * @param id - Agent ID to update
+ * @param patch - Partial record with the fields to change
+ * @throws Error when the record is not found
+ */
+export function updateAgentRecord(id: string, patch: Partial<AgentRecord>): void {
+  const rec = readAgentRecord(id);
+  if (!rec) throw new Error(`Agent ${id} not found`);
+  const updated: AgentRecord = { ...rec, ...patch, id };
+  writeAgentRecord(updated);
+}
+
+/**
  * Validate that a parsed JSON value is a well-formed AgentRecord.
  *
  * @param value - Parsed JSON value
@@ -88,6 +102,8 @@ function isValidAgentRecord(value: unknown): value is AgentRecord {
   }
   if (rec.name !== undefined && typeof rec.name !== "string") return false;
   if (rec.model !== undefined && typeof rec.model !== "string") return false;
+  if (rec.paneId !== undefined && typeof rec.paneId !== "string") return false;
+  if (rec.windowId !== undefined && typeof rec.windowId !== "string") return false;
   if (typeof rec.startedAt !== "number" || !Number.isFinite(rec.startedAt)) return false;
 
   return true;
@@ -284,7 +300,7 @@ export function pruneRegistry(
  * @param id - Agent ID whose socket file to delete
  * @throws Error when the file exists but cannot be removed
  */
-function removeStaleSocket(id: string): void {
+export function removeStaleSocket(id: string): void {
   if (process.platform === "win32") return;
   try {
     fs.rmSync(agentSocketPath(id), { force: true });

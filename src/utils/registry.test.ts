@@ -16,6 +16,7 @@ import {
   readAgentRecord,
   readAgentRecords,
   removeAgentRecord,
+  updateAgentRecord,
   writeAgentRecord,
 } from "./registry";
 import { agentRecordPath, agentSocketPath, registryDir } from "./paths";
@@ -168,6 +169,22 @@ describe("registry", () => {
       expect(records).toContainEqual(rec2);
     });
 
+    it("round-trips records with paneId and windowId", () => {
+      const rec: AgentRecord = {
+        id: "ab12cd34",
+        kind: AgentKind.Teammate,
+        cwd: "/tmp",
+        pid: 1234,
+        leadId: "lead0001",
+        name: "worker",
+        paneId: "pane-1",
+        windowId: "win-1",
+        startedAt: 1000,
+      };
+      writeAgentRecord(rec);
+      expect(readAgentRecords()).toContainEqual(rec);
+    });
+
     it("skips unparsable files", () => {
       ensureRegistryDir();
       const dir = path.join(registryDir(), "agents");
@@ -198,6 +215,26 @@ describe("registry", () => {
       fs.writeFileSync(
         path.join(dir, "aa11bb22.json"),
         JSON.stringify({ id: "aa11bb22", kind: "unknown", cwd: "/", pid: 1, startedAt: 1 }),
+      );
+      expect(readAgentRecords()).toEqual([]);
+    });
+
+    it("skips records with an invalid paneId", () => {
+      ensureRegistryDir();
+      const dir = path.join(registryDir(), "agents");
+      fs.writeFileSync(
+        path.join(dir, "aa11bb22.json"),
+        JSON.stringify({ id: "aa11bb22", kind: "teammate", cwd: "/", pid: 1, leadId: "ab12cd34", paneId: 123, startedAt: 1 }),
+      );
+      expect(readAgentRecords()).toEqual([]);
+    });
+
+    it("skips records with an invalid windowId", () => {
+      ensureRegistryDir();
+      const dir = path.join(registryDir(), "agents");
+      fs.writeFileSync(
+        path.join(dir, "aa11bb22.json"),
+        JSON.stringify({ id: "aa11bb22", kind: "teammate", cwd: "/", pid: 1, leadId: "ab12cd34", windowId: 456, startedAt: 1 }),
       );
       expect(readAgentRecords()).toEqual([]);
     });
@@ -261,6 +298,47 @@ describe("registry", () => {
 
     it("ignores ENOENT", () => {
       expect(() => removeAgentRecord("ab12cd34")).not.toThrow();
+    });
+  });
+
+  describe("updateAgentRecord", () => {
+    it("patches an existing record and persists it", () => {
+      const rec: AgentRecord = {
+        id: "ab12cd34",
+        kind: AgentKind.Lead,
+        cwd: "/tmp",
+        pid: 1234,
+        startedAt: 1000,
+      };
+      writeAgentRecord(rec);
+      updateAgentRecord("ab12cd34", { paneId: "pane-1", windowId: "win-1" });
+      const updated = readAgentRecord("ab12cd34");
+      expect(updated).toEqual({
+        id: "ab12cd34",
+        kind: AgentKind.Lead,
+        cwd: "/tmp",
+        pid: 1234,
+        paneId: "pane-1",
+        windowId: "win-1",
+        startedAt: 1000,
+      });
+    });
+
+    it("throws when the record does not exist", () => {
+      expect(() => updateAgentRecord("zz99zz99", { paneId: "pane-1" })).toThrow("zz99zz99 not found");
+    });
+
+    it("cannot overwrite the id", () => {
+      const rec: AgentRecord = {
+        id: "ab12cd34",
+        kind: AgentKind.Lead,
+        cwd: "/tmp",
+        pid: 1234,
+        startedAt: 1000,
+      };
+      writeAgentRecord(rec);
+      updateAgentRecord("ab12cd34", { id: "zz99zz99", paneId: "pane-1" } as any);
+      expect(readAgentRecord("ab12cd34")?.id).toBe("ab12cd34");
     });
   });
 

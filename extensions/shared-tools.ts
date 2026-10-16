@@ -246,13 +246,15 @@ export function registerWorkerTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
         // The lead or the team can be gone already. Closing still proceeds.
       }
 
-      // removeAgent removes this member from the team config, deletes every
-      // state file for this agent, closes the pane or window hosting this
-      // process, and SIGKILLs this process. The result is never delivered;
-      // the agent terminates mid-execute.
+      // removeAgent removes this agent's registry record and socket, closes
+      // the pane or window hosting this process, and SIGKILLs this process.
+      // The result is never delivered; the agent terminates mid-execute.
+      const agentId = selfRecord?.id ?? deps.agentId;
+      if (!agentId) {
+        throw new Error("This session is not registered in the agent registry.");
+      }
       await teams.removeAgent({
-        team: activeTeam,
-        agentName: deps.agentName,
+        agentId,
         ownPid: process.pid,
         terminal: deps.terminal,
       });

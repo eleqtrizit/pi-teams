@@ -32,6 +32,10 @@ export interface AgentRecord {
   /** Worker display name, e.g. "alice". */
   name?: string;
   model?: string;
+  /** Terminal pane id, stored at spawn time so removal needs no config. */
+  paneId?: string;
+  /** Terminal window id, stored at spawn time so removal needs no config. */
+  windowId?: string;
   /** Epoch milliseconds at registration. */
   startedAt: number;
 }

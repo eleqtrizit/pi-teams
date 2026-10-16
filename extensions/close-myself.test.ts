@@ -171,8 +171,7 @@ describe("close_myself execute", () => {
 
     expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
     expect(teamsMocks.removeAgent).toHaveBeenCalledWith({
-      team: "close-myself-team",
-      agentName: "worker-1",
+      agentId: workerId,
       ownPid: process.pid,
       terminal: null,
     });

@@ -7,7 +7,7 @@ const LEAD_TOOLS = [
   "spawn_teammate",
   "spawn_readonly_worker",
   "spawn_lead_window",
-  "team_shutdown",
+  "close_all_workers",
   "close_worker",
   "get_flavored_models",
   "get_models",

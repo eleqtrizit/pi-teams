@@ -20,6 +20,11 @@ export function sanitizeName(name: string): string {
   return name;
 }
 
+/** Directory that holds one subdirectory per team. A function so tests can redirect it. */
+export function teamsDir(): string {
+  return TEAMS_DIR;
+}
+
 export function teamDir(teamName: string) {
   return path.join(TEAMS_DIR, sanitizeName(teamName));
 }
