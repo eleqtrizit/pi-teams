@@ -78,20 +78,35 @@ function parseTeamMessage(value: unknown, agentName: string): TeamMessage {
 }
 
 /**
+ * Create a private directory, or confirm that an existing one is safe.
+ *
+ * The directory is created with mode 0700. If it already exists, it must be
+ * a real directory (not a symlink), owned by the current user, and have no
+ * group or other permission bits set.
+ *
+ * @param dir - Absolute path of the directory to ensure
+ * @throws Error when the path is not a directory, is a symbolic link, or belongs to another user
+ */
+export function ensurePrivateDir(dir: string): void {
+  if (IS_WINDOWS) return;
+  fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  const stat = fs.lstatSync(dir);
+  if (stat.isSymbolicLink()) throw new Error(`Directory ${dir} is a symbolic link.`);
+  if (!stat.isDirectory()) throw new Error(`Directory ${dir} is not a directory.`);
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`Directory ${dir} belongs to another user.`);
+  }
+  if ((stat.mode & GROUP_AND_OTHER_BITS) !== 0) fs.chmodSync(dir, DIR_MODE);
+}
+
+/**
  * Create the per-user socket directory, or confirm that an existing one is safe.
  *
  * @throws Error when the path is not a directory, is a symbolic link, or belongs to another user
  */
 function ensureSocketDir(): void {
   if (IS_WINDOWS) return;
-  const dir = socketDir();
-  fs.mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-  const stat = fs.lstatSync(dir);
-  if (!stat.isDirectory()) throw new Error(`Socket directory ${dir} is not a directory.`);
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-    throw new Error(`Socket directory ${dir} belongs to another user.`);
-  }
-  if ((stat.mode & GROUP_AND_OTHER_BITS) !== 0) fs.chmodSync(dir, DIR_MODE);
+  ensurePrivateDir(socketDir());
 }
 
 /**
