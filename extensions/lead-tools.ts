@@ -465,8 +465,9 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       if (teamConfig.defaultModel) {
         piCmd = `${piCmd} --model ${shQuote(teamConfig.defaultModel)}`;
       }
+      const { PI_AGENT_ID: _ownId, ...inheritedEnv } = process.env;
       const env = {
-        ...process.env,
+        ...inheritedEnv,
         PI_TEAM_NAME: safeTeamName,
         PI_AGENT_NAME: "team-lead",
       };

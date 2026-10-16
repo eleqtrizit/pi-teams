@@ -5,7 +5,7 @@ import type {
 import { Type } from "typebox";
 import * as messaging from "../src/utils/messaging";
 import { appendReply, buildClosingReport } from "../src/utils/report";
-import type { Member } from "../src/utils/models";
+import type { AgentRecord, Member } from "../src/utils/models";
 import * as teams from "../src/utils/teams";
 import { isListening, type MessageListener } from "../src/utils/transport";
 import type { TerminalAdapter } from "../src/utils/terminal-adapter";
@@ -24,6 +24,7 @@ export interface SharedToolDeps {
   cycleReplies: readonly string[];
   currentRunText: string | null;
   terminal: TerminalAdapter | null;
+  selfRecord: AgentRecord | null;
 }
 
 const LISTEN_PROBE_TIMEOUT_MS = 500;

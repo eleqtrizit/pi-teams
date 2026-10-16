@@ -31,6 +31,9 @@ import {
 } from "./lead-tools";
 export { classifyModel, executeGetModels } from "./lead-tools";
 import { registerSharedTools, registerWorkerTools } from "./shared-tools";
+import { generateAgentId, ensureRegistryDir, writeAgentRecord } from "../src/utils/registry";
+import { assertAgentId } from "../src/utils/paths";
+import { AgentKind, type AgentRecord } from "../src/utils/models";
 
 
 
@@ -156,10 +159,32 @@ export function getLastUserMessageText(entries: SessionEntry[]): string | null {
 
 
 export default function (pi: ExtensionAPI) {
+  const idWasPreassigned = !!process.env.PI_AGENT_ID;
+  const agentId = process.env.PI_AGENT_ID
+    ? (assertAgentId(process.env.PI_AGENT_ID), process.env.PI_AGENT_ID)
+    : generateAgentId();
+  process.env.PI_AGENT_ID = agentId;
+
   const isTeammate = !!process.env.PI_AGENT_NAME;
   const agentType = process.env.PI_AGENT_TYPE || "lead";
   const agentName = process.env.PI_AGENT_NAME || "team-lead";
   let teamName = process.env.PI_TEAM_NAME;
+
+  function parseAgentKind(type: string): AgentKind {
+    switch (type) {
+      case "teammate":
+        return AgentKind.Teammate;
+      case "readonly-worker":
+        return AgentKind.ReadonlyWorker;
+      default:
+        return AgentKind.Lead;
+    }
+  }
+  const agentKind = parseAgentKind(agentType);
+  const isWorkerType =
+    agentType === "teammate" || agentType === "readonly-worker";
+  const leadId = isWorkerType ? process.env.PI_LEAD_ID : undefined;
+  const workerName = isWorkerType ? agentName : undefined;
 
   // Tool identity: spawned workers carry PI_AGENT_TYPE "teammate" or
   // "readonly-worker"; every other session (the interactive lead or a lead
@@ -225,6 +250,8 @@ export default function (pi: ExtensionAPI) {
       PI_TEAM_NAME: safeTeamName,
       PI_AGENT_NAME: safeName,
       PI_AGENT_TYPE: agentType,
+      PI_AGENT_ID: generateAgentId(),
+      PI_LEAD_ID: agentId,
     };
     seedWorkerStateFiles(safeTeamName, safeName);
 
@@ -285,6 +312,8 @@ export default function (pi: ExtensionAPI) {
   // when the run should continue with queued worker results.
   let followUpEpoch = 0;
   const pendingInboxNotifications = new FollowUpMessageQueue();
+  /** Registry record for this agent, set at session_start. */
+  let selfRecord: AgentRecord | null = null;
 
   function clearFollowUpRetryTimer(): void {
     if (followUpRetryTimer == null) return;
@@ -436,6 +465,31 @@ export default function (pi: ExtensionAPI) {
     }
     pendingInboxNotifications.clear();
     paths.ensureDirs();
+
+    const shouldSkipRegistration =
+      isLead && !ctx.hasUI && !idWasPreassigned;
+    if (!shouldSkipRegistration) {
+      selfRecord = {
+        id: agentId,
+        kind: agentKind,
+        cwd: process.cwd(),
+        pid: process.pid,
+        ...(leadId ? { leadId } : {}),
+        ...(workerName ? { name: workerName } : {}),
+        ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+        startedAt: Date.now(),
+      };
+      try {
+        ensureRegistryDir();
+        writeAgentRecord(selfRecord);
+      } catch (e) {
+        ctx.ui.notify(
+          `pi-teams: cannot register agent: ${e}`,
+          "error",
+        );
+      }
+    }
+
     if (isTeammate) {
       ctx.ui.notify(`Teammate: ${agentName} (Team: ${teamName})`, "info");
       ctx.ui.setStatus("00-pi-teams", `[${agentName.toUpperCase()}]`);
@@ -461,6 +515,10 @@ export default function (pi: ExtensionAPI) {
 
     } else if (teamName) {
       ctx.ui.setStatus("pi-teams", `Lead @ ${teamName}`);
+    } else if (isLead) {
+      const title = `Pi Agent in ${process.cwd()} (${agentId})`;
+      setSessionTitle(ctx, title);
+      ctx.ui.setStatus("pi-teams", title);
     }
     try {
       await ensureListener();
@@ -797,6 +855,9 @@ export default function (pi: ExtensionAPI) {
       return currentRunText;
     },
     terminal,
+    get selfRecord() {
+      return selfRecord;
+    },
   };
   registerSharedTools(pi, sharedToolDeps);
   if (isWorker) {

@@ -13,6 +13,14 @@ vi.mock("../src/adapters/terminal-registry", () => ({
   supportsWindows: () => false,
 }));
 
+vi.mock("../src/utils/registry", () => ({
+  generateAgentId: vi.fn(() => "abc12345"),
+  ensureRegistryDir: vi.fn(),
+  writeAgentRecord: vi.fn(),
+  readAgentRecord: vi.fn(),
+  removeAgentRecord: vi.fn(),
+}));
+
 /** Handlers by event name. An event can have several handlers, which run in registration order. */
 type HandlerMap = { get(name: string): (...args: any[]) => Promise<void> };
 
