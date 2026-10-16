@@ -38,6 +38,8 @@ export interface AgentRecord {
 
 export interface Member {
   agentId: string;
+  /** Registry identifier assigned to this agent process. */
+  registryId?: string;
   name: string;
   agentType: string;
   model?: string;

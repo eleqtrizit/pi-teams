@@ -231,8 +231,10 @@ export default function (pi: ExtensionAPI) {
     if (teamConfig.members.some((m) => m.name === safeName)) {
       throw new Error(`A member named "${safeName}" already exists in team "${goals.team}".`);
     }
+    const workerId = generateAgentId();
     const member: Member = {
       agentId: `${safeName}@${safeTeamName}`,
+      registryId: workerId,
       name: safeName,
       agentType,
       model,
@@ -250,7 +252,7 @@ export default function (pi: ExtensionAPI) {
       PI_TEAM_NAME: safeTeamName,
       PI_AGENT_NAME: safeName,
       PI_AGENT_TYPE: agentType,
-      PI_AGENT_ID: generateAgentId(),
+      PI_AGENT_ID: workerId,
       PI_LEAD_ID: agentId,
     };
     seedWorkerStateFiles(safeTeamName, safeName);
@@ -276,11 +278,10 @@ export default function (pi: ExtensionAPI) {
         `Failed to spawn ${terminal.name} ${useSeparateWindow ? "window" : "pane"}: ${e}`,
       );
     }
-    await teams.updateMember(
-      safeTeamName,
-      safeName,
-      useSeparateWindow ? { windowId: terminalId } : { tmuxPaneId: terminalId },
-    );
+    await teams.updateMember(safeTeamName, safeName, {
+      registryId: workerId,
+      ...(useSeparateWindow ? { windowId: terminalId } : { tmuxPaneId: terminalId }),
+    });
 
     // The first message can arrive before the worker boots. Wait for its
     // socket so a send right after the spawn does not fail.

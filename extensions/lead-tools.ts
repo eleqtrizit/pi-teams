@@ -375,11 +375,12 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         content: [
           {
             type: "text",
-            text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId}.${listeningNote(spawned)}`,
+            text: `Teammate ${params.name} spawned in ${spawned.isWindow ? "window" : "pane"} ${spawned.terminalId} (agent ID: ${spawned.member.registryId}).${listeningNote(spawned)}`,
           },
         ],
         details: {
           agentId: spawned.member.agentId,
+          registryId: spawned.member.registryId,
           terminalId: spawned.terminalId,
           isWindow: spawned.isWindow,
           listening: spawned.listening,
@@ -430,11 +431,12 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         content: [
           {
             type: "text",
-            text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId}. Restricted to: read, grep, find, ls, messaging (send_message), and close_myself.${listeningNote(spawned)}`,
+            text: `Read-only worker ${params.name} spawned in pane ${spawned.terminalId} (agent ID: ${spawned.member.registryId}). Restricted to: read, grep, find, ls, messaging (send_message), and close_myself.${listeningNote(spawned)}`,
           },
         ],
         details: {
           agentId: spawned.member.agentId,
+          registryId: spawned.member.registryId,
           terminalId: spawned.terminalId,
           listening: spawned.listening,
           tools: [...READONLY_WORKER_TOOLS],
