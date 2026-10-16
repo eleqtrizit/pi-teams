@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import autoReportExtension from "./index";
-import * as fs from "node:fs";
 import * as messaging from "../src/utils/messaging";
 import * as registry from "../src/utils/registry";
 import * as paths from "../src/utils/paths";
@@ -56,10 +55,6 @@ const agentRecords = [leadRecord, workerRecord, siblingRecord];
 
 async function initializeWorkerSession(handlers: Map<string, any>): Promise<void> {
   paths.ensureDirs();
-  const teamDirectory = paths.teamDir("report-team");
-  if (!fs.existsSync(teamDirectory)) {
-    fs.mkdirSync(teamDirectory, { recursive: true });
-  }
   await handlers.get("session_start")({}, {
     ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
     hasUI: false,
@@ -75,7 +70,6 @@ describe("worker auto-report on agent_settled", () => {
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
     vi.stubEnv("PI_AGENT_ID", workerRecord.id);
     vi.stubEnv("PI_LEAD_ID", leadRecord.id);
-    vi.stubEnv("PI_TEAM_NAME", "report-team");
     sendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
   });
 
@@ -251,9 +245,9 @@ describe("worker auto-report on agent_settled", () => {
     expect(sendSpy).not.toHaveBeenCalled();
   });
 
-  it("does nothing for the team-lead session", async () => {
+  it("does nothing for the lead session", async () => {
     vi.unstubAllEnvs();
-    vi.stubEnv("PI_TEAM_NAME", "report-team");
+    vi.stubEnv("PI_AGENT_TYPE", "lead");
     const { handlers } = loadWorker();
     await handlers.get("agent_end")?.({ messages: [assistantMessage("done")] });
     await handlers.get("agent_settled")({ aborted: false });

@@ -48,7 +48,6 @@ describe("spawned worker identity environment", () => {
     vi.stubEnv("PI_AGENT_ID", leadId);
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
     const workerRecord: AgentRecord = {
       id: "work1234",
       kind: AgentKind.Teammate,
@@ -104,7 +103,6 @@ describe("spawned worker identity environment", () => {
       PI_AGENT_ID: "work1234",
       PI_LEAD_ID: leadId,
     });
-    expect(capturedOptions[0].env).not.toHaveProperty("PI_TEAM_NAME");
     expect(updateRecord).toHaveBeenCalledWith("work1234", { paneId: "pane-1" });
   });
 
@@ -112,7 +110,6 @@ describe("spawned worker identity environment", () => {
     vi.stubEnv("PI_AGENT_ID", leadId);
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
     vi.spyOn(registry, "readAgentRecords").mockReturnValue([
       leadRecord,
       {

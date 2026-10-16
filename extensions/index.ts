@@ -3,19 +3,17 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
 import * as holdRun from "../src/utils/hold";
 import { appendReply, buildWorkerReport, extractFinalReply } from "../src/utils/report";
-import { Member, TeamMessage } from "../src/utils/models";
+import { TeamMessage } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
 import {
   type MessageListener,
   startListener,
   waitForListener,
 } from "../src/utils/transport";
-import * as teams from "../src/utils/teams";
 import {
   buildWorkerCommand,
   spawnWorkerProcess,
@@ -191,10 +189,8 @@ export default function (pi: ExtensionAPI) {
     : generateAgentId();
   process.env.PI_AGENT_ID = agentId;
 
-  const isTeammate = !!process.env.PI_AGENT_NAME;
   const agentType = process.env.PI_AGENT_TYPE || "lead";
-  const agentName = process.env.PI_AGENT_NAME || "team-lead";
-  let teamName = process.env.PI_TEAM_NAME;
+  const agentName = process.env.PI_AGENT_NAME || "";
 
   function parseAgentKind(type: string): AgentKind {
     switch (type) {
@@ -207,20 +203,10 @@ export default function (pi: ExtensionAPI) {
     }
   }
   const agentKind = parseAgentKind(agentType);
-  const isWorkerType =
-    agentType === "teammate" || agentType === "readonly-worker";
-  const leadId = isWorkerType ? process.env.PI_LEAD_ID : undefined;
-  const workerName = isWorkerType ? agentName : undefined;
-
-  // Tool identity: spawned workers carry PI_AGENT_TYPE "teammate" or
-  // "readonly-worker"; every other session (the interactive lead or a lead
-  // window) is the team-lead. A worker named "team-lead" is excluded from
-  // worker tools because removeAgent refuses to remove any agent with that
-  // name, so a close_myself call would silently leave it running.
-  const isLead = agentType === "lead";
-  const isWorker =
-    (agentType === "teammate" || agentType === "readonly-worker") &&
-    agentName !== "team-lead";
+  const isWorker = agentType === "teammate" || agentType === "readonly-worker";
+  const isLead = !isWorker;
+  const leadId = isWorker ? process.env.PI_LEAD_ID : undefined;
+  const workerName = isWorker ? agentName : undefined;
 
   // ── Spawn plumbing ────────────────────────────────────────────────────
   // Workers belong to this lead through registry records. Spawn setup does
@@ -250,7 +236,6 @@ export default function (pi: ExtensionAPI) {
     }
     const workerId = generateAgentId();
     const env = { ...process.env } as Record<string, string | undefined>;
-    delete env.PI_TEAM_NAME;
     env.PI_AGENT_NAME = safeName;
     env.PI_AGENT_TYPE = agentType;
     env.PI_AGENT_ID = workerId;
@@ -435,11 +420,7 @@ export default function (pi: ExtensionAPI) {
   // tokens and delays responses to the team-lead.
   const SLEEP_COMMAND_PATTERN = /^sleep\s+\d+/;
   pi.on("tool_call", async (event) => {
-    // Only enforce while a team is online; otherwise this would interfere
-    // with ordinary sleep usage in standalone pi sessions.
-    if (!teamName || !teams.teamExists(teamName)) {
-      return;
-    }
+    // Block sleep for workers and for leads that have active workers.
     if (event.toolName !== "bash") {
       return;
     }
@@ -449,6 +430,12 @@ export default function (pi: ExtensionAPI) {
     }
     if (!SLEEP_COMMAND_PATTERN.test(input.command.trim())) {
       return;
+    }
+    if (!isWorker) {
+      const hasOwnWorkers = readAgentRecords().some(
+        (r) => r.kind !== AgentKind.Lead && r.leadId === agentId,
+      );
+      if (!hasOwnWorkers) return;
     }
     return {
       block: true,
@@ -495,32 +482,12 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    if (isTeammate) {
-      ctx.ui.notify(`Teammate: ${agentName} (Team: ${teamName})`, "info");
-      ctx.ui.setStatus("00-pi-teams", `[${agentName.toUpperCase()}]`);
-
-      const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
+    if (isWorker) {
+      const fullTitle = `${agentName} (${agentId})`;
       setSessionTitle(ctx, fullTitle);
+      ctx.ui.setStatus("00-pi-teams", `[${agentName.toUpperCase()}]`);
       scheduleTerminalTitleRefreshes(fullTitle);
-
-      // On first spawn, purge ALL stale state from any previous session and
-      // stamp the firstActivationFile immediately, before the listener starts.
-      if (teamName) {
-        const firstActivationFile = paths.firstActivationPath(
-          teamName,
-          agentName,
-        );
-        if (!fs.existsSync(firstActivationFile)) {
-          teams.resetAgentState(teamName, agentName);
-          fs.writeFileSync(firstActivationFile, Date.now().toString());
-        }
-        // Record the pid after cleanup: resetAgentState deletes the pid file.
-        fs.writeFileSync(paths.pidPath(teamName, agentName), process.pid.toString());
-      }
-
-    } else if (teamName) {
-      ctx.ui.setStatus("pi-teams", `Lead @ ${teamName}`);
-    } else if (isLead) {
+    } else {
       const title = `Pi Agent in ${process.cwd()} (${agentId})`;
       setSessionTitle(ctx, title);
       ctx.ui.setStatus("pi-teams", title);
@@ -532,38 +499,9 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  function setActiveStatus(active: boolean) {
-    if (!teamName) return;
-    const teamDirectory = paths.teamDir(teamName);
-    if (!fs.existsSync(teamDirectory)) {
-      fs.mkdirSync(teamDirectory, { recursive: true });
-    }
-    const activeFile = paths.activePath(teamName, agentName);
-    if (active) {
-      fs.writeFileSync(activeFile, Date.now().toString());
-    } else {
-      if (fs.existsSync(activeFile)) {
-        fs.unlinkSync(activeFile);
-      }
-    }
-  }
-
-  function isAgentActive(team: string, agent: string): boolean {
-    const activeFile = paths.activePath(team, agent);
-    if (!fs.existsSync(activeFile)) return false;
-    try {
-      const timestamp = parseInt(fs.readFileSync(activeFile, "utf-8").trim());
-      const age = Date.now() - timestamp;
-      return age < 5 * 60 * 1000; // Consider stale if older than 5 minutes
-    } catch {
-      return false;
-    }
-  }
-
   pi.on("turn_start", async (_event, ctx) => {
-    setActiveStatus(true);
-    if (isTeammate) {
-      const fullTitle = teamName ? `${teamName}: ${agentName}` : agentName;
+    if (isWorker) {
+      const fullTitle = `${agentName} (${agentId})`;
       setSessionTitle(ctx, fullTitle);
     }
   });
@@ -575,47 +513,6 @@ export default function (pi: ExtensionAPI) {
    */
   function wait(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Decide liveness for one teammate. The pid file written at the member's
-   * session_start is the most reliable signal: it needs only a filesystem
-   * read plus a signal-0 probe, and it appears before the member's first
-   * turn so booting workers count as alive. Pane and window probes and the
-   * fresh activity marker remain as fallbacks.
-   *
-   * @param team - Name of the team the member belongs to
-   * @param member - Team member to evaluate
-   * @returns True when the member can still produce work or messages
-   */
-  function isMemberAlive(team: string, member: Member): boolean {
-    if (isProcessAlive(paths.pidPath(team, member.name))) {
-      return true;
-    }
-    if (member.windowId && terminal?.isWindowAlive(member.windowId))
-      return true;
-    if (member.tmuxPaneId && terminal?.isAlive(member.tmuxPaneId)) return true;
-    return isAgentActive(team, member.name);
-  }
-
-  /**
-   * Check whether the process named by a pid file is still running.
-   *
-   * @param pidPath - Path to the pid file to probe
-   * @returns True when the process is alive
-   */
-  function isProcessAlive(pidPath: string): boolean {
-    if (!fs.existsSync(pidPath)) return false;
-    try {
-      const pid = parseInt(fs.readFileSync(pidPath, "utf-8").trim(), 10);
-      if (!Number.isFinite(pid)) return false;
-      process.kill(pid, 0);
-      return true;
-    } catch (err) {
-      // EPERM means the process exists but is owned by another user, which
-      // still counts as running.
-      return (err as NodeJS.ErrnoException).code === "EPERM";
-    }
   }
 
   /**
@@ -663,7 +560,7 @@ export default function (pi: ExtensionAPI) {
     if (
       !holdRun.shouldHoldWhileTeamActive({
         hasUI: ctx.hasUI,
-        isTeammate,
+        isWorker,
         ownWorkerCount: ownWorkers.length,
       })
     ) {
@@ -704,7 +601,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", async () => {
-    setActiveStatus(false);
+    // Intentionally empty: terminal title refresh happens in turn_start.
   });
 
   // Track the newest assistant text of the running run. A worker that closes
@@ -772,16 +669,6 @@ export default function (pi: ExtensionAPI) {
     clearTitleRefreshTimeouts();
     isAgentRunning = false;
     pendingInboxNotifications.clear();
-    // Remove our own pid file so a later removeAgent cannot mistake the
-    // (now reusable) pid for a live worker.
-    if (isTeammate && teamName) {
-      try {
-        const pidFile = paths.pidPath(teamName, agentName);
-        if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
-      } catch (_e) {
-        // ignore
-      }
-    }
   });
 
   let firstTurn = true;
@@ -792,7 +679,7 @@ export default function (pi: ExtensionAPI) {
     // turn instead of polling and releases the session when done.
     if (isLead) {
       let systemPrompt = event.systemPrompt;
-      if (holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isTeammate })) {
+      if (holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isWorker })) {
         systemPrompt +=
           `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`;
       }
@@ -802,24 +689,12 @@ export default function (pi: ExtensionAPI) {
       return { systemPrompt };
     }
 
-    if (isTeammate && firstTurn) {
+    if (isWorker && firstTurn) {
       firstTurn = false;
 
       let modelInfo = "";
-      if (teamName) {
-        try {
-          const teamConfig = await teams.readConfig(teamName);
-          const member = teamConfig.members.find((m) => m.name === agentName);
-          if (member && member.model) {
-            modelInfo = `\nYou are currently using model: ${member.model}`;
-            if (member.thinking) {
-              modelInfo += ` with thinking level: ${member.thinking}`;
-            }
-            modelInfo += `. When reporting your model or thinking level, use these exact values.`;
-          }
-        } catch (e) {
-          // Ignore
-        }
+      if (selfRecord?.model) {
+        modelInfo = `\nYou are currently using model: ${selfRecord.model}. When reporting your model or thinking level, use these exact values.`;
       }
 
       const roleDescription =
@@ -833,7 +708,7 @@ export default function (pi: ExtensionAPI) {
       return {
         systemPrompt:
           event.systemPrompt +
-          `\n\nYou are ${roleDescription} '${agentName}' on team '${teamName}'.\nYour lead is 'team-lead'.${modelInfo}${capabilitiesNote}\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. When your work is done, end your turn and stop. Your final reply is sent to the team-lead automatically, so make it a complete report. Use send_message only for extra messages, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
+          `\n\nYou are ${roleDescription} '${agentName}'.${modelInfo}${capabilitiesNote}\nYour lead's agent id is ${leadId}. Reply with send_message(recipient="lead").\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. When your work is done, end your turn and stop. Your final reply is sent to the team-lead automatically, so make it a complete report. Use send_message only for extra messages, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }
   });
@@ -846,10 +721,6 @@ export default function (pi: ExtensionAPI) {
       spawnTeamWorker,
       terminal: terminal ?? undefined,
       ensureListener,
-      getTeamName: () => teamName,
-      setTeamName: (nextTeamName) => {
-        teamName = nextTeamName;
-      },
       getPendingMigrationNotice: () => pendingMigrationNotice,
       setPendingMigrationNotice: (notice) => {
         pendingMigrationNotice = notice;
@@ -860,13 +731,10 @@ export default function (pi: ExtensionAPI) {
   const sharedToolDeps = {
     agentName,
     agentId,
-    isTeammate,
-    getTeamName: () => teamName,
+    isWorker,
     get messageListener() {
       return messageListener;
     },
-    isMemberAlive,
-    isAgentActive,
     setReportedToLead: (reported: boolean) => {
       reportedToLead = reported;
     },

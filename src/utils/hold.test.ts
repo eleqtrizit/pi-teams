@@ -37,42 +37,42 @@ function snapshot(
 }
 
 describe("shouldHoldWhileTeamActive", () => {
-  it("does not hold for teammates", () => {
+  it("does not hold for workers", () => {
     expect(
-      shouldHoldWhileTeamActive({ hasUI: false, isTeammate: true, ownWorkerCount: 1 }),
+      shouldHoldWhileTeamActive({ hasUI: false, isWorker: true, ownWorkerCount: 1 }),
     ).toBe(false);
   });
 
   it("does not hold without own workers", () => {
     expect(
-      shouldHoldWhileTeamActive({ hasUI: false, isTeammate: false, ownWorkerCount: 0 }),
+      shouldHoldWhileTeamActive({ hasUI: false, isWorker: false, ownWorkerCount: 0 }),
     ).toBe(false);
   });
 
   it("does not hold in sessions with dialog-capable UI", () => {
     expect(
-      shouldHoldWhileTeamActive({ hasUI: true, isTeammate: false, ownWorkerCount: 1 }),
+      shouldHoldWhileTeamActive({ hasUI: true, isWorker: false, ownWorkerCount: 1 }),
     ).toBe(false);
   });
 
   it("holds for the lead in a non-interactive session with own workers", () => {
     expect(
-      shouldHoldWhileTeamActive({ hasUI: false, isTeammate: false, ownWorkerCount: 2 }),
+      shouldHoldWhileTeamActive({ hasUI: false, isWorker: false, ownWorkerCount: 2 }),
     ).toBe(true);
   });
 });
 
 describe("shouldGuideLead", () => {
   it("guides the lead in a non-interactive session", () => {
-    expect(shouldGuideLead({ hasUI: false, isTeammate: false })).toBe(true);
+    expect(shouldGuideLead({ hasUI: false, isWorker: false })).toBe(true);
   });
 
   it("does not guide the lead when UI is available", () => {
-    expect(shouldGuideLead({ hasUI: true, isTeammate: false })).toBe(false);
+    expect(shouldGuideLead({ hasUI: true, isWorker: false })).toBe(false);
   });
 
-  it("does not guide teammates", () => {
-    expect(shouldGuideLead({ hasUI: false, isTeammate: true })).toBe(false);
+  it("does not guide workers", () => {
+    expect(shouldGuideLead({ hasUI: false, isWorker: true })).toBe(false);
   });
 });
 

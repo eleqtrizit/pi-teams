@@ -6,9 +6,9 @@ import { Type } from "typebox";
 import * as messaging from "../src/utils/messaging";
 import { readAgentRecords } from "../src/utils/registry";
 import { appendReply, buildClosingReport } from "../src/utils/report";
-import type { AgentRecord, Member } from "../src/utils/models";
+import type { AgentRecord } from "../src/utils/models";
 import * as teams from "../src/utils/teams";
-import { isListening, type MessageListener } from "../src/utils/transport";
+import { type MessageListener } from "../src/utils/transport";
 import type { TerminalAdapter } from "../src/utils/terminal-adapter";
 import { registerFsTools } from "./fs-tools";
 import { getLastUserMessageText } from "./index";
@@ -17,11 +17,8 @@ import { getLastUserMessageText } from "./index";
 export interface SharedToolDeps {
   agentName: string;
   agentId: string;
-  isTeammate: boolean;
-  getTeamName: () => string | undefined;
+  isWorker: boolean;
   messageListener: MessageListener | null;
-  isMemberAlive: (team: string, member: Member) => boolean;
-  isAgentActive: (team: string, agent: string) => boolean;
   setReportedToLead: (reported: boolean) => void;
   markRepliedToPeer: (id: string) => void;
   cycleReplies: readonly string[];
@@ -29,8 +26,6 @@ export interface SharedToolDeps {
   terminal: TerminalAdapter | null;
   selfRecord: AgentRecord | null;
 }
-
-const LISTEN_PROBE_TIMEOUT_MS = 500;
 
 function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
   return schema as TSchemaLike;
@@ -171,46 +166,6 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
     },
   });
 
-  pi.registerTool({
-    name: "list_teammates",
-    label: "List Teammates",
-    description: "List all teammates/workers/subagents in a team with their status.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        team_name: Type.String(),
-      }),
-    ) as any,
-    async execute(toolCallId, params: any, signal, onUpdate, ctx) {
-      const config = await teams.readConfig(params.team_name);
-      const teammates = await Promise.all(
-        config.members.map(async (member) => {
-          const alive =
-            member.name === "team-lead" && !deps.isTeammate
-              ? true
-              : deps.isMemberAlive(params.team_name, member);
-          const listening =
-            member.name === deps.agentName && deps.messageListener
-              ? true
-              : member.registryId
-                ? await isListening(member.registryId, LISTEN_PROBE_TIMEOUT_MS)
-                : false;
-          const active = deps.isAgentActive(params.team_name, member.name);
-          return {
-            name: member.name,
-            agentType: member.agentType,
-            model: member.model,
-            alive,
-            active,
-            listening,
-          };
-        }),
-      );
-      return {
-        content: [{ type: "text", text: JSON.stringify(teammates, null, 2) }],
-        details: { teammates },
-      };
-    },
-  });
 }
 
 /** Register close_myself for a spawned worker. */
@@ -219,18 +174,11 @@ export function registerWorkerTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
     name: "close_myself",
     label: "Close Myself",
     description:
-      "Close this agent: remove yourself from the team config, clean up your state files, and terminate your own process and terminal pane or window. " +
-      "Do not run this unless your instructions told you to run it. When the team-lead tells you to close yourself, call this tool instead of ending your turn or running kill commands. " +
-      "Write your final report as text in the same turn before the call. The extension sends that text to the team-lead as your last report, because you stop running when this tool runs.",
+      "Close this agent: clean up your state files, and terminate your own process and terminal pane or window. " +
+      "Do not run this unless your instructions told you to run it. When your lead tells you to close yourself, call this tool instead of ending your turn or running kill commands. " +
+      "Write your final report as text in the same turn before the call. The extension sends that text to your lead as your last report, because you stop running when this tool runs.",
     parameters: asPiToolSchema(Type.Object({})) as any,
     async execute() {
-      const activeTeam = deps.getTeamName();
-      if (!activeTeam) {
-        throw new Error(
-          "No team is active for this agent, so there is nothing to close.",
-        );
-      }
-
       // A closing worker never reaches agent_settled, so report its replies
       // now, while the lead can still receive them.
       const report = buildClosingReport(

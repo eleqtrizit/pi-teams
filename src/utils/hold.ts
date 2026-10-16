@@ -20,8 +20,8 @@ export const RUN_HOLD_RELEASE_FAILURES = 3;
 export type RunHoldOptions = {
   /** True when dialog-capable UI is available, which is TUI and RPC modes. */
   hasUI: boolean;
-  /** True when this agent is a teammate instead of the team-lead. */
-  isTeammate: boolean;
+  /** True when this agent is a worker instead of the team-lead. */
+  isWorker: boolean;
   /** Number of workers in the registry that belong to this lead. */
   ownWorkerCount: number;
 };
@@ -32,8 +32,8 @@ export type RunHoldOptions = {
 export type LeadGuideOptions = {
   /** True when dialog-capable UI is available, which is TUI and RPC modes. */
   hasUI: boolean;
-  /** True when this agent is a teammate instead of the team-lead. */
-  isTeammate: boolean;
+  /** True when this agent is a worker instead of the team-lead. */
+  isWorker: boolean;
 };
 
 /** What the hold loop needs to know about this lead's workers right now. */
@@ -66,7 +66,7 @@ function isNonInteractiveMode(options: { hasUI: boolean }): boolean {
  */
 export function shouldHoldWhileTeamActive(options: RunHoldOptions): boolean {
   return (
-    !options.isTeammate &&
+    !options.isWorker &&
     isNonInteractiveMode(options) &&
     options.ownWorkerCount > 0
   );
@@ -77,11 +77,11 @@ export function shouldHoldWhileTeamActive(options: RunHoldOptions): boolean {
  * its system prompt. The note applies regardless of whether workers exist at
  * prompt time, because the lead can spawn workers mid-run.
  *
- * @param options - hasUI flag and teammate flag
+ * @param options - hasUI flag and worker flag
  * @returns True when the lead runs in a non-interactive host mode
  */
 export function shouldGuideLead(options: LeadGuideOptions): boolean {
-  return !options.isTeammate && isNonInteractiveMode(options);
+  return !options.isWorker && isNonInteractiveMode(options);
 }
 
 /**

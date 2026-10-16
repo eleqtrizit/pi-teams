@@ -348,7 +348,6 @@ describe("spawn_team_lead", () => {
   });
 
   it("strips the spawner's identity from the lead environment", async () => {
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
     vi.stubEnv("PI_AGENT_NAME", "spawner-name");
     vi.stubEnv("PI_LEAD_ID", "lead9999");
     vi.stubEnv("PI_AGENT_ID", "lead9999");
@@ -358,7 +357,6 @@ describe("spawn_team_lead", () => {
     await runSpawnLead(tool, { folder: makeFolder() });
 
     const env = terminal.spawnCalls[0].env;
-    expect(env.PI_TEAM_NAME).toBeUndefined();
     expect(env.PI_AGENT_NAME).toBeUndefined();
     expect(env.PI_LEAD_ID).toBeUndefined();
     expect(env.PI_AGENT_ID).toBe("abcd1234");

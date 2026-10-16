@@ -30,7 +30,7 @@ function loadTool(selfRecord: AgentRecord | null) {
   const deps = {
     agentName: selfRecord?.name ?? "lead",
     agentId: selfRecord?.id ?? "lead1111",
-    isTeammate: selfRecord?.kind !== AgentKind.Lead,
+    isWorker: selfRecord?.kind !== AgentKind.Lead,
     getTeamName: () => undefined,
     messageListener: null,
     isMemberAlive: () => false,

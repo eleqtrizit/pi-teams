@@ -1,5 +1,4 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import * as fs from "node:fs";
 import * as paths from "../src/utils/paths";
 import closeMyselfExtension from "./index";
 import * as messaging from "../src/utils/messaging";
@@ -63,7 +62,6 @@ describe("close_myself registration", () => {
   it("registers close_myself for teammates", () => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "close-myself-team");
 
     const tools = registerExtensionForCurrentEnv();
     const closeMyself = tools.get("close_myself");
@@ -77,28 +75,15 @@ describe("close_myself registration", () => {
 
   it("does not register close_myself for the interactive lead session", () => {
     vi.stubEnv("PI_AGENT_NAME", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
 
     const tools = registerExtensionForCurrentEnv();
 
     expect(tools.has("close_myself")).toBe(false);
-    expect(tools.has("team_create")).toBe(true);
-  });
-
-  it("does not register close_myself for a lead window (PI_AGENT_NAME=team-lead)", () => {
-    vi.stubEnv("PI_AGENT_NAME", "team-lead");
-    vi.stubEnv("PI_TEAM_NAME", "close-myself-team");
-
-    const tools = registerExtensionForCurrentEnv();
-
-    expect(tools.has("close_myself")).toBe(false);
-    expect(tools.has("team_create")).toBe(true);
   });
 
   it("registers close_myself for a read-only worker", () => {
     vi.stubEnv("PI_AGENT_NAME", "audit-1");
     vi.stubEnv("PI_AGENT_TYPE", "readonly-worker");
-    vi.stubEnv("PI_TEAM_NAME", "close-myself-team");
 
     const tools = registerExtensionForCurrentEnv();
 
@@ -129,7 +114,6 @@ async function initializeWorkerSession(
   handlers: { get(name: string): (...args: any[]) => Promise<void> },
 ): Promise<void> {
   paths.ensureDirs();
-  fs.mkdirSync(paths.teamDir("close-myself-team"), { recursive: true });
   await handlers.get("session_start")({}, {
     ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
     hasUI: false,
@@ -141,7 +125,6 @@ function stubWorkerEnv(): void {
   vi.stubEnv("PI_AGENT_TYPE", "teammate");
   vi.stubEnv("PI_AGENT_ID", workerId);
   vi.stubEnv("PI_LEAD_ID", leadId);
-  vi.stubEnv("PI_TEAM_NAME", "close-myself-team");
 }
 
 describe("close_myself execute", () => {
@@ -247,17 +230,21 @@ describe("close_myself execute", () => {
     expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
   });
 
-  it("throws when no team is active for this agent", async () => {
-    vi.stubEnv("PI_TEAM_NAME", "");
+  it("closes itself even when no team name is set", async () => {
+    teamsMocks.removeAgent.mockResolvedValue(undefined);
 
     const tools = registerExtensionForCurrentEnv();
     const closeMyself = tools.get("close_myself");
 
-    await expect(
-      closeMyself.execute("tool-call-1", {}, undefined, undefined, {}),
-    ).rejects.toThrow(
-      "No team is active for this agent, so there is nothing to close.",
+    const result = await closeMyself.execute(
+      "tool-call-1",
+      {},
+      undefined,
+      undefined,
+      {},
     );
-    expect(teamsMocks.removeAgent).not.toHaveBeenCalled();
+
+    expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
+    expect(result.content[0].text).toContain("closed itself");
   });
 });

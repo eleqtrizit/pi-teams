@@ -63,7 +63,6 @@ describe("before_agent_start peer-lead guidance", () => {
   it("appends the peer-lead block on every interactive lead turn", async () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
     vi.stubEnv("PI_AGENT_ID", "prmpld01");
 
     const handlers = loadHandlers();
@@ -80,7 +79,6 @@ describe("before_agent_start peer-lead guidance", () => {
   it("appends both the non-interactive note and the peer-lead block to a lead without a UI", async () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
     vi.stubEnv("PI_AGENT_ID", "prmpld01");
 
     const handlers = loadHandlers();
@@ -96,14 +94,14 @@ describe("before_agent_start peer-lead guidance", () => {
   it("never appends the peer-lead block to a teammate", async () => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
     vi.stubEnv("PI_AGENT_ID", "prmpwk01");
     vi.stubEnv("PI_LEAD_ID", "prmpld01");
 
     const handlers = loadHandlers();
     const systemPrompt = await runBeforeAgentStart(handlers, false);
 
-    expect(systemPrompt).toContain("You are teammate 'worker-1'");
+    expect(systemPrompt).toContain("You are teammate 'worker-1'.");
+    expect(systemPrompt).toContain("Your lead's agent id is prmpld01.");
     for (const marker of PEER_BLOCK_MARKERS) {
       expect(systemPrompt).not.toContain(marker);
     }

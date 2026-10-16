@@ -19,11 +19,10 @@ import {
   type FlavoredModelsResult,
   type ModelFlavor,
 } from "../src/utils/flavoredModels";
-import * as paths from "../src/utils/paths";
 import * as teams from "../src/utils/teams";
 import { getTopModelMatches, resolveModelWithProvider } from "../src/utils/modelSearch";
 import { READONLY_WORKER_TOOLS } from "../src/utils/spawn";
-import { shQuote, type TerminalAdapter } from "../src/utils/terminal-adapter";
+import { type TerminalAdapter } from "../src/utils/terminal-adapter";
 
 export interface SpawnWorkerGoals {
   name: string;
@@ -47,8 +46,6 @@ export interface LeadToolDeps {
   spawnTeamWorker: (ctx: ExtensionContext, goals: SpawnWorkerGoals) => Promise<SpawnedWorker>;
   terminal: TerminalAdapter | null | undefined;
   ensureListener: () => Promise<void>;
-  getTeamName: () => string | undefined;
-  setTeamName: (teamName: string | undefined) => void;
   getPendingMigrationNotice: () => string | undefined;
   setPendingMigrationNotice: (notice: string | undefined) => void;
 }
@@ -240,46 +237,11 @@ async function handleFlavoredModelsCommand(ctx: ExtensionContext): Promise<void>
 function listeningNote(spawned: { listening: boolean }): string {
   return spawned.listening
     ? ""
-    : " The worker is not accepting messages yet. Check list_teammates before you send it a message.";
+    : " The worker is not accepting messages yet. Check list_agents before you send it a message.";
 }
 
 /** Register the tools and command available to a team-lead session. */
 export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
-  pi.registerTool({
-    name: "team_create",
-    label: "Create Team",
-    description: "Create a new agent team.",
-    parameters: asPiToolSchema(
-      Type.Object({
-        description: Type.Optional(Type.String()),
-        default_model: Type.Optional(Type.String()),
-        separate_windows: Type.Optional(
-          Type.Boolean({
-            default: false,
-            description: "Open teammates in separate OS windows instead of panes",
-          }),
-        ),
-      }),
-    ) as any,
-    async execute(_toolCallId, params: any) {
-      const config = teams.createTeam(
-        params.team_name,
-        "local-session",
-        "lead-agent",
-        params.description,
-        params.default_model,
-        params.separate_windows,
-        process.env.PI_AGENT_ID,
-      );
-      deps.setTeamName(params.team_name);
-      process.env.PI_TEAM_NAME = params.team_name;
-      return {
-        content: [{ type: "text", text: `Team ${params.team_name} created.` }],
-        details: { config },
-      };
-    },
-  });
-
   pi.registerTool({
     name: "resolve_model",
     label: "Resolve Model",
@@ -434,53 +396,6 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
           tools: [...READONLY_WORKER_TOOLS],
         },
       };
-    },
-  });
-
-  pi.registerTool({
-    name: "spawn_lead_window",
-    label: "Spawn Lead Window",
-    description: "Open the team lead in a separate OS window.",
-    parameters: asPiToolSchema(
-      Type.Object({ team_name: Type.String(), cwd: Type.Optional(Type.String()) }),
-    ) as any,
-    async execute(_toolCallId, params: any) {
-      const safeTeamName = paths.sanitizeName(params.team_name);
-      if (!teams.teamExists(safeTeamName)) {
-        throw new Error(`Team ${params.team_name} does not exist`);
-      }
-      if (!deps.terminal || !deps.terminal.supportsWindows()) {
-        throw new Error("Windows mode not supported.");
-      }
-      const teamConfig = await teams.readConfig(safeTeamName);
-      const cwd = params.cwd || process.cwd();
-      const piBinary = process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
-      let piCmd = piBinary;
-      if (teamConfig.defaultModel) {
-        piCmd = `${piCmd} --model ${shQuote(teamConfig.defaultModel)}`;
-      }
-      const { PI_AGENT_ID: _ownId, ...inheritedEnv } = process.env;
-      const env = {
-        ...inheritedEnv,
-        PI_TEAM_NAME: safeTeamName,
-        PI_AGENT_NAME: "team-lead",
-      };
-      try {
-        const windowId = deps.terminal.spawnWindow({
-          name: "team-lead",
-          cwd,
-          command: piCmd,
-          env,
-          teamName: safeTeamName,
-        });
-        await teams.updateMember(safeTeamName, "team-lead", { windowId });
-        return {
-          content: [{ type: "text", text: `Lead window spawned: ${windowId}` }],
-          details: { windowId },
-        };
-      } catch (error) {
-        throw new Error(`Failed: ${error}`);
-      }
     },
   });
 

@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import presenceExtension from "./index";
-import * as paths from "../src/utils/paths";
 
 vi.mock("../src/adapters/terminal-registry", () => ({
   getTerminalAdapter: () => null,
@@ -48,7 +47,6 @@ describe("agent presence registration", () => {
     vi.stubEnv("PI_AGENT_ID", "");
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
     vi.stubEnv("PI_LEAD_ID", "");
   });
 
@@ -65,7 +63,6 @@ describe("agent presence registration", () => {
   it("writes a record file with correct fields after session_start for a lead with UI", async () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "lead");
-    vi.stubEnv("PI_TEAM_NAME", "");
 
     const { handlers } = loadExtension();
     const ctx = {
@@ -100,7 +97,6 @@ describe("agent presence registration", () => {
   it("does not write a record for an unspawned no-UI lead", async () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "lead");
-    vi.stubEnv("PI_TEAM_NAME", "");
 
     const { handlers } = loadExtension();
     const ctx = { ui, hasUI: false };
@@ -117,17 +113,7 @@ describe("agent presence registration", () => {
   it("writes a worker record with leadId and name", async () => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
     vi.stubEnv("PI_LEAD_ID", "lead99ab");
-
-    const teamDir = fs.mkdtempSync(path.join(os.tmpdir(), "presence-team-"));
-    const firstSpy = vi
-      .spyOn(paths, "firstActivationPath")
-      .mockImplementation((_t, a) => path.join(teamDir, `${a}.first`));
-    const pidSpy = vi
-      .spyOn(paths, "pidPath")
-      .mockImplementation((_t, a) => path.join(teamDir, `${a}.pid`));
-    const ensureSpy = vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
 
     const { handlers } = loadExtension();
     const ctx = {
@@ -149,17 +135,11 @@ describe("agent presence registration", () => {
     expect(record.name).toBe("worker-1");
     expect(record.model).toBe("anthropic/claude-3");
     expect(record.id).toMatch(/^[a-z0-9]{8}$/);
-
-    firstSpy.mockRestore();
-    pidSpy.mockRestore();
-    ensureSpy.mockRestore();
-    fs.rmSync(teamDir, { recursive: true, force: true });
   });
 
   it("sets the title and status for a lead without a team", async () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "lead");
-    vi.stubEnv("PI_TEAM_NAME", "");
 
     const { handlers } = loadExtension();
     const ctx = { ui, hasUI: true };

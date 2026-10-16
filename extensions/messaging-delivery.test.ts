@@ -1,7 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import deliveryExtension from "./index";
 import * as paths from "../src/utils/paths";
@@ -81,29 +77,19 @@ const message = (to: string, text: string): TeamMessage => ({
 });
 
 describe("immediate message delivery", () => {
-  let team: string;
-  let teamDir: string;
   const ui = { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() };
 
   beforeEach(() => {
-    team = `t${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    teamDir = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-"));
-    vi.stubEnv("PI_TEAM_NAME", team);
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
     vi.stubEnv("PI_AGENT_ID", "dlvr1111");
     vi.stubEnv("PI_LEAD_ID", "lead1111");
     vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
-    vi.spyOn(paths, "teamDir").mockReturnValue(teamDir);
-    vi.spyOn(paths, "pidPath").mockImplementation((_t, a) => path.join(teamDir, `${a}.pid`));
-    vi.spyOn(paths, "activePath").mockImplementation((_t, a) => path.join(teamDir, `${a}.active`));
-    vi.spyOn(paths, "firstActivationPath").mockImplementation((_t, a) => path.join(teamDir, `${a}.first`));
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
-    fs.rmSync(teamDir, { recursive: true, force: true });
   });
 
   it("queues a received message as a follow-up user message", async () => {
@@ -164,62 +150,4 @@ describe("immediate message delivery", () => {
   });
 });
 
-describe("lead window takeover", () => {
-  let team: string;
-  let teamDir: string;
-  const ui = { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() };
 
-  beforeEach(() => {
-    registryRecords.splice(0, registryRecords.length,
-      { ...selfRecord, id: "lead1111", kind: AgentKind.Lead, leadId: undefined },
-      { ...peerRecord, id: "peer1234", leadId: undefined },
-    );
-    team = `t${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    teamDir = fs.mkdtempSync(path.join(os.tmpdir(), "takeover-"));
-    vi.stubEnv("PI_TEAM_NAME", team);
-    vi.stubEnv("PI_AGENT_NAME", "");
-    vi.stubEnv("PI_AGENT_TYPE", "lead");
-    vi.stubEnv("PI_AGENT_ID", "lead1111");
-    vi.spyOn(paths, "ensureDirs").mockImplementation(() => {});
-    vi.spyOn(paths, "teamDir").mockReturnValue(teamDir);
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.restoreAllMocks();
-    fs.rmSync(teamDir, { recursive: true, force: true });
-  });
-
-  it("sends messages to the newest team-lead session", async () => {
-    const original = loadExtension();
-    await original.handlers.get("session_start")({}, { ui, hasUI: true });
-    vi.stubEnv("PI_AGENT_ID", "lead2222");
-    registryRecords.push({ ...selfRecord, id: "lead2222", kind: AgentKind.Lead, leadId: undefined });
-    const window = loadExtension();
-    await window.handlers.get("session_start")({}, { ui, hasUI: true });
-    try {
-      await sendToAgent({ ...message("lead2222", "for the window"), from: "lead1111" });
-      await vi.waitFor(() => expect(window.sendUserMessage).toHaveBeenCalledTimes(1));
-      expect(original.sendUserMessage).not.toHaveBeenCalled();
-    } finally {
-      await window.handlers.get("session_shutdown")({}, {});
-      await original.handlers.get("session_shutdown")({}, {});
-    }
-  });
-
-  it("keeps the newest session reachable when the older session shuts down first", async () => {
-    const original = loadExtension();
-    await original.handlers.get("session_start")({}, { ui, hasUI: true });
-    vi.stubEnv("PI_AGENT_ID", "lead2222");
-    registryRecords.push({ ...selfRecord, id: "lead2222", kind: AgentKind.Lead, leadId: undefined });
-    const window = loadExtension();
-    await window.handlers.get("session_start")({}, { ui, hasUI: true });
-    try {
-      await original.handlers.get("session_shutdown")({}, {});
-      await sendToAgent({ ...message("lead2222", "still there"), from: "lead1111" });
-      await vi.waitFor(() => expect(window.sendUserMessage).toHaveBeenCalledTimes(1));
-    } finally {
-      await window.handlers.get("session_shutdown")({}, {});
-    }
-  });
-});

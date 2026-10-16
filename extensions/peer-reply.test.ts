@@ -64,7 +64,6 @@ describe("lead peer auto-replies", () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "lead");
     vi.stubEnv("PI_AGENT_ID", lead.id);
-    vi.stubEnv("PI_TEAM_NAME", "");
     vi.stubEnv("PI_LEAD_ID", "");
     vi.spyOn(registry, "ensureRegistryDir").mockImplementation(() => {});
     vi.spyOn(registry, "writeAgentRecord").mockImplementation(() => {});

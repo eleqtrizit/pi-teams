@@ -2,18 +2,16 @@ import { describe, expect, it, afterEach, vi } from "vitest";
 import theExtension from "./index";
 
 const LEAD_TOOLS = [
-  "team_create",
   "resolve_model",
   "spawn_teammate",
   "spawn_readonly_worker",
-  "spawn_lead_window",
   "close_all_workers",
   "close_worker",
   "get_flavored_models",
   "get_models",
   "spawn_team_lead",
 ];
-const SHARED_TOOLS = ["send_message", "list_teammates"];
+const SHARED_TOOLS = ["send_message"];
 const WORKER_TOOLS = ["close_myself"];
 /** Registered for every session, lead and worker alike. */
 const AGENT_TOOLS = ["list_agents"];
@@ -44,7 +42,6 @@ describe("tool registration by identity", () => {
   it("registers lead and shared tools for the interactive lead", () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
 
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(true);
@@ -53,21 +50,9 @@ describe("tool registration by identity", () => {
     for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(false);
   });
 
-  it("registers lead tools for a lead window (PI_AGENT_NAME=team-lead)", () => {
-    vi.stubEnv("PI_AGENT_NAME", "team-lead");
-    vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
-
-    const names = registeredToolNames();
-    for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(true);
-    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
-    for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(false);
-  });
-
   it("registers shared and worker tools for a teammate, and no lead tools", () => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
 
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(false);
@@ -79,23 +64,12 @@ describe("tool registration by identity", () => {
   it("registers shared and worker tools for a read-only worker", () => {
     vi.stubEnv("PI_AGENT_NAME", "audit-1");
     vi.stubEnv("PI_AGENT_TYPE", "readonly-worker");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
 
     const names = registeredToolNames();
     for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(false);
     for (const name of SHARED_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
     for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(true);
-  });
-
-  it("excludes worker tools for a worker named team-lead", () => {
-    vi.stubEnv("PI_AGENT_NAME", "team-lead");
-    vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
-
-    const names = registeredToolNames();
-    expect(names.has("close_myself")).toBe(false);
-    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
   });
 });
 
@@ -108,7 +82,6 @@ describe("command registration by identity", () => {
   it("registers the insta-worker commands for lead sessions", () => {
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_TEAM_NAME", "");
 
     const commands: string[] = [];
     theExtension({
@@ -126,7 +99,6 @@ describe("command registration by identity", () => {
   it("registers no commands for a teammate", () => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_TEAM_NAME", "some-team");
 
     const commands: string[] = [];
     theExtension({
