@@ -1,20 +1,21 @@
-// CLAIM S1: spawned workers must load extensions/index.ts via `-e <entry>`.
-// After extracting spawn.ts, EXTENSION_ENTRY resolves to spawn.ts, which has no default export.
+// CLAIM S1: spawned workers and peer leads start as plain pi sessions.
+// `-ne` drops every configured extension (pi-sandbox included), so launch commands must not carry it or `-e`.
 import { describe, expect, it } from "vitest";
-import { extensionLoadFlags } from "../src/utils/spawn";
-import fs from "node:fs";
-import path from "node:path";
+import { buildLeadCommand, buildWorkerCommand } from "../src/utils/spawn";
 
-describe("S1 worker extension entry", () => {
-  it("points -e at extensions/index.ts", () => {
-    const entry = path.resolve(__dirname, "../extensions/index.ts");
-    const flags = extensionLoadFlags(entry);
-    console.log("flags:", flags);
-    expect(flags).toBe(`-ne -e '${entry}'`);
+const EXTENSION_FLAG = /(^|\s)-(ne|e)(\s|$)/;
+
+describe("S1 spawned sessions load their configured extensions", () => {
+  it("launches workers without extension flags", () => {
+    for (const readonlyWorker of [false, true]) {
+      const { piCmd } = buildWorkerCommand({ readonlyWorker, thinking: "low" }, "prov/model");
+      expect(piCmd).not.toMatch(EXTENSION_FLAG);
+      expect(piCmd).toContain("--model 'prov/model");
+    }
   });
-  it("the index.ts source passes its own entry (not a helper module) to the flags", () => {
-    const src = fs.readFileSync(path.resolve(__dirname, "../extensions/index.ts"), "utf-8");
-    expect(src).toMatch(/extensionLoadFlags\(EXTENSION_ENTRY\)/);
-    expect(src).toMatch(/const EXTENSION_ENTRY/);
+
+  it("launches peer leads without extension flags", () => {
+    expect(buildLeadCommand("prov/model")).not.toMatch(EXTENSION_FLAG);
+    expect(buildLeadCommand()).not.toMatch(EXTENSION_FLAG);
   });
 });
