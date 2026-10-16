@@ -1,161 +1,303 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BROADCAST_RECIPIENT, broadcastMessage, sendPlainMessage } from "./messaging";
-import { TeamMessage } from "./models";
-import * as paths from "./paths";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  BROADCAST_RECIPIENT,
+  LEAD_ALIAS,
+  agentLabel,
+  broadcastAgentMessage,
+  resolveRecipient,
+  sendAgentMessage,
+} from "./messaging";
+import { AgentKind, AgentRecord, TeamMessage } from "./models";
 import { MessageListener, RecipientUnreachableError, startListener } from "./transport";
-import { vi } from "vitest";
+
+function lead(id: string, cwd: string): AgentRecord {
+  return { id, kind: AgentKind.Lead, cwd, pid: 1, startedAt: 1 };
+}
+
+function worker(id: string, leadId: string, name: string, cwd = "/w/a"): AgentRecord {
+  return { id, kind: AgentKind.Teammate, cwd, pid: 1, startedAt: 1, leadId, name };
+}
+
+const leadA = lead("leadaaaa", "/w/a");
+const leadB = lead("leadbbbb", "/w/b");
+const alice = worker("wrkeraa1", "leadaaaa", "alice");
+const zoe = worker("wrkeraa2", "leadaaaa", "zoe");
+const bob = worker("wrkerbb1", "leadbbbb", "bob", "/w/b");
+
+/** Common registry: two leads, leadA owns alice and zoe, leadB owns bob. */
+function registry(): AgentRecord[] {
+  return [leadA, leadB, alice, zoe, bob];
+}
 
 /**
- * Tests use a real team config on disk and real sockets. Team names are
- * unique per test, so parallel test files never share a socket.
+ * Tests run real socket listeners. `os.tmpdir` is mocked to a short temp
+ * directory because socket paths must stay under 90 characters.
  */
-describe("messaging over sockets", () => {
-  let team: string;
-  let configDir: string;
+describe("registry messaging", () => {
+  let tmp: string;
   let listeners: MessageListener[];
 
-  /** Start a listener for one member and collect what it receives. */
-  const ids: Record<string, string> = { alice: "alice111", bob: "bobby111", sender: "sender11", member1: "member11", member2: "member22", up: "upup1111", down: "down1111" };
-
-  async function listen(agent: string): Promise<TeamMessage[]> {
+  /** Start a listener for one agent id and collect what it receives. */
+  async function listen(id: string): Promise<TeamMessage[]> {
     const received: TeamMessage[] = [];
     listeners.push(
-      await startListener(ids[agent], (m) => {
+      await startListener(id, (m) => {
         received.push(m);
       }),
     );
     return received;
   }
 
-  function writeConfig(...members: string[]): void {
-    fs.writeFileSync(
-      path.join(configDir, "config.json"),
-      JSON.stringify({ name: team, members: members.map((name) => ({ name, registryId: ids[name] })) }),
-    );
-  }
-
   beforeEach(() => {
-    team = `t${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-    configDir = fs.mkdtempSync(path.join(os.tmpdir(), "msg-test-"));
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "m"));
+    vi.spyOn(os, "tmpdir").mockReturnValue(tmp);
     listeners = [];
-    vi.spyOn(paths, "teamDir").mockReturnValue(configDir);
-    vi.spyOn(paths, "configPath").mockReturnValue(path.join(configDir, "config.json"));
   });
 
   afterEach(async () => {
     await Promise.all(listeners.map((l) => l.close()));
     vi.restoreAllMocks();
-    fs.rmSync(configDir, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  describe("sendPlainMessage", () => {
-    it("delivers a message with id, sender, recipient, subject, and body", async () => {
-      writeConfig("alice", "bob");
-      const received = await listen("bob");
-
-      await sendPlainMessage(team, ids.alice, "alice", "bob", "Greeting", "Hello Bob!", "hi there");
-
-      expect(received).toHaveLength(1);
-      expect(received[0].id).toHaveLength(8);
-      expect(received[0]).toMatchObject({
-        from: ids.alice,
-        to: ids.bob,
-        fromLabel: "alice",
-        subject: "Greeting",
-        text: "Hello Bob!",
-        summary: "hi there",
-      });
-      expect(Number.isNaN(Date.parse(received[0].timestamp))).toBe(false);
+  describe("agentLabel", () => {
+    it("labels a lead by its directory", () => {
+      expect(agentLabel(leadA)).toBe("Pi Agent in /w/a");
     });
 
-    it("gives each message a different id", async () => {
-      writeConfig("alice", "bob");
-      const received = await listen("bob");
-      await sendPlainMessage(team, ids.alice, "alice", "bob", "s", "one");
-      await sendPlainMessage(team, ids.alice, "alice", "bob", "s", "two");
-      expect(new Set(received.map((m) => m.id)).size).toBe(2);
+    it("labels a named worker by name and directory", () => {
+      expect(agentLabel(alice)).toBe("Worker alice in /w/a");
     });
 
-    it("keeps the order of sequential messages", async () => {
-      writeConfig("alice", "bob");
-      const received = await listen("bob");
-      for (let i = 0; i < 20; i++) await sendPlainMessage(team, ids.alice, "alice", "bob", "s", `m${i}`);
-      expect(received.map((m) => m.text)).toEqual(Array.from({ length: 20 }, (_, i) => `m${i}`));
+    it("falls back to the id for an unnamed worker", () => {
+      const unnamed: AgentRecord = { ...alice, id: "wrkeraa9", name: undefined };
+      expect(agentLabel(unnamed)).toBe("Worker wrkeraa9 in /w/a");
+    });
+  });
+
+  describe("resolveRecipient", () => {
+    it("resolves a peer lead by id", () => {
+      expect(resolveRecipient(leadA, "leadbbbb", registry())).toEqual(leadB);
     });
 
-    it("rejects a recipient who is not a team member", async () => {
-      writeConfig("alice");
-      await expect(sendPlainMessage(team, ids.alice, "alice", "wrker", "s", "t")).rejects.toThrow(/not a member/);
+    it("resolves the alias for a worker sender to its own lead", () => {
+      expect(resolveRecipient(alice, LEAD_ALIAS, registry())).toEqual(leadA);
     });
 
-    it("rejects a message to a team that does not exist", async () => {
-      await expect(sendPlainMessage(team, "alice111", "a", "b", "s", "t")).rejects.toThrow(/not found/);
+    it("resolves an own worker by id and by name", () => {
+      expect(resolveRecipient(leadA, "wrkeraa1", registry())).toEqual(alice);
+      expect(resolveRecipient(leadA, "alice", registry())).toEqual(alice);
     });
 
-    it("fails at once with RecipientUnreachableError when the member does not run", async () => {
-      writeConfig("alice", "bob");
-      await expect(sendPlainMessage(team, ids.alice, "alice", "bob", "s", "t")).rejects.toBeInstanceOf(
-        RecipientUnreachableError,
+    it("rejects another lead's worker by id and by name", () => {
+      expect(() => resolveRecipient(leadA, "wrkerbb1", registry())).toThrow(/not visible/);
+      expect(() => resolveRecipient(leadA, "bob", registry())).toThrow(/not visible/);
+    });
+
+    it("rejects a worker sending to another lead", () => {
+      expect(() => resolveRecipient(alice, "leadbbbb", registry())).toThrow(/not visible/);
+    });
+
+    it("rejects a worker sending to a non-sibling worker", () => {
+      expect(() => resolveRecipient(alice, "wrkerbb1", registry())).toThrow(/not visible/);
+    });
+
+    it("rejects self-delivery", () => {
+      expect(() => resolveRecipient(leadA, "leadaaaa", registry())).toThrow(/not visible/);
+    });
+
+    it("throws for an unknown id and an unknown name", () => {
+      expect(() => resolveRecipient(leadA, "nope0001", registry())).toThrow(/Unknown recipient "nope0001"/);
+      expect(() => resolveRecipient(leadA, "carol", registry())).toThrow(/Unknown recipient "carol"/);
+    });
+
+    it("resolves an 8-char lowercase worker name that looks like an id", () => {
+      const reviewer = worker("wrkeraa9", "leadaaaa", "reviewer");
+      expect(resolveRecipient(leadA, "reviewer", [...registry(), reviewer])).toEqual(reviewer);
+    });
+
+    it("throws and lists ids when a name matches several workers", () => {
+      const alias = worker("wrkeraa3", "leadaaaa", "alice");
+      const records = [leadA, leadB, alice, alias, zoe, bob];
+      expect(() => resolveRecipient(leadA, "alice", records)).toThrow(
+        /Ambiguous recipient "alice".*wrkeraa1, wrkeraa3/s,
       );
     });
+
+    it("throws when a worker alias sender has no lead", () => {
+      expect(() => resolveRecipient({ ...alice, leadId: undefined }, LEAD_ALIAS, registry())).toThrow(
+        /no lead/,
+      );
+    });
+
+    it("throws when the recipient string is the broadcast alias", () => {
+      expect(() => resolveRecipient(alice, BROADCAST_RECIPIENT, registry())).toThrow(/broadcast/);
+    });
   });
 
-  describe("broadcastMessage", () => {
+  describe("sendAgentMessage", () => {
+    it("delivers lead to peer lead by id and returns the recipient", async () => {
+      const inbox = await listen("leadbbbb");
+
+      const resolved = await sendAgentMessage(leadA, "leadbbbb", "Greeting", "Hello!", "hi", registry());
+
+      expect(resolved).toEqual(leadB);
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].id).toHaveLength(8);
+      expect(Number.isNaN(Date.parse(inbox[0].timestamp))).toBe(false);
+      expect(inbox[0]).toMatchObject({
+        from: "leadaaaa",
+        to: "leadbbbb",
+        fromLabel: "Pi Agent in /w/a",
+        subject: "Greeting",
+        text: "Hello!",
+        summary: "hi",
+      });
+    });
+
+    it("delivers lead to own worker by name", async () => {
+      const inbox = await listen("wrkeraa1");
+
+      await sendAgentMessage(leadA, "alice", "Task", "Work", undefined, registry());
+
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toMatchObject({
+        to: "wrkeraa1",
+        fromLabel: "Pi Agent in /w/a",
+        subject: "Task",
+      });
+    });
+
+    it("delivers lead to own worker by id", async () => {
+      const inbox = await listen("wrkeraa2");
+
+      await sendAgentMessage(leadA, "wrkeraa2", "Task", "Work", undefined, registry());
+
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0].to).toBe("wrkeraa2");
+    });
+
+    it("rejects a lead messaging another lead's worker by id and by name", async () => {
+      await expect(sendAgentMessage(leadA, "wrkerbb1", "s", "t", undefined, registry())).rejects.toThrow(
+        /not visible/,
+      );
+      await expect(sendAgentMessage(leadA, "bob", "s", "t", undefined, registry())).rejects.toThrow(
+        /not visible/,
+      );
+    });
+
+    it("delivers worker to its lead through the alias", async () => {
+      const inbox = await listen("leadaaaa");
+
+      await sendAgentMessage(alice, LEAD_ALIAS, "Report", "Done", undefined, registry());
+
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toMatchObject({
+        from: "wrkeraa1",
+        to: "leadaaaa",
+        fromLabel: "Worker alice in /w/a",
+        subject: "Report",
+      });
+    });
+
+    it("delivers worker to a sibling worker by name", async () => {
+      const inbox = await listen("wrkeraa2");
+
+      await sendAgentMessage(alice, "zoe", "s", "t", undefined, registry());
+
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toMatchObject({ from: "wrkeraa1", to: "wrkeraa2" });
+    });
+
+    it("rejects a worker messaging another lead", async () => {
+      await expect(sendAgentMessage(alice, "leadbbbb", "s", "t", undefined, registry())).rejects.toThrow(
+        /not visible/,
+      );
+    });
+
+    it("suggests spawn_team_lead when the resolved lead is offline", async () => {
+      const err = await sendAgentMessage(leadA, "leadbbbb", "s", "t", undefined, registry()).catch(
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(RecipientUnreachableError);
+      expect((err as Error).message).toMatch(/spawn_team_lead\(folder="\/w\/b"\)/);
+    });
+
+    it("does not suggest spawn_team_lead for an offline worker", async () => {
+      const err = await sendAgentMessage(leadA, "zoe", "s", "t", undefined, registry()).catch(
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(RecipientUnreachableError);
+      expect((err as Error).message).toMatch(/not reachable/);
+      expect((err as Error).message).not.toMatch(/spawn_team_lead/);
+    });
+  });
+
+  describe("broadcastAgentMessage", () => {
     it("exposes the broadcast recipient name", () => {
       expect(BROADCAST_RECIPIENT).toBe("all");
     });
 
-    it("delivers to every member except the sender", async () => {
-      writeConfig("sender", "member1", "member2");
-      const senderInbox = await listen("sender");
-      const first = await listen("member1");
-      const second = await listen("member2");
+    it("reaches only the lead's own workers, never peer leads or their workers", async () => {
+      const aliceInbox = await listen("wrkeraa1");
+      const zoeInbox = await listen("wrkeraa2");
+      const leadBInbox = await listen("leadbbbb");
+      const bobInbox = await listen("wrkerbb1");
 
-      const result = await broadcastMessage(team, ids.sender, "sender", "Broadcast Subject", "broadcast text", "summary");
+      const result = await broadcastAgentMessage(leadA, "Status", "anything", "sum", registry());
 
-      expect(result.delivered.sort()).toEqual(["member1", "member2"]);
+      expect(result.delivered.map((r) => r.id).sort()).toEqual(["wrkeraa1", "wrkeraa2"]);
       expect(result.failed).toEqual([]);
-      expect(first).toHaveLength(1);
-      expect(first[0]).toMatchObject({ from: ids.sender, to: ids.member1, fromLabel: "sender", subject: "Broadcast Subject" });
-      expect(second[0].to).toBe(ids.member2);
-      expect(senderInbox).toHaveLength(0);
+      expect(aliceInbox).toHaveLength(1);
+      expect(aliceInbox[0]).toMatchObject({
+        from: "leadaaaa",
+        to: "wrkeraa1",
+        fromLabel: "Pi Agent in /w/a",
+        subject: "Status",
+        summary: "sum",
+      });
+      expect(zoeInbox[0].to).toBe("wrkeraa2");
+      expect(leadBInbox).toHaveLength(0);
+      expect(bobInbox).toHaveLength(0);
     });
 
-    it("reports members that cannot be reached and still delivers to the rest", async () => {
-      writeConfig("sender", "up", "down");
-      const upInbox = await listen("up");
+    it("reaches the worker's own lead and siblings only", async () => {
+      const leadAInbox = await listen("leadaaaa");
+      const zoeInbox = await listen("wrkeraa2");
+      const leadBInbox = await listen("leadbbbb");
+      const bobInbox = await listen("wrkerbb1");
 
-      const result = await broadcastMessage(team, ids.sender, "sender", "s", "t");
+      const result = await broadcastAgentMessage(alice, "s", "t", undefined, registry());
 
-      expect(result.delivered).toEqual(["up"]);
+      expect(result.delivered.map((r) => r.id).sort()).toEqual(["leadaaaa", "wrkeraa2"]);
+      expect(result.failed).toEqual([]);
+      expect(leadAInbox).toHaveLength(1);
+      expect(leadAInbox[0].fromLabel).toBe("Worker alice in /w/a");
+      expect(zoeInbox).toHaveLength(1);
+      expect(leadBInbox).toHaveLength(0);
+      expect(bobInbox).toHaveLength(0);
+    });
+
+    it("reports unreachable targets as failed and still delivers to the rest", async () => {
+      const aliceInbox = await listen("wrkeraa1");
+
+      const result = await broadcastAgentMessage(leadA, "s", "t", undefined, registry());
+
+      expect(result.delivered.map((r) => r.id)).toEqual(["wrkeraa1"]);
       expect(result.failed).toHaveLength(1);
-      expect(result.failed[0].name).toBe("down");
+      expect(result.failed[0].record.id).toBe("wrkeraa2");
       expect(result.failed[0].reason).toMatch(/not reachable/);
-      expect(upInbox).toHaveLength(1);
+      expect(aliceInbox).toHaveLength(1);
     });
 
-    it("reports a member without an agent id as failed and still delivers to the rest", async () => {
-      writeConfig("sender", "up", "legacy");
-      const upInbox = await listen("up");
-
-      const result = await broadcastMessage(team, ids.sender, "sender", "s", "t");
-
-      expect(result.delivered).toEqual(["up"]);
-      expect(result.failed).toEqual([{ name: "legacy", reason: expect.stringMatching(/no agent id/) }]);
-      expect(upInbox).toHaveLength(1);
-    });
-
-    it("completes with no recipients", async () => {
-      writeConfig("sender");
-      await expect(broadcastMessage(team, ids.sender, "sender", "s", "t")).resolves.toEqual({ delivered: [], failed: [] });
-    });
-
-    it("rejects a team that does not exist", async () => {
-      await expect(broadcastMessage(team, "alice111", "a", "s", "t")).rejects.toThrow(/not found/);
+    it("completes with no targets", async () => {
+      const result = await broadcastAgentMessage(leadA, "s", "t", undefined, [leadA, leadB]);
+      expect(result).toEqual({ delivered: [], failed: [] });
     });
   });
 });
