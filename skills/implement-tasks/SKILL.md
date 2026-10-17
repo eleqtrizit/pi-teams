@@ -53,3 +53,4 @@ Send each agent instructions in this form, substituting the task's objective and
 
 - One worker per ready task.
 - If a task depends on unfinished work, do not assign it until its blockers are completed. Use `get_batch_of_tasks` to see which tasks are ready.
+- If a worker stalls (repeats a failed approach, makes smaller and smaller edits, or declares the task impossible after two corrections), close it with `close_worker` and spawn a fresh worker. Send the fresh worker the original task, the current state of the work, and one line on what failed. Do not send it the stalled worker's full history. A long session anchors the agent to its own failed attempts; a fresh context makes larger, bolder changes.
