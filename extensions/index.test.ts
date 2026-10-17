@@ -267,6 +267,7 @@ describe("formatDeliveredMessages", () => {
     expect(output).toContain("**From:** Worker alice in /workspace (worker-id)");
     expect(output).toContain("**To:** team-lead-id");
     expect(output).toContain('Reply with send_message(recipient="worker-id").');
+    expect(output).toContain("Reply expected: no.");
     expect(output).toContain("**Subject:** Status update");
     expect(output).toContain("**Timestamp:** 2026-05-28 10:00:00");
     expect(output).toContain("first report");
@@ -301,6 +302,77 @@ describe("formatDeliveredMessages", () => {
     expect(output).toContain('<delivered-message index="2">');
     expect(output).toContain("body one");
     expect(output).toContain("body two");
+  });
+
+  it("marks a message with expectReply true as expecting a reply", () => {
+    const messages: TeamMessage[] = [
+      {
+        id: "aaa11111",
+        from: "worker-id",
+        to: "team-lead-id",
+        fromLabel: "Worker alice in /workspace",
+        subject: "Status update",
+        text: "first report",
+        timestamp: "2026-05-28T10:00:00.000Z",
+        expectReply: true,
+      },
+    ];
+
+    const output = formatDeliveredMessages(messages);
+    expect(output).toContain(
+      'Reply expected: yes. Answer with send_message(recipient="worker-id").',
+    );
+    expect(output).not.toContain("Reply expected: no.");
+  });
+
+  it("marks a message with expectReply false as not expecting a reply", () => {
+    const messages: TeamMessage[] = [
+      {
+        id: "aaa11111",
+        from: "worker-id",
+        to: "team-lead-id",
+        fromLabel: "Worker alice in /workspace",
+        subject: "Status update",
+        text: "first report",
+        timestamp: "2026-05-28T10:00:00.000Z",
+        expectReply: false,
+      },
+    ];
+
+    const output = formatDeliveredMessages(messages);
+    expect(output).toContain("Reply expected: no.");
+    expect(output).not.toContain("Reply expected: yes.");
+  });
+
+  it("mixes reply expectations across multiple messages", () => {
+    const messages: TeamMessage[] = [
+      {
+        id: "aaa11111",
+        from: "worker-one",
+        to: "team-lead-id",
+        fromLabel: "Worker one in /workspace",
+        subject: "First",
+        text: "body one",
+        timestamp: "2026-05-28T10:00:00.000Z",
+        expectReply: true,
+      },
+      {
+        id: "bbb22222",
+        from: "worker-two",
+        to: "team-lead-id",
+        fromLabel: "Worker two in /workspace",
+        subject: "Second",
+        text: "body two",
+        timestamp: "2026-05-28T10:01:00.000Z",
+      },
+    ];
+
+    const output = formatDeliveredMessages(messages);
+    expect(output).toContain(
+      'Reply expected: yes. Answer with send_message(recipient="worker-one").',
+    );
+    expect(output).toContain("Reply expected: no.");
+    expect(output).not.toContain('Answer with send_message(recipient="worker-two").');
   });
 });
 

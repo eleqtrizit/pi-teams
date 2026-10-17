@@ -20,11 +20,11 @@ Tools are registered in `extensions/index.ts`, split by session identity into th
 | `close_worker`          | lead    | Close one of your own workers                        | `src/utils/teams.ts` (`removeAgent`)                            |
 | `get_flavored_models`   | lead    | Show the orchestrator/worker/swarm model lists       | `src/utils/flavoredModels.ts`                                   |
 | `get_models`            | lead    | Show OSS and frontier model lists                    | `src/utils/flavoredModels.ts`                                   |
-| `send_message`          | shared  | Deliver a message to one agent, or to all (`all`)    | `src/utils/messaging.ts`, `src/utils/transport.ts`                |
+| `send_message`          | shared  | Deliver a message to one agent, or to all (`all`); required `expectReply` | `src/utils/messaging.ts`, `src/utils/transport.ts`, `src/utils/obligations.ts` |
 | `list_agents`           | shared  | Show visible agents with status and socket availability | `src/utils/registry.ts`, `src/utils/transport.ts`             |
 | `close_myself`          | worker + spawned leads | Terminate the calling agent           | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
 
-`close_myself` registers for workers and for spawned leads (a lead session with a preassigned `PI_AGENT_ID`, i.e. started by `spawn_team_lead`). The interactive top-level lead session never registers it, so it cannot kill itself with one tool call. A spawned lead closing itself sends no report (it has no lead of its own); `extensions/index.ts` holds the registration gate, `registerCloseMyself` in `extensions/shared-tools.ts` holds the tool.
+`close_myself` registers for workers and for spawned leads (a lead session with a preassigned `PI_AGENT_ID`, i.e. started by `spawn_team_lead`). The interactive top-level lead session never registers it, so it cannot kill itself with one tool call. Before it removes itself, `close_myself` sends a `Closed: <label>` notice to every agent still waiting for a reply (see [Reply obligations](#reply-obligations-expectreply)); it sends nothing else. `extensions/index.ts` holds the registration gate, `registerCloseMyself` in `extensions/shared-tools.ts` holds the tool.
 | `read`                  | shared  | Read a file; text results end with `content_hash:`   | `extensions/fs-tools.ts`                                        |
 | `edit`                  | shared  | One targeted replacement; takes `readHash`           | `extensions/fs-tools.ts`                                        |
 | `write`                 | shared  | Full-file write; takes `readHash`                    | `extensions/fs-tools.ts`                                        |
@@ -60,32 +60,31 @@ Read-only workers are additionally filtered by pi's `--tools` set at spawn, so t
 - **Direct delivery:** agents never call a tool to read their own messages. The socket listener hands each message's full body (with from/to/subject/timestamp header) to the extension, which sends it as a user message. Messages that arrive while the agent is mid-run are merged into one follow-up at the run boundary.
 - **Acknowledged sends:** `send_message` resolves only after the recipient's extension accepted the message. If the recipient is not running, the send fails at once with `RecipientUnreachableError`. There is no mailbox, so a message to a stopped agent is never stored.
 - **Mid-run vs idle:** if a message arrives while the agent is mid-turn, it is queued and flushed as a follow-up at the run boundary so it never interrupts active tool work. If the agent is idle, the delivery wakes it for a fresh turn.
-- **Sending:** agents use `send_message` with a recipient. Accepted forms are an 8-character agent id from `list_agents`, one of your worker names, the alias `"lead"` for your lead (workers only), or `"all"` to reach every visible agent. A broadcast reports the members it could not reach and still delivers to the rest.
+- **Sending:** agents use `send_message` with a recipient. Accepted forms are an 8-character agent id from `list_agents`, one of your worker names, the alias `"lead"` for your lead (workers only), or `"all"` to reach every visible agent. A broadcast reports the members it could not reach and still delivers to the rest. Every send sets the required boolean `expectReply`: `true` when the sender needs an answer (a task, a question, a status request), `false` for replies, reports, and acknowledgments.
 - **Visibility rules:** a lead sees every lead (including itself) plus the workers it owns; it never sees workers owned by another lead. A worker sees its own lead plus its sibling workers; it never sees another lead. `authorizeSender` (in `src/utils/messaging.ts`) enforces these rules on the receiver side as well, so a sender that addresses an invisible agent gets an error.
-- **Message header:** every delivered message includes a `fromLabel` such as `Worker alice in /path` or `Pi Agent in /path`, plus the sender's agent id.
+- **Message header:** every delivered message includes a `fromLabel` such as `Worker alice in /path` or `Pi Agent in /path`, plus the sender's agent id. It also carries `Reply expected: yes. Answer with send_message(recipient="<id>").` or `Reply expected: no.`, from the message's `expectReply` field (`formatDeliveredMessages` in `extensions/index.ts`).
 
-## Worker Reports (Automated, No LLM)
+## Reply obligations (expectReply)
 
-When a worker's run settles, the extension sends the worker's final reply to its lead by agent id. The worker does not need to remember to report.
+The extension never sends an agent's own text on its behalf. Agents report with `send_message`. A sender that needs an answer sets `expectReply: true`, and the extension reminds the recipient until it answers.
 
-- The `agent_end` handler records the newest assistant text of each low-level run (`extractFinalReply` in `src/utils/report.ts`) and appends it to the cycle's reply list. A retry or follow-up run can follow `agent_end`, so the report waits.
-- The `agent_settled` handler fires when Pi will not continue on its own. It sends every reply of the cycle, in order, to the lead through `sendAgentMessage`, with the subject `Report from <agent>`. One reply goes out unchanged. Several replies are numbered (`Reply 1 of 2`). A report carries at most 20 replies.
-- If the worker called `send_message` to `lead` (or broadcast with recipient `all`) during the cycle, the auto-report is skipped. The in-memory `reportedToLead` flag tracks this and resets at every settle.
-- If the run was aborted (`event.aborted`), the extension sends an interruption notice instead, with the replies attached when any exist. The notice is sent even after a manual report.
-- A run with no assistant text sends `EMPTY_REPORT_TEXT`, so the lead always hears from the worker.
-- `close_myself` kills the worker before its run can settle, so the tool sends the report itself (`buildClosingReport`) before `removeAgent` runs. The report holds the cycle's replies plus the text of the run in progress (tracked from `message_end`), followed by a note that the worker closed itself. The lead's run hold ends when the worker count reaches zero, so the report must arrive first; it does because the send waits for the lead's acknowledgement.
-- Reports go through `sendAgentMessage`, so the lead receives them like any other message. If the lead or the worker is gone (`close_all_workers`, `close_worker`), the send fails and the handler ignores the error.
+- **Recording:** when a message with `expectReply: true` arrives, `receiveTeamMessage` records an obligation to the sender in the session's `ObligationTracker` (`src/utils/obligations.ts`). A newer request from the same sender replaces the subject and resets the reminder count.
+- **Clearing:** any `send_message` from the recipient to that sender clears the obligation, whatever its `expectReply` value. A send that fails with `RecipientUnreachableError` also clears it, because the sender is gone. The `onMessageSent` and `onRecipientUnreachable` hooks on `SharedToolDeps` connect the tool to the tracker.
+- **Reminders:** the `agent_before_settle` handler runs at the last point where Pi can still continue a run. For a completed run that can continue, it appends one `custom_message` entry (`customType` `pi-teams-reminder`) that names every waiting sender, and returns `continue: true`. The reminder reaches the model as user text in the same run, so the agent stays Busy and no new settle cycle starts. Each obligation gets at most `MAX_REMINDERS` (3) reminders. Aborted runs, failed runs, and runs that cannot continue get none.
+- **Expiry:** at `agent_settled`, every obligation that reached the cap is removed and its sender receives `No reply from <label>`, with fixed text that never quotes the agent. The notice also releases a `pi -p` lead parked in the run hold.
+- **Interruption:** when a run is aborted, every waiting sender receives `Interrupted: <label>`. The obligations stay pending, so the next run reminds again.
+- **Closing:** `close_myself` sends `Closed: <label>` to every waiting sender before `removeAgent` runs.
+- **Loop termination:** a reply sent with `expectReply: false` creates no obligation on the original sender, so a request and its answer end the exchange. Only agents that mark every message as needing an answer can extend it, and the reminder cap bounds each obligation.
+- **Notices** are sent with `expectReply: false`, and send errors are ignored because the recipient can be gone.
 
-**Peer-lead auto-reply:** when a lead receives a message from another lead during a settle cycle, it adds that peer's id to `peerLeadsToReply`. At `agent_settled`, if the lead has not already messaged that peer during the cycle, it sends one automatic reply with the subject `Reply from <label>` and the cycle's own replies as the body. This prevents infinite loops because the reply subject starts with `Reply from `, so the receiving lead does not queue another auto-reply.
-
-The report logic is pure and unit-tested in `src/utils/report.test.ts`. The handler wiring is tested in `extensions/auto-report.test.ts`. The extension requires Pi 1.1.0 or later because `aborted` on `agent_settled` arrived in that release.
+The pure logic is unit-tested in `src/utils/obligations.test.ts`. The handler wiring and the end-to-end scenarios (silent worker, early reply, two leads, broadcast, run-hold release) are tested in `extensions/expect-reply.test.ts`. `agent_before_settle` arrived in Pi 0.87.0, and `aborted` on `agent_settled` arrived in Pi 1.1.0, so the extension requires Pi 1.1.0 or later.
 
 ## Non-Interactive Sessions (Run Hold)
 
 When the team-lead runs with `pi -p` (or `--mode json`), pi exits as soon as the lead's run settles, which would strand spawned workers in their panes. The extension holds the run open instead:
 
 - While this lead has live workers in the registry, the `agent_end` handler parks the run. No LLM activity happens while parked; worker messages arrive through the socket listener and are queued as follow-ups. Sleeping is not involved; the hold happens in the extension, not in bash commands.
-- A queued worker message releases the hold and continues the run, waking the lead with the results.
+- A queued worker message releases the hold and continues the run, waking the lead with the results. A worker's `send_message` report and the `No reply from`, `Interrupted:`, and `Closed:` notices all arrive this way.
 - The hold releases when this lead has no workers in the registry, when no worker has been alive for three consecutive liveness checks (workers need a moment to boot), or when a follow-up is queued.
 - Idle workers do not release the hold. Completion is the lead's decision, made by calling `close_all_workers` when every teammate has reported back; the run then settles and the session exits normally.
 - Worker liveness uses the worker's pid file (written at its `session_start`, before its first turn) as the primary signal, with pane/window probes and the activity marker as fallbacks. Spawned workers start as plain pi sessions with no extension flags, so they load their own configured extensions (pi-teams, pi-sandbox). Never add `-ne`: it drops every configured extension, including the sandbox.
@@ -101,7 +100,7 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 
 - Idle state is managed via event-driven timers with a shared mutable context object.
 - When the socket listener receives a message, the extension delivers it as a user message, which wakes the idle agent for a new turn.
-- The `agent_settled` auto-report covers the case where an agent ended its run without reporting back to its lead.
+- An agent that owes a reply is reminded at `agent_before_settle`, and its sender is told at `agent_settled` when the reminders run out (see [Reply obligations](#reply-obligations-expectreply)).
 
 ## Team Shutdown
 
@@ -132,7 +131,7 @@ pi-teams/
 │   ├── index.ts                      # tool registration (one lead block, shared, worker), socket listener, hold
 │   ├── index.test.ts                 # tests for pure helpers: formatting and queueing
 │   ├── close-myself.test.ts          # close_myself registration and execute tests
-│   ├── auto-report.test.ts           # agent_settled auto-report handler tests
+│   ├── expect-reply.test.ts          # reply obligations: recording, reminders, notices, end-to-end scenarios
 │   ├── tool-registration.test.ts     # registration-by-identity contract tests
 │   ├── fs-tools.ts                 # hash-guarded read/edit/write overrides
 │   ├── lead-tools.ts               # lead-only tool registrations
@@ -146,7 +145,7 @@ pi-teams/
 │   └── utils/                        # all state mutation and decision logic
 │       ├── terminal-adapter.ts       # TerminalAdapter interface that the adapters implement
 │       ├── teams.ts                  # shared removeAgent removal path
-│       ├── report.ts                 # final-reply extraction and worker report text for agent_settled
+│       ├── obligations.ts            # ObligationTracker, reminder text, and notices for expectReply
 │       ├── transport.ts              # Unix socket listener and acknowledged send
 │       ├── messaging.ts            # send and broadcast through the transport
 │       ├── paths.ts                  # registry and socket path builders and sanitizeName
@@ -181,4 +180,4 @@ Independent leads run in other directories. They are not subordinate to each oth
 
 - **list_agents** output: one line per agent in the form `Pi Agent in <cwd>: <id>: <status>` for leads, and `Worker <name> in <cwd>: <id>: <status>` for workers. The calling agent is marked `(you)` and always shown as Online. Offline leads are collapsed to one record per directory (the newest by `startedAt`), unless an online lead exists in that directory.
 - **spawn_team_lead** starts a fresh lead session in an existing folder. It does not join your team; you cannot close it with `close_worker`, and it runs its own extensions. After it starts, talk to it with `send_message(recipient=<id>)`.
-- **Peer auto-reply:** when a lead receives a message from another lead, it sends one automatic reply at settle time. The reply subject starts with `Reply from ` so the receiving lead does not send another auto-reply in response.
+- **Peer replies:** leads answer each other with `send_message`; nothing is sent automatically. A lead that needs an answer sets `expectReply: true`, and the receiving lead is reminded until it replies (see [Reply obligations](#reply-obligations-expectreply)).

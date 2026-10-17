@@ -1,7 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import closeMyselfExtension from "./index";
+import { registerCloseMyself } from "./shared-tools";
 import * as messaging from "../src/utils/messaging";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
+import { ObligationTracker } from "../src/utils/obligations";
+import type { SharedToolDeps } from "./shared-tools";
+import type { TerminalAdapter } from "../src/utils/terminal-adapter";
 
 const teamsMocks = vi.hoisted(() => ({
   removeAgent: vi.fn(),
@@ -18,6 +22,7 @@ vi.mock("../src/adapters/terminal-registry", () => ({
 
 const workerId = "clswrk01";
 const leadId = "clsled01";
+const peerId = "peer1111";
 const leadRecord: AgentRecord = {
   id: leadId,
   kind: AgentKind.Lead,
@@ -94,32 +99,42 @@ describe("close_myself registration", () => {
   });
 });
 
-/** Load the extension and keep both the tools and the event handlers. */
-function registerWithHandlers(): { tools: Map<string, any>; handlers: { get(name: string): (...a: any[]) => Promise<void> } } {
-  const tools = new Map<string, any>();
-  const registered = new Map<string, any[]>();
-  closeMyselfExtension({
-    on: (name: string, handler: any) => registered.set(name, [...(registered.get(name) ?? []), handler]),
-    registerTool: (tool: any) => tools.set(tool.name, tool),
+/** Build a minimal selfRecord for a worker with a lead. */
+function makeSelfRecord(): AgentRecord {
+  return {
+    id: workerId,
+    kind: AgentKind.Teammate,
+    cwd: process.cwd(),
+    pid: process.pid,
+    startedAt: 1,
+    name: "worker-1",
+    leadId,
+  };
+}
+
+/** Register close_myself with custom deps and return the tool. */
+function registerCloseMyselfTool(deps: Partial<SharedToolDeps>): any {
+  const registered = new Map<string, any>();
+  const pi = {
+    registerTool: (tool: any) => registered.set(tool.name, tool),
     registerCommand: vi.fn(),
     registerEntryRenderer: vi.fn(),
     sendUserMessage: vi.fn(),
-  } as any);
-  const handlers = {
-    get: (name: string) => async (...args: any[]) => {
-      for (const handler of registered.get(name) ?? []) await handler(...args);
-    },
+  } as any;
+  const fullDeps: SharedToolDeps = {
+    agentName: "worker-1",
+    agentId: workerId,
+    isWorker: true,
+    messageListener: null,
+    onMessageSent: vi.fn(),
+    onRecipientUnreachable: vi.fn(),
+    obligations: new ObligationTracker(),
+    terminal: null as TerminalAdapter | null,
+    selfRecord: makeSelfRecord(),
+    ...deps,
   };
-  return { tools, handlers };
-}
-
-async function initializeWorkerSession(
-  handlers: { get(name: string): (...args: any[]) => Promise<void> },
-): Promise<void> {
-  await handlers.get("session_start")({}, {
-    ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
-    hasUI: false,
-  });
+  registerCloseMyself(pi, fullDeps);
+  return registered.get("close_myself");
 }
 
 function stubWorkerEnv(): void {
@@ -137,8 +152,6 @@ describe("close_myself execute", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    // The extension writes PI_AGENT_ID back into process.env on every run,
-    // so unstubAllEnvs alone leaves a preassigned id behind.
     delete process.env.PI_AGENT_ID;
     delete process.env.PI_LEAD_ID;
     vi.restoreAllMocks();
@@ -167,76 +180,79 @@ describe("close_myself execute", () => {
     expect(result.content[0].text).toContain("closed itself");
   });
 
-  it("reports its replies to the registered lead before it removes itself", async () => {
-    const order: string[] = [];
-    const sendSpy = vi.spyOn(messaging, "sendAgentMessage").mockImplementation(async () => {
-      order.push("report");
-      return leadRecord;
-    });
-    teamsMocks.removeAgent.mockImplementation(async () => {
-      order.push("remove");
-    });
+  it("sends one Closed notice per owed obligation before removing itself", async () => {
+    const tracker = new ObligationTracker();
+    tracker.record(leadId, "Pi Agent in /lead", "Question 1");
+    tracker.record(peerId, "Peer Lead in /other", "Question 2");
 
-    const { tools, handlers } = registerWithHandlers();
-    await initializeWorkerSession(handlers);
-    await handlers.get("agent_end")(
-      { messages: [{ role: "assistant", content: [{ type: "text", text: "first run" }] }] },
-      { hasUI: true },
-    );
-    await handlers.get("message_end")({
-      message: { role: "assistant", content: [{ type: "text", text: "wrote the file" }] },
-    });
-    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
-
-    expect(order).toEqual(["report", "remove"]);
-    expect(sendSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: workerId, leadId }),
-      messaging.LEAD_ALIAS,
-      "Report from worker-1",
-      expect.stringContaining("first run"),
-    );
-    const body = sendSpy.mock.calls[0][3] as string;
-    expect(body).toContain("first run");
-    expect(body).toContain("wrote the file");
-    expect(body).toContain("closed itself");
-  });
-
-  it("still removes itself when the report cannot be sent", async () => {
-    vi.spyOn(messaging, "sendAgentMessage").mockRejectedValue(new Error("lead gone"));
-    teamsMocks.removeAgent.mockResolvedValue(undefined);
-
-    const { tools } = registerWithHandlers();
-    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
-
-    expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not count a tool-call-only message as text", async () => {
     const sendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
     teamsMocks.removeAgent.mockResolvedValue(undefined);
 
-    const { tools, handlers } = registerWithHandlers();
-    await initializeWorkerSession(handlers);
-    await handlers.get("message_end")({ message: { role: "assistant", content: [{ type: "text", text: "kept" }] } });
-    await handlers.get("message_end")({ message: { role: "assistant", content: [{ type: "toolCall", name: "close_myself" }] } });
-    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
+    const closeMyself = registerCloseMyselfTool({ obligations: tracker });
 
-    expect(sendSpy.mock.calls[0][3]).toContain("kept");
+    await closeMyself.execute("tool-call-1", {}, undefined, undefined, {});
+
+    // Closed notices sent before removeAgent
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+    const calls = sendSpy.mock.calls;
+    expect(calls[0][1]).toBe(leadId);
+    expect(calls[0][2]).toBe("Closed: Worker worker-1 in " + process.cwd());
+    expect(calls[0][3]).toContain('closed itself before replying to "Question 1"');
+    expect(calls[0][4]).toBe(false);
+    expect(calls[1][1]).toBe(peerId);
+    expect(calls[1][2]).toBe("Closed: Worker worker-1 in " + process.cwd());
+    expect(calls[1][3]).toContain('closed itself before replying to "Question 2"');
+    expect(calls[1][4]).toBe(false);
+    // removeAgent called after notices
+    expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
   });
 
-  it("skips the report when the worker has no lead id", async () => {
-    vi.stubEnv("PI_LEAD_ID", "");
+  it("sends nothing when no obligations are owed and still removes itself", async () => {
+    const tracker = new ObligationTracker();
+    const sendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
     teamsMocks.removeAgent.mockResolvedValue(undefined);
-    const sendSpy = vi.spyOn(messaging, "sendAgentMessage");
 
-    const { tools } = registerWithHandlers();
-    await tools.get("close_myself").execute("tool-call-1", {}, undefined, undefined, {});
+    const closeMyself = registerCloseMyselfTool({ obligations: tracker });
+
+    await closeMyself.execute("tool-call-1", {}, undefined, undefined, {});
 
     expect(sendSpy).not.toHaveBeenCalled();
     expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
   });
 
-  it("removes itself without sending a report when a spawned lead closes itself", async () => {
+  it("continues removal even when a notice send fails", async () => {
+    const tracker = new ObligationTracker();
+    tracker.record(leadId, "Pi Agent in /lead", "Question 1");
+    tracker.record(peerId, "Peer Lead in /other", "Question 2");
+
+    const sendSpy = vi.spyOn(messaging, "sendAgentMessage")
+      .mockImplementationOnce(async () => { throw new Error("lead down"); })
+      .mockImplementationOnce(async () => leadRecord);
+    teamsMocks.removeAgent.mockResolvedValue(undefined);
+
+    const closeMyself = registerCloseMyselfTool({ obligations: tracker });
+
+    await closeMyself.execute("tool-call-1", {}, undefined, undefined, {});
+
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+    expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips notices when selfRecord is null", async () => {
+    const tracker = new ObligationTracker();
+    tracker.record(leadId, "Pi Agent in /lead", "Question 1");
+    const sendSpy = vi.spyOn(messaging, "sendAgentMessage").mockResolvedValue(leadRecord);
+    teamsMocks.removeAgent.mockResolvedValue(undefined);
+
+    const closeMyself = registerCloseMyselfTool({ obligations: tracker, selfRecord: null });
+
+    await closeMyself.execute("tool-call-1", {}, undefined, undefined, {});
+
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes itself without sending notices when a spawned lead closes itself", async () => {
     vi.stubEnv("PI_AGENT_TYPE", "");
     vi.stubEnv("PI_AGENT_ID", leadId);
     vi.stubEnv("PI_LEAD_ID", "");

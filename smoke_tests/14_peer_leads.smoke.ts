@@ -78,14 +78,14 @@ describe("S14 peer leads", () => {
       expect(displayed).toContain(`Pi Agent in ${cwdB}: ${ID_B}: Online`);
 
       const messageLine = waitForLine(childB, (line) => line.includes('"text":"hello from lead A"'));
-      await sendAgentMessage(viewer, ID_B, "Peer greeting", "hello from lead A", undefined, online.map((entry) => entry.record));
+      await sendAgentMessage(viewer, ID_B, "Peer greeting", "hello from lead A", false, undefined, online.map((entry) => entry.record));
       const message = JSON.parse(await messageLine) as TeamMessage;
       expect(message.from).toBe(ID_A);
       expect(message.fromLabel).toBe(`Pi Agent in ${cwdA}`);
       expect(message.to).toBe(ID_B);
 
       // Lead broadcasts are scoped to their own workers. Peer leads are not targets.
-      const broadcast = await broadcastAgentMessage(viewer, "Peer broadcast", "local only", undefined, online.map((entry) => entry.record));
+      const broadcast = await broadcastAgentMessage(viewer, "Peer broadcast", "local only", false, undefined, online.map((entry) => entry.record));
       expect(broadcast.delivered).toEqual([]);
       expect(broadcast.failed).toEqual([]);
 
@@ -102,7 +102,7 @@ describe("S14 peer leads", () => {
       const offlineLine = formatAgentLine(offline[0].record, offline[0].status, viewer.id);
       expect(offlineLine).toContain(`Pi Agent in ${cwdB}: ${ID_B}: Offline`);
       await expect(
-        sendAgentMessage(viewer, ID_B, "After exit", "unreachable", undefined, afterExit.map((entry) => entry.record)),
+        sendAgentMessage(viewer, ID_B, "After exit", "unreachable", false, undefined, afterExit.map((entry) => entry.record)),
       ).rejects.toThrow(/spawn_team_lead/);
     } finally {
       for (const child of children) {

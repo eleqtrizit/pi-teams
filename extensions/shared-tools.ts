@@ -5,10 +5,11 @@ import type {
 import { Type } from "typebox";
 import * as messaging from "../src/utils/messaging";
 import { readAgentRecords } from "../src/utils/registry";
-import { appendReply, buildClosingReport } from "../src/utils/report";
 import type { AgentRecord } from "../src/utils/models";
+import type { ObligationTracker } from "../src/utils/obligations";
+import { buildClosedNotice } from "../src/utils/obligations";
 import * as teams from "../src/utils/teams";
-import { type MessageListener } from "../src/utils/transport";
+import { type MessageListener, RecipientUnreachableError } from "../src/utils/transport";
 import type { TerminalAdapter } from "../src/utils/terminal-adapter";
 import { registerFsTools } from "./fs-tools";
 import { getLastUserMessageText } from "./index";
@@ -19,10 +20,12 @@ export interface SharedToolDeps {
   agentId: string;
   isWorker: boolean;
   messageListener: MessageListener | null;
-  setReportedToLead: (reported: boolean) => void;
-  markRepliedToPeer: (id: string) => void;
-  cycleReplies: readonly string[];
-  currentRunText: string | null;
+  /** Called with the id of every recipient that accepted a message. */
+  onMessageSent: (recipientId: string) => void;
+  /** Called with the id of every recipient that was not reachable. */
+  onRecipientUnreachable: (recipientId: string) => void;
+  /** Replies this agent owes to senders that requested one with `expectReply`. */
+  obligations: ObligationTracker;
   terminal: TerminalAdapter | null;
   selfRecord: AgentRecord | null;
 }
@@ -33,6 +36,16 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
 
 function formatAgent(record: AgentRecord): string {
   return `${messaging.agentLabel(record)} (${record.id})`;
+}
+
+const NO_REPLY_NOTE =
+  "No reply is expected. If you wish to change this, send another message with " +
+  "'Please reply with update' with expectReply set to true.";
+const REPLY_EXPECTED_NOTE =
+  "A reply is expected and will arrive as a user message. End your turn; do not wait or poll.";
+
+function replyNote(expectReply: boolean): string {
+  return expectReply ? REPLY_EXPECTED_NOTE : NO_REPLY_NOTE;
 }
 
 function formatBroadcastFailures(
@@ -97,6 +110,12 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
           description: "Short subject line for the message.",
         }),
         content: Type.String({ description: "Full message body." }),
+        expectReply: Type.Boolean({
+          description:
+            "Set to true when you need an answer: assigning a task, asking a question, or requesting a status update. " +
+            "The recipient is reminded until it messages you back. " +
+            "Set to false for replies, reports, acknowledgments, and updates that need no answer.",
+        }),
         summary: Type.Optional(
           Type.String({ description: "Optional brief summary." }),
         ),
@@ -114,14 +133,17 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
           selfRecord,
           params.subject,
           params.content,
+          params.expectReply,
           params.summary,
           records,
         );
-        if (result.delivered.some((record) => record.id === selfRecord.leadId)) {
-          deps.setReportedToLead(true);
-        }
         for (const record of result.delivered) {
-          if (record.kind === "lead") deps.markRepliedToPeer(record.id);
+          deps.onMessageSent(record.id);
+        }
+        // AgentBroadcastResult carries only the reason text, not the error type,
+        // so every failed recipient is reported as unreachable.
+        for (const { record } of result.failed) {
+          deps.onRecipientUnreachable(record.id);
         }
         if (result.delivered.length === 0 && result.failed.length > 0) {
           throw new Error(
@@ -137,28 +159,37 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
           content: [
             {
               type: "text",
-              text: `Message sent to ${delivered}.${failureNote}`,
+              text: `Message sent to ${delivered}. ${replyNote(params.expectReply)}${failureNote}`,
             },
           ],
           details: { delivered: result.delivered, failed: result.failed },
         };
       }
 
-      const recipient = await messaging.sendAgentMessage(
-        selfRecord,
-        params.recipient,
-        params.subject,
-        params.content,
-        params.summary,
-        records,
-      );
-      if (recipient.id === selfRecord.leadId) deps.setReportedToLead(true);
-      if (recipient.kind === "lead") deps.markRepliedToPeer(recipient.id);
+      const target = messaging.resolveRecipient(selfRecord, params.recipient, records);
+      let recipient: AgentRecord;
+      try {
+        recipient = await messaging.sendAgentMessage(
+          selfRecord,
+          params.recipient,
+          params.subject,
+          params.content,
+          params.expectReply,
+          params.summary,
+          records,
+        );
+      } catch (error) {
+        if (error instanceof RecipientUnreachableError) {
+          deps.onRecipientUnreachable(target.id);
+        }
+        throw error;
+      }
+      deps.onMessageSent(recipient.id);
       return {
         content: [
           {
             type: "text",
-            text: `Message sent to ${formatAgent(recipient)}.\n\n${params.content}`,
+            text: `Message sent to ${formatAgent(recipient)}. ${replyNote(params.expectReply)}\n\n${params.content}`,
           },
         ],
         details: { recipient },
@@ -182,27 +213,26 @@ export function registerCloseMyself(
     description:
       "Close this agent: clean up your state files, and terminate your own process and terminal pane or window. " +
       "Do not run this unless your instructions told you to run it. When your lead tells you to close yourself, call this tool instead of ending your turn or running kill commands. " +
-      "Write your final report as text in the same turn before the call. The extension sends that text to your lead as your last report (workers only; a spawned lead closing itself sends no report), because you stop running when this tool runs.",
+      "Before closing, answer with send_message any agent that is waiting for your reply; agents still waiting are told that you closed.",
     parameters: asPiToolSchema(Type.Object({})) as any,
     async execute() {
-      // A closing worker never reaches agent_settled, so report its replies
-      // now, while the lead can still receive them.
-      const report = buildClosingReport(
-        deps.agentName,
-        appendReply(deps.cycleReplies, deps.currentRunText),
-      );
       const selfRecord = deps.selfRecord;
-      try {
-        if (selfRecord?.leadId) {
-          await messaging.sendAgentMessage(
-            selfRecord,
-            messaging.LEAD_ALIAS,
-            report.subject,
-            report.text,
-          );
+      if (selfRecord) {
+        const selfLabel = messaging.agentLabel(selfRecord);
+        for (const obligation of deps.obligations.takeAll()) {
+          const notice = buildClosedNotice(selfLabel, obligation);
+          try {
+            await messaging.sendAgentMessage(
+              selfRecord,
+              notice.recipientId,
+              notice.subject,
+              notice.text,
+              false,
+            );
+          } catch (_e) {
+            // Ignore send errors; closing proceeds regardless.
+          }
         }
-      } catch (_e) {
-        // The lead or the team can be gone already. Closing still proceeds.
       }
 
       // removeAgent removes this agent's registry record and socket, closes

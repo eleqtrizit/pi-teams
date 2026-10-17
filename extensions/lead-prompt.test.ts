@@ -51,6 +51,7 @@ describe("buildPeerLeadPrompt", () => {
     expect(prompt).toContain("list_agents");
     expect(prompt).toContain('spawn_team_lead(folder="<dir>")');
     expect(prompt).toContain('send_message(recipient="<id>"');
+    expect(prompt).toContain("expectReply=true");
   });
 });
 
@@ -106,5 +107,19 @@ describe("before_agent_start peer-lead guidance", () => {
       expect(systemPrompt).not.toContain(marker);
     }
     expect(systemPrompt).not.toContain(NON_INTERACTIVE_MARKER);
+  });
+
+  it("includes expectReply guidance in the worker prompt", async () => {
+    vi.stubEnv("PI_AGENT_NAME", "worker-1");
+    vi.stubEnv("PI_AGENT_TYPE", "teammate");
+    vi.stubEnv("PI_AGENT_ID", "prmpwk01");
+    vi.stubEnv("PI_LEAD_ID", "prmpld01");
+
+    const handlers = loadHandlers();
+    const systemPrompt = await runBeforeAgentStart(handlers, false);
+
+    expect(systemPrompt).toContain("expectReply=false");
+    expect(systemPrompt).toContain("Reply expected: yes");
+    expect(systemPrompt).not.toContain("sent to the team-lead automatically");
   });
 });

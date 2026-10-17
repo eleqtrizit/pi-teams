@@ -39,6 +39,7 @@ function buildMessage(
   toId: string,
   subject: string,
   text: string,
+  expectReply: boolean,
   summary?: string,
 ): TeamMessage {
   return {
@@ -48,6 +49,7 @@ function buildMessage(
     fromLabel: fromName,
     subject,
     text,
+    expectReply,
     timestamp: nowIso(),
     summary,
   };
@@ -164,6 +166,7 @@ export function resolveRecipient(
  * @param recipient - Recipient string: an agent id, the alias `lead`, or a worker name.
  * @param subject - Short subject line.
  * @param text - Message body.
+ * @param expectReply - Whether the recipient is expected to reply.
  * @param summary - Optional brief summary.
  * @param records - All registered agent records; read from disk by default.
  * @returns The resolved recipient record.
@@ -175,12 +178,13 @@ export async function sendAgentMessage(
   recipient: string,
   subject: string,
   text: string,
+  expectReply: boolean,
   summary?: string,
   records: AgentRecord[] = readAgentRecords(),
 ): Promise<AgentRecord> {
   const target = resolveRecipient(sender, recipient, records);
   try {
-    await sendToAgent(buildMessage(sender.id, agentLabel(sender), target.id, subject, text, summary));
+    await sendToAgent(buildMessage(sender.id, agentLabel(sender), target.id, subject, text, expectReply, summary));
   } catch (e) {
     if (e instanceof RecipientUnreachableError && target.kind === AgentKind.Lead) {
       e.message += ` Bring it online with spawn_team_lead(folder="${target.cwd}").`;
@@ -200,6 +204,7 @@ export async function sendAgentMessage(
  * @param sender - The broadcasting agent's registry record.
  * @param subject - Short subject line.
  * @param text - Message body.
+ * @param expectReply - Whether recipients are expected to reply.
  * @param summary - Optional brief summary.
  * @param records - All registered agent records; read from disk by default.
  * @returns Delivered recipient records and failures with reasons.
@@ -208,6 +213,7 @@ export async function broadcastAgentMessage(
   sender: AgentRecord,
   subject: string,
   text: string,
+  expectReply: boolean,
   summary?: string,
   records: AgentRecord[] = readAgentRecords(),
 ): Promise<AgentBroadcastResult> {
@@ -215,7 +221,7 @@ export async function broadcastAgentMessage(
   const label = agentLabel(sender);
   const outcomes = await Promise.allSettled(
     recipients.map((target) =>
-      sendToAgent(buildMessage(sender.id, label, target.id, subject, text, summary)),
+      sendToAgent(buildMessage(sender.id, label, target.id, subject, text, expectReply, summary)),
     ),
   );
 

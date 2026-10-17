@@ -1,4 +1,7 @@
 import type {
+  AgentBeforeSettleEvent,
+  BoundaryResult,
+  CustomMessageEntryDraft,
   ExtensionAPI,
   ExtensionContext,
   SessionEntry,
@@ -6,7 +9,14 @@ import type {
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
 import * as holdRun from "../src/utils/hold";
-import { appendReply, buildWorkerReport, extractFinalReply } from "../src/utils/report";
+import {
+  buildInterruptedNotice,
+  buildNoReplyNotice,
+  buildReminderText,
+  ObligationTracker,
+  obligationsToRemind,
+  REMINDER_CUSTOM_TYPE,
+} from "../src/utils/obligations";
 import { removeRunState, writeRunState } from "../src/utils/runstate";
 import { TeamMessage } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
@@ -55,6 +65,9 @@ export function formatDeliveredMessages(messages: TeamMessage[]): string {
       `**From:** ${m.fromLabel} (${m.from})`,
       `**To:** ${m.to}`,
       `Reply with send_message(recipient="${m.from}").`,
+      m.expectReply === true
+        ? `Reply expected: yes. Answer with send_message(recipient="${m.from}").`
+        : `Reply expected: no.`,
       `**Subject:** ${m.subject}`,
       `**Timestamp:** ${ts}`,
       "",
@@ -100,6 +113,7 @@ export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
     `You are Pi Agent in ${self.cwd} (id ${self.id}).`,
     "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and Available/Offline/Busy status.",
     'When work belongs to another directory, or you need help: if no agent there is Available, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
+    "Set expectReply=true on send_message when you assign a task or ask a question; set it to false for replies, reports, and acknowledgments. A message showing 'Reply expected: yes' must be answered with send_message.",
     "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
     "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",
   ].join("\n");
@@ -110,7 +124,6 @@ const FOLLOW_UP_RETRY_MS = 2000;
 
 /** Longest time a spawn tool waits for a new worker to start listening. */
 const WORKER_LISTEN_TIMEOUT_MS = 30_000;
-const PEER_AUTO_REPLY_PREFIX = "Reply from ";
 
 export class FollowUpMessageQueue {
   private messages: string[] = [];
@@ -276,16 +289,8 @@ export default function (pi: ExtensionAPI) {
   let followUpRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let titleRefreshTimeouts: ReturnType<typeof setTimeout>[] = [];
   let isAgentRunning = false;
-  /** Final replies of the runs in the current settle cycle, captured at agent_end for the report. */
-  let cycleReplies: string[] = [];
-  /** Newest assistant text of the run in progress, kept so close_myself can report it. */
-  let currentRunText: string | null = null;
-  /** True once this worker messaged its registered lead during the current run cycle. */
-  let reportedToLead = false;
-  /** Peer leads whose inbound messages require a reply at the end of this cycle. */
-  const peerLeadsToReply = new Set<string>();
-  /** Peer leads already answered manually during this cycle. */
-  const repliedToPeerLeads = new Set<string>();
+  /** Replies this agent owes to senders that requested one with `expectReply`. */
+  const obligations = new ObligationTracker();
   /** Migration warning shown to the model on its next get_flavored_models call */
   let pendingMigrationNotice: string | undefined;
   // Captured from the first context that carries a model registry, so the
@@ -387,12 +392,8 @@ export default function (pi: ExtensionAPI) {
       throw new Error("This session is not registered in the agent registry.");
     }
     const sender = messaging.authorizeSender(message, agentId);
-    if (
-      isLead &&
-      sender.kind === AgentKind.Lead &&
-      !message.subject.startsWith(PEER_AUTO_REPLY_PREFIX)
-    ) {
-      peerLeadsToReply.add(sender.id);
+    if (message.expectReply === true) {
+      obligations.record(sender.id, message.fromLabel, message.subject);
     }
     deliverPendingMessage(formatDeliveredMessages([message]));
   }
@@ -606,18 +607,24 @@ export default function (pi: ExtensionAPI) {
     // Intentionally empty: terminal title refresh happens in turn_start.
   });
 
-  // Track the newest assistant text of the running run. A worker that closes
-  // itself never reaches agent_end, so close_myself reads this value.
-  pi.on("message_end", async (event) => {
-    if (!isWorker) return;
-    currentRunText = extractFinalReply([event.message]) ?? currentRunText;
-  });
-
-  // agent_end fires once per low-level run; retries and queued work can start
-  // more runs before the session settles. Keep every run's reply, in order.
-  pi.on("agent_end", async (event) => {
-    cycleReplies = appendReply(cycleReplies, extractFinalReply(event.messages));
-    currentRunText = null;
+  // Remind the agent about owed replies inside the same run: the boundary
+  // drafts are persisted in order and `continue: true` guarantees one more
+  // provider request, so the model sees the reminder as a user entry on the
+  // continuation instead of waiting for the next external message.
+  pi.on("agent_before_settle", async (event: AgentBeforeSettleEvent): Promise<BoundaryResult | undefined> => {
+    const owed = obligationsToRemind(
+      { outcome: event.outcome, canContinue: event.context.canContinue },
+      obligations,
+    );
+    if (owed.length === 0) return;
+    obligations.noteReminded(owed.map((obligation) => obligation.senderId));
+    const reminder: CustomMessageEntryDraft = {
+      type: "custom_message",
+      customType: REMINDER_CUSTOM_TYPE,
+      content: buildReminderText(owed),
+      display: true,
+    };
+    return { entries: [...event.entries, reminder], continue: true };
   });
 
   // agent_settled means Pi will not continue on its own. Workers report to
@@ -629,44 +636,22 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async (event) => {
-    const replies = cycleReplies;
-    cycleReplies = [];
-
-    if (isWorker && selfRecord?.leadId) {
-      const alreadyReported = reportedToLead;
-      reportedToLead = false;
-      if (alreadyReported && !event.aborted) return;
-      const report = buildWorkerReport(agentName, replies, event.aborted);
+    if (!selfRecord) return;
+    const selfLabel = messaging.agentLabel(selfRecord);
+    const notices = event.aborted
+      ? obligations.pending().map((obligation) => buildInterruptedNotice(selfLabel, obligation))
+      : obligations.takeExpired().map((obligation) => buildNoReplyNotice(selfLabel, obligation));
+    for (const notice of notices) {
       try {
         await messaging.sendAgentMessage(
           selfRecord,
-          messaging.LEAD_ALIAS,
-          report.subject,
-          report.text,
+          notice.recipientId,
+          notice.subject,
+          notice.text,
+          false,
         );
       } catch (_e) {
-        // The team directory can be gone after close_all_workers or close_worker.
-      }
-      return;
-    }
-
-    const peerIds = [...peerLeadsToReply];
-    peerLeadsToReply.clear();
-    const alreadyReplied = new Set(repliedToPeerLeads);
-    repliedToPeerLeads.clear();
-    if (!isLead || !selfRecord || peerIds.length === 0) return;
-    const report = buildWorkerReport(messaging.agentLabel(selfRecord), replies, false);
-    for (const peerId of peerIds) {
-      if (alreadyReplied.has(peerId)) continue;
-      try {
-        await messaging.sendAgentMessage(
-          selfRecord,
-          peerId,
-          `${PEER_AUTO_REPLY_PREFIX}${messaging.agentLabel(selfRecord)}`,
-          report.text,
-        );
-      } catch (_e) {
-        // The peer can stop listening before the automatic reply is sent.
+        // The recipient can stop listening before the notice is sent.
       }
     }
   });
@@ -677,6 +662,7 @@ export default function (pi: ExtensionAPI) {
     clearTitleRefreshTimeouts();
     isAgentRunning = false;
     pendingInboxNotifications.clear();
+    obligations.takeAll();
     if (selfRecord) removeRunState(selfRecord.id);
   });
 
@@ -717,7 +703,7 @@ export default function (pi: ExtensionAPI) {
       return {
         systemPrompt:
           event.systemPrompt +
-          `\n\nYou are ${roleDescription} '${agentName}'.${modelInfo}${capabilitiesNote}\nYour lead's agent id is ${leadId}. Reply with send_message(recipient="lead").\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. When your work is done, end your turn and stop. Your final reply is sent to the team-lead automatically, so make it a complete report. Use send_message only for extra messages, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, simply stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
+          `\n\nYou are ${roleDescription} '${agentName}'.${modelInfo}${capabilitiesNote}\nYour lead's agent id is ${leadId}. Reply with send_message(recipient="lead").\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. Your final reply is NOT sent anywhere. When your work is done, report it to your lead with send_message(recipient="lead", expectReply=false), then end your turn and stop. If a message shows 'Reply expected: yes', answer that sender with send_message; you are reminded until you do. Set expectReply=true only when you need an answer, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, report it with send_message and then stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }
   });
@@ -744,18 +730,13 @@ export default function (pi: ExtensionAPI) {
     get messageListener() {
       return messageListener;
     },
-    setReportedToLead: (reported: boolean) => {
-      reportedToLead = reported;
+    onMessageSent: (recipientId: string) => {
+      obligations.clear(recipientId);
     },
-    markRepliedToPeer: (id: string) => {
-      repliedToPeerLeads.add(id);
+    onRecipientUnreachable: (recipientId: string) => {
+      obligations.clear(recipientId);
     },
-    get cycleReplies() {
-      return cycleReplies;
-    },
-    get currentRunText() {
-      return currentRunText;
-    },
+    obligations,
     terminal,
     get selfRecord() {
       return selfRecord;

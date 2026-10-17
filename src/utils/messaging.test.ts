@@ -142,7 +142,7 @@ describe("registry messaging", () => {
     it("delivers lead to peer lead by id and returns the recipient", async () => {
       const inbox = await listen("leadbbbb");
 
-      const resolved = await sendAgentMessage(leadA, "leadbbbb", "Greeting", "Hello!", "hi", registry());
+      const resolved = await sendAgentMessage(leadA, "leadbbbb", "Greeting", "Hello!", true, "hi", registry());
 
       expect(resolved).toEqual(leadB);
       expect(inbox).toHaveLength(1);
@@ -154,6 +154,7 @@ describe("registry messaging", () => {
         fromLabel: "Pi Agent in /w/a",
         subject: "Greeting",
         text: "Hello!",
+        expectReply: true,
         summary: "hi",
       });
     });
@@ -161,11 +162,12 @@ describe("registry messaging", () => {
     it("delivers lead to own worker by name", async () => {
       const inbox = await listen("wrkeraa1");
 
-      await sendAgentMessage(leadA, "alice", "Task", "Work", undefined, registry());
+      await sendAgentMessage(leadA, "alice", "Task", "Work", false, undefined, registry());
 
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toMatchObject({
         to: "wrkeraa1",
+        expectReply: false,
         fromLabel: "Pi Agent in /w/a",
         subject: "Task",
       });
@@ -174,17 +176,17 @@ describe("registry messaging", () => {
     it("delivers lead to own worker by id", async () => {
       const inbox = await listen("wrkeraa2");
 
-      await sendAgentMessage(leadA, "wrkeraa2", "Task", "Work", undefined, registry());
+      await sendAgentMessage(leadA, "wrkeraa2", "Task", "Work", false, undefined, registry());
 
       expect(inbox).toHaveLength(1);
       expect(inbox[0].to).toBe("wrkeraa2");
     });
 
     it("rejects a lead messaging another lead's worker by id and by name", async () => {
-      await expect(sendAgentMessage(leadA, "wrkerbb1", "s", "t", undefined, registry())).rejects.toThrow(
+      await expect(sendAgentMessage(leadA, "wrkerbb1", "s", "t", false, undefined, registry())).rejects.toThrow(
         /not visible/,
       );
-      await expect(sendAgentMessage(leadA, "bob", "s", "t", undefined, registry())).rejects.toThrow(
+      await expect(sendAgentMessage(leadA, "bob", "s", "t", false, undefined, registry())).rejects.toThrow(
         /not visible/,
       );
     });
@@ -192,7 +194,7 @@ describe("registry messaging", () => {
     it("delivers worker to its lead through the alias", async () => {
       const inbox = await listen("leadaaaa");
 
-      await sendAgentMessage(alice, LEAD_ALIAS, "Report", "Done", undefined, registry());
+      await sendAgentMessage(alice, LEAD_ALIAS, "Report", "Done", false, undefined, registry());
 
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toMatchObject({
@@ -206,20 +208,20 @@ describe("registry messaging", () => {
     it("delivers worker to a sibling worker by name", async () => {
       const inbox = await listen("wrkeraa2");
 
-      await sendAgentMessage(alice, "zoe", "s", "t", undefined, registry());
+      await sendAgentMessage(alice, "zoe", "s", "t", false, undefined, registry());
 
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toMatchObject({ from: "wrkeraa1", to: "wrkeraa2" });
     });
 
     it("rejects a worker messaging another lead", async () => {
-      await expect(sendAgentMessage(alice, "leadbbbb", "s", "t", undefined, registry())).rejects.toThrow(
+      await expect(sendAgentMessage(alice, "leadbbbb", "s", "t", false, undefined, registry())).rejects.toThrow(
         /not visible/,
       );
     });
 
     it("suggests spawn_team_lead when the resolved lead is offline", async () => {
-      const err = await sendAgentMessage(leadA, "leadbbbb", "s", "t", undefined, registry()).catch(
+      const err = await sendAgentMessage(leadA, "leadbbbb", "s", "t", false, undefined, registry()).catch(
         (e: unknown) => e,
       );
 
@@ -228,7 +230,7 @@ describe("registry messaging", () => {
     });
 
     it("does not suggest spawn_team_lead for an offline worker", async () => {
-      const err = await sendAgentMessage(leadA, "zoe", "s", "t", undefined, registry()).catch(
+      const err = await sendAgentMessage(leadA, "zoe", "s", "t", false, undefined, registry()).catch(
         (e: unknown) => e,
       );
 
@@ -249,7 +251,7 @@ describe("registry messaging", () => {
       const leadBInbox = await listen("leadbbbb");
       const bobInbox = await listen("wrkerbb1");
 
-      const result = await broadcastAgentMessage(leadA, "Status", "anything", "sum", registry());
+      const result = await broadcastAgentMessage(leadA, "Status", "anything", true, "sum", registry());
 
       expect(result.delivered.map((r) => r.id).sort()).toEqual(["wrkeraa1", "wrkeraa2"]);
       expect(result.failed).toEqual([]);
@@ -257,11 +259,12 @@ describe("registry messaging", () => {
       expect(aliceInbox[0]).toMatchObject({
         from: "leadaaaa",
         to: "wrkeraa1",
+        expectReply: true,
         fromLabel: "Pi Agent in /w/a",
         subject: "Status",
         summary: "sum",
       });
-      expect(zoeInbox[0].to).toBe("wrkeraa2");
+      expect(zoeInbox[0]).toMatchObject({ to: "wrkeraa2", expectReply: true });
       expect(leadBInbox).toHaveLength(0);
       expect(bobInbox).toHaveLength(0);
     });
@@ -272,7 +275,7 @@ describe("registry messaging", () => {
       const leadBInbox = await listen("leadbbbb");
       const bobInbox = await listen("wrkerbb1");
 
-      const result = await broadcastAgentMessage(alice, "s", "t", undefined, registry());
+      const result = await broadcastAgentMessage(alice, "s", "t", false, undefined, registry());
 
       expect(result.delivered.map((r) => r.id).sort()).toEqual(["leadaaaa", "wrkeraa2"]);
       expect(result.failed).toEqual([]);
@@ -286,7 +289,7 @@ describe("registry messaging", () => {
     it("reports unreachable targets as failed and still delivers to the rest", async () => {
       const aliceInbox = await listen("wrkeraa1");
 
-      const result = await broadcastAgentMessage(leadA, "s", "t", undefined, registry());
+      const result = await broadcastAgentMessage(leadA, "s", "t", false, undefined, registry());
 
       expect(result.delivered.map((r) => r.id)).toEqual(["wrkeraa1"]);
       expect(result.failed).toHaveLength(1);
@@ -296,7 +299,7 @@ describe("registry messaging", () => {
     });
 
     it("completes with no targets", async () => {
-      const result = await broadcastAgentMessage(leadA, "s", "t", undefined, [leadA, leadB]);
+      const result = await broadcastAgentMessage(leadA, "s", "t", false, undefined, [leadA, leadB]);
       expect(result).toEqual({ delivered: [], failed: [] });
     });
   });

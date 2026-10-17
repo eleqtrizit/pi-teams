@@ -89,6 +89,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
   - Accepted recipients: an 8-char agent id from `list_agents`, one of your worker names, the alias `lead` (workers only), or `all`
   - The message arrives immediately as a user message
   - The tool fails at once when the recipient is not running
+  - The required `expectReply` flag says whether you need an answer: `true` for tasks, questions, and status requests; `false` for replies, reports, and acknowledgments
 
 ### Model Resolution
 
@@ -115,13 +116,13 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - Immediate delivery with an acknowledgement, and an instant error when the recipient is not running
 - Visibility rules keep leads from seeing other leads' workers
 
-### 🔔 Automatic Reports
+### 🔔 Reply Reminders
 
-- When a teammate finishes, its final reply goes to its lead automatically
-- A teammate that already messaged its lead during the run sends no duplicate
-- An interrupted run sends the lead an interruption notice
-- A teammate that closes itself with `close_myself` sends its last replies to its lead first
-- Leads auto-reply to peer leads once per cycle to acknowledge inbound messages
+- Agents report with `send_message`; the extension never sends an agent's own text for it
+- A message sent with `expectReply: true` makes the recipient owe the sender a reply
+- An agent that owes a reply is reminded before its run ends, up to 3 times
+- When the reminders run out, the waiting sender receives a `No reply from` notice
+- An interrupted run or a `close_myself` call tells every waiting sender
 
 ### 🖥️ Terminal Integration
 
@@ -185,15 +186,17 @@ Each agent listens on a socket keyed by its 8-character agent id. A message reac
 
 A lead sees every lead (including itself) plus its own workers; it never sees workers owned by another lead. A worker sees its own lead plus its sibling workers; it never sees another lead. These visibility rules are enforced on both the sender and the receiver.
 
-### Automatic Reports
+### Reply Reminders
 
-When a teammate's run settles (Pi has no retries, compaction, or queued work left), the extension sends the teammate's full final replies to its lead by agent id with the subject `Report from <agent>`. When a message starts a second run before the first run's report is sent, the report numbers each reply. Requires Pi 1.1.0 or later.
+Every `send_message` call sets the required `expectReply` flag. The recipient sees `Reply expected: yes` or `Reply expected: no` in the message header. Requires Pi 1.1.0 or later.
 
-- If the teammate sent a message to `lead` during the run, no automatic report is sent.
-- If the run was aborted, the lead receives an interruption notice instead, with the replies attached when any exist.
-- If the run produced no text, the lead receives a note that the run finished without a text reply.
+- When a message with `expectReply: true` arrives, the recipient owes the sender a reply. Any message from the recipient back to that sender clears it.
+- Before the recipient's run ends, the extension adds a reminder that names every waiting sender, and the run continues so the agent can answer. Each owed reply gets at most 3 reminders.
+- When the reminders run out, the waiting sender receives `No reply from <label>`.
+- When the run is aborted, the waiting sender receives `Interrupted: <label>`, and the reminders continue on the next run.
+- When the agent calls `close_myself`, every waiting sender receives `Closed: <label>`.
 
-Leads also auto-reply to peer leads. When one lead messages another, the receiving lead sends a single reply at settle time with the subject `Reply from <label>`. This prevents infinite loops because the reply subject starts with `Reply from `, so no further auto-replies are sent.
+A reply sent with `expectReply: false` creates no new obligation, so a request and its answer end the exchange between two agents.
 
 ### Context Injection
 
@@ -352,6 +355,7 @@ pi-teams/
 │       ├── teams.ts                 # Shared removal path
 │       ├── transport.ts             # Unix socket listener and acknowledged send
 │       ├── messaging.ts             # Send and broadcast
+│       ├── obligations.ts           # Reply obligations, reminders, and notices for expectReply
 │       ├── paths.ts                 # Registry and socket path utilities
 │       ├── registry.ts            # Agent record I/O and liveness
 │       ├── visibility.ts          # Lead/worker visibility rules

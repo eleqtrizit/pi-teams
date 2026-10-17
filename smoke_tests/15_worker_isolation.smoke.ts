@@ -114,18 +114,18 @@ describe("S15 lead isolation of workers", () => {
       expect(viewWa).not.toContain(WB_ID);
 
       // Sender-side check: A cannot address B's worker, by id or by name.
-      await expect(sendAgentMessage(recA!, WB_ID, "s15", "by id")).rejects.toThrow(/not visible/);
-      await expect(sendAgentMessage(recA!, WB_NAME, "s15", "by name")).rejects.toThrow(/not visible/);
+      await expect(sendAgentMessage(recA!, WB_ID, "s15", "by id", false)).rejects.toThrow(/not visible/);
+      await expect(sendAgentMessage(recA!, WB_NAME, "s15", "by name", false)).rejects.toThrow(/not visible/);
 
       // Sender-side positive control: A reaches its own worker by id.
-      await sendAgentMessage(recA!, WA_ID, "s15", "direct");
+      await sendAgentMessage(recA!, WA_ID, "s15", "direct", false);
 
       // Receiver-side check: a forged raw send in B's worker's name is rejected by A.
       await sendToAgent(forge(WA_ID, A_ID, "legit"));
       await expect(sendToAgent(forge(WB_ID, A_ID, "forged"))).rejects.toThrow(/not visible/);
 
       // Broadcast: A reaches only its own worker.
-      const result = await broadcastAgentMessage(recA!, "s15", "broadcast");
+      const result = await broadcastAgentMessage(recA!, "s15", "broadcast", false);
       expect(result.delivered.map((r) => r.id)).toEqual([WA_ID]);
       expect(result.failed).toEqual([]);
     } finally {
