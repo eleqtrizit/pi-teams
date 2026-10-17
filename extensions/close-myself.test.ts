@@ -46,6 +46,10 @@ function registerExtensionForCurrentEnv(): Map<string, any> {
 describe("close_myself registration", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    // The extension writes PI_AGENT_ID back into process.env on every run,
+    // so unstubAllEnvs alone leaves a preassigned id behind.
+    delete process.env.PI_AGENT_ID;
+    delete process.env.PI_LEAD_ID;
     vi.restoreAllMocks();
   });
 
@@ -69,6 +73,15 @@ describe("close_myself registration", () => {
     const tools = registerExtensionForCurrentEnv();
 
     expect(tools.has("close_myself")).toBe(false);
+  });
+
+  it("registers close_myself for a spawned lead (preassigned PI_AGENT_ID)", () => {
+    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_AGENT_ID", leadId);
+
+    const tools = registerExtensionForCurrentEnv();
+
+    expect(tools.has("close_myself")).toBe(true);
   });
 
   it("registers close_myself for a read-only worker", () => {
@@ -124,6 +137,10 @@ describe("close_myself execute", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    // The extension writes PI_AGENT_ID back into process.env on every run,
+    // so unstubAllEnvs alone leaves a preassigned id behind.
+    delete process.env.PI_AGENT_ID;
+    delete process.env.PI_LEAD_ID;
     vi.restoreAllMocks();
   });
 
@@ -217,6 +234,32 @@ describe("close_myself execute", () => {
 
     expect(sendSpy).not.toHaveBeenCalled();
     expect(teamsMocks.removeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes itself without sending a report when a spawned lead closes itself", async () => {
+    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_AGENT_ID", leadId);
+    vi.stubEnv("PI_LEAD_ID", "");
+    teamsMocks.removeAgent.mockResolvedValue(undefined);
+    const sendSpy = vi.spyOn(messaging, "sendAgentMessage");
+
+    const tools = registerExtensionForCurrentEnv();
+
+    const result = await tools.get("close_myself").execute(
+      "tool-call-1",
+      {},
+      undefined,
+      undefined,
+      {},
+    );
+
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(teamsMocks.removeAgent).toHaveBeenCalledWith({
+      agentId: leadId,
+      ownPid: process.pid,
+      terminal: null,
+    });
+    expect(result.content[0].text).toContain("closed itself");
   });
 
   it("closes itself even when no team name is set", async () => {

@@ -22,7 +22,9 @@ Tools are registered in `extensions/index.ts`, split by session identity into th
 | `get_models`            | lead    | Show OSS and frontier model lists                    | `src/utils/flavoredModels.ts`                                   |
 | `send_message`          | shared  | Deliver a message to one agent, or to all (`all`)    | `src/utils/messaging.ts`, `src/utils/transport.ts`                |
 | `list_agents`           | shared  | Show visible agents with status and socket availability | `src/utils/registry.ts`, `src/utils/transport.ts`             |
-| `close_myself`          | worker  | Terminate the calling agent                          | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
+| `close_myself`          | worker + spawned leads | Terminate the calling agent           | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
+
+`close_myself` registers for workers and for spawned leads (a lead session with a preassigned `PI_AGENT_ID`, i.e. started by `spawn_team_lead`). The interactive top-level lead session never registers it, so it cannot kill itself with one tool call. A spawned lead closing itself sends no report (it has no lead of its own); `extensions/index.ts` holds the registration gate, `registerCloseMyself` in `extensions/shared-tools.ts` holds the tool.
 | `read`                  | shared  | Read a file; text results end with `content_hash:`   | `extensions/fs-tools.ts`                                        |
 | `edit`                  | shared  | One targeted replacement; takes `readHash`           | `extensions/fs-tools.ts`                                        |
 | `write`                 | shared  | Full-file write; takes `readHash`                    | `extensions/fs-tools.ts`                                        |

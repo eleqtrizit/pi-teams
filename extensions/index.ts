@@ -28,7 +28,7 @@ import {
   type SpawnedWorker,
 } from "./lead-tools";
 export { classifyModel, executeGetModels } from "./lead-tools";
-import { registerSharedTools, registerWorkerTools } from "./shared-tools";
+import { registerCloseMyself, registerSharedTools } from "./shared-tools";
 import { registerAgentTools } from "./agents-tools";
 import {
   generateAgentId,
@@ -763,8 +763,12 @@ export default function (pi: ExtensionAPI) {
   };
   registerAgentTools(pi, { getSelfRecord: () => selfRecord, isLead, terminal });
   registerSharedTools(pi, sharedToolDeps);
-  if (isWorker) {
-    registerWorkerTools(pi, sharedToolDeps);
+  // Workers always get close_myself. Among leads, only spawned leads
+  // (spawn_team_lead, detected by a preassigned PI_AGENT_ID) get it; the
+  // interactive top-level lead session must not be able to kill itself from
+  // a single tool call.
+  if (isWorker || (isLead && idWasPreassigned)) {
+    registerCloseMyself(pi, sharedToolDeps);
   }
 
 }

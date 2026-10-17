@@ -36,7 +36,23 @@ function registeredToolNames(): Set<string> {
 describe("tool registration by identity", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    // The extension writes PI_AGENT_ID back into process.env on every run,
+    // so unstubAllEnvs alone leaves a preassigned id behind.
+    delete process.env.PI_AGENT_ID;
+    delete process.env.PI_LEAD_ID;
     vi.restoreAllMocks();
+  });
+
+  it("registers lead, shared, and close_myself tools for a spawned lead", () => {
+    vi.stubEnv("PI_AGENT_NAME", "");
+    vi.stubEnv("PI_AGENT_TYPE", "");
+    vi.stubEnv("PI_AGENT_ID", "spwnld01");
+
+    const names = registeredToolNames();
+    for (const name of LEAD_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of SHARED_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of AGENT_TOOLS) expect(names.has(name)).toBe(true);
+    for (const name of WORKER_TOOLS) expect(names.has(name)).toBe(true);
   });
 
   it("registers lead and shared tools for the interactive lead", () => {

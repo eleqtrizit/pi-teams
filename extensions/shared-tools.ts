@@ -168,15 +168,21 @@ export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): voi
 
 }
 
-/** Register close_myself for a spawned worker. */
-export function registerWorkerTools(pi: ExtensionAPI, deps: SharedToolDeps): void {
+/**
+ * Register close_myself for a spawned session: workers and spawned team-leads.
+ * Interactive lead sessions never register it (see extensions/index.ts).
+ */
+export function registerCloseMyself(
+  pi: ExtensionAPI,
+  deps: SharedToolDeps,
+): void {
   pi.registerTool({
     name: "close_myself",
     label: "Close Myself",
     description:
       "Close this agent: clean up your state files, and terminate your own process and terminal pane or window. " +
       "Do not run this unless your instructions told you to run it. When your lead tells you to close yourself, call this tool instead of ending your turn or running kill commands. " +
-      "Write your final report as text in the same turn before the call. The extension sends that text to your lead as your last report, because you stop running when this tool runs.",
+      "Write your final report as text in the same turn before the call. The extension sends that text to your lead as your last report (workers only; a spawned lead closing itself sends no report), because you stop running when this tool runs.",
     parameters: asPiToolSchema(Type.Object({})) as any,
     async execute() {
       // A closing worker never reaches agent_settled, so report its replies
