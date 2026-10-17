@@ -49,6 +49,9 @@ function parseTeamMessage(value: unknown, agentId: string): TeamMessage {
   if (record.summary !== undefined && typeof record.summary !== "string") {
     throw new Error('field "summary" must be a string');
   }
+  if (record.expectReply !== undefined && typeof record.expectReply !== "boolean") {
+    throw new Error('field "expectReply" must be a boolean');
+  }
   if (record.to !== agentId) throw new Error(`message is addressed to "${String(record.to)}"`);
   return record as unknown as TeamMessage;
 }

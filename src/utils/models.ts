@@ -60,4 +60,6 @@ export interface TeamMessage {
   /** ISO 8601 time the sender created the message. */
   timestamp: string;
   summary?: string;
+  /** True when the sender expects the recipient to reply; a missing field means false. */
+  expectReply?: boolean;
 }

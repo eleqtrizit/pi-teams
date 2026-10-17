@@ -83,6 +83,35 @@ describe("socket transport", () => {
     expect(await sendRaw(agentId, `${JSON.stringify({ ...valid, fromLabel: 5 })}\n`)).toMatch(/^error:.*fromLabel/);
     expect(calls).toBe(0);
   });
+  it("delivers expectReply true to the handler intact", async () => {
+    const received: TeamMessage[] = [];
+    listener = await startListener(agentId, (message) => { received.push(message); });
+    await sendToAgent(makeMessage(agentId, { expectReply: true }));
+    expect(received).toHaveLength(1);
+    expect(received[0].expectReply).toBe(true);
+  });
+  it("accepts a message without expectReply and leaves the field unset", async () => {
+    const received: TeamMessage[] = [];
+    listener = await startListener(agentId, (message) => { received.push(message); });
+    await sendToAgent(makeMessage(agentId));
+    expect(received).toHaveLength(1);
+    expect(received[0].expectReply).toBeUndefined();
+  });
+  it("rejects a non-boolean expectReply without calling the handler", async () => {
+    let calls = 0;
+    listener = await startListener(agentId, () => { calls++; });
+    const valid = makeMessage(agentId);
+    expect(await sendRaw(agentId, `${JSON.stringify({ ...valid, expectReply: "yes" })}\n`)).toMatch(
+      /^error:.*field "expectReply" must be a boolean/,
+    );
+    expect(await sendRaw(agentId, `${JSON.stringify({ ...valid, expectReply: 1 })}\n`)).toMatch(
+      /^error:.*field "expectReply" must be a boolean/,
+    );
+    expect(await sendRaw(agentId, `${JSON.stringify({ ...valid, expectReply: null })}\n`)).toMatch(
+      /^error:.*field "expectReply" must be a boolean/,
+    );
+    expect(calls).toBe(0);
+  });
   it("rejects malformed JSON and invalid fields without calling the handler", async () => {
     let calls = 0;
     listener = await startListener(agentId, () => { calls++; });
