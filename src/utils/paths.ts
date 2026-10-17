@@ -72,6 +72,18 @@ export function agentRecordPath(id: string): string {
 }
 
 /**
+ * Path of the append-safe agent history file.
+ *
+ * Holds one JSON line per agent ever registered, keyed uniquely by agent ID,
+ * so offline and removed agents stay visible after their live record is gone.
+ *
+ * @returns Absolute path of the agents.jsonl history file
+ */
+export function agentHistoryPath(): string {
+  return path.join(registryDir(), "agents.jsonl");
+}
+
+/**
  * Address of one agent's socket, keyed by agent ID instead of team and name.
  *
  * @param id - Agent ID

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import { AgentEntry } from "./agentFormat";
 import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
+import { markAgentHistoryRemoved, upsertAgentHistory } from "./history";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -67,6 +68,7 @@ export function writeAgentRecord(rec: AgentRecord): void {
   const tmp = path.join(dir, `.tmp-${rec.id}-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(tmp, JSON.stringify(rec), { mode: 0o600 });
   fs.renameSync(tmp, file);
+  upsertAgentHistory(rec);
 }
 
 /**
@@ -169,6 +171,7 @@ export function readAgentRecord(id: string): AgentRecord | undefined {
  * @param id - Agent ID
  */
 export function removeAgentRecord(id: string): void {
+  markAgentHistoryRemoved(id);
   const file = agentRecordPath(id);
   try {
     fs.rmSync(file, { force: true });
