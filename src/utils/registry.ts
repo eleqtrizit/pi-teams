@@ -235,7 +235,7 @@ export async function agentStatus(
  * Decide which registered agents survive a registry prune.
  *
  * Rules:
- * - Offline worker records are removed; online workers are kept.
+ * - Any worker whose status is not Offline is kept (including Busy, i.e. mid-run).
  * - A directory (cwd) with at least one online lead discards every offline
  *   lead record for that cwd.
  * - A directory with no online lead keeps exactly one offline lead: the
@@ -254,9 +254,12 @@ export function pruneRegistry(
   const statusOf = (rec: AgentRecord): AgentStatus =>
     statuses.get(rec.id) ?? AgentStatus.Offline;
 
+  /** A Busy agent (mid-run) is alive and must survive pruning like an Available one. */
+  const isOnline = (rec: AgentRecord): boolean => statusOf(rec) !== AgentStatus.Offline;
+
   const cwdHasOnlineLead = new Set<string>();
   for (const rec of records) {
-    if (rec.kind === AgentKind.Lead && statusOf(rec) === AgentStatus.Available) {
+    if (rec.kind === AgentKind.Lead && isOnline(rec)) {
       cwdHasOnlineLead.add(rec.cwd);
     }
   }
@@ -266,7 +269,7 @@ export function pruneRegistry(
     rec.startedAt > current.startedAt ||
     (rec.startedAt === current.startedAt && rec.id > current.id);
   for (const rec of records) {
-    if (rec.kind !== AgentKind.Lead || statusOf(rec) === AgentStatus.Available) continue;
+    if (rec.kind !== AgentKind.Lead || isOnline(rec)) continue;
     const current = newestOfflineLeadByCwd.get(rec.cwd);
     if (current === undefined || isNewest(rec, current)) {
       newestOfflineLeadByCwd.set(rec.cwd, rec);
@@ -277,11 +280,11 @@ export function pruneRegistry(
   const remove: string[] = [];
   for (const rec of records) {
     if (rec.kind !== AgentKind.Lead) {
-      if (statusOf(rec) === AgentStatus.Available) keep.push(rec);
+      if (isOnline(rec)) keep.push(rec);
       else remove.push(rec.id);
       continue;
     }
-    if (statusOf(rec) === AgentStatus.Available) {
+    if (isOnline(rec)) {
       keep.push(rec);
       continue;
     }

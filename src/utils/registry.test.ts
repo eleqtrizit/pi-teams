@@ -439,6 +439,23 @@ describe("registry", () => {
 
     const cases: Case[] = [
       {
+        name: "keeps a busy worker: mid-run agents must not be pruned",
+        records: [worker("bb000002", 2)],
+        statuses: [["bb000002", AgentStatus.Busy]],
+        expectKeep: ["bb000002"],
+        expectRemove: [],
+      },
+      {
+        name: "keeps a busy lead and removes offline leads in the same directory",
+        records: [lead("aa000001", "/a", 10), lead("bb000002", "/a", 50)],
+        statuses: [
+          ["aa000001", AgentStatus.Busy],
+          ["bb000002", AgentStatus.Offline],
+        ],
+        expectKeep: ["aa000001"],
+        expectRemove: ["bb000002"],
+      },
+      {
         name: "returns empty results for an empty registry",
         records: [],
         statuses: [],
