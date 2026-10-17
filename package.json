@@ -18,9 +18,13 @@
   "files": [
     "extensions",
     "src",
+    "skills",
     "package.json",
     "README.md"
   ],
+  "dependencies": {
+    "pi-taskgraph": "github:eleqtrizit/pi-tasks#main"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.1.0",
     "typebox": "*"
@@ -29,6 +33,9 @@
     "image": "https://raw.githubusercontent.com/burggraf/pi-teams/main/pi-team-in-action.png",
     "extensions": [
       "extensions/index.ts"
+    ],
+    "skills": [
+      "skills"
     ]
   },
   "devDependencies": {
