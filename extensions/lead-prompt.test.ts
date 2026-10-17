@@ -52,6 +52,8 @@ describe("buildPeerLeadPrompt", () => {
     expect(prompt).toContain('spawn_team_lead(folder="<dir>")');
     expect(prompt).toContain('send_message(recipient="<id>"');
     expect(prompt).toContain("expectReply=true");
+    expect(prompt).toContain("make-tasks");
+    expect(prompt).toContain("implement-tasks");
   });
 });
 

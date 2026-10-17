@@ -116,6 +116,7 @@ export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
     "Set expectReply=true on send_message when you assign a task or ask a question; set it to false for replies, reports, and acknowledgments. A message showing 'Reply expected: yes' must be answered with send_message.",
     "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
     "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",
+    "When the user asks to plan work as tasks, use the make-tasks skill. When tasks exist and need implementation by a team, use the implement-tasks skill.",
   ].join("\n");
 }
 
