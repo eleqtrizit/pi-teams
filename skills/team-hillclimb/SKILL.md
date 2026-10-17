@@ -1,6 +1,13 @@
 ---
 name: team-hillclimb
-description: Run an open-ended optimization as a team of diverse-model workers that hill-climb a scored candidate in rounds, then periodically forget every session and restart from the best candidate. Use when a task has a score command and no single right answer, such as performance tuning, heuristic search, cutting cycles or runtime, or improving a benchmark number. Triggers: "team hillclimb", "hill-climb this", "optimize with a team", "autoresearch", "push this score", "forgetting team". Do not use for bug fixes or feature work; use implement-tasks for those.
+description: >-
+  Run an open-ended optimization as a team of diverse-model workers that hill-climb
+  a scored candidate in rounds, then periodically forget every session and restart
+  from the best candidate. Use when a task has a score command and no single right
+  answer, such as performance tuning, heuristic search, cutting cycles or runtime,
+  or improving a benchmark number. Triggers: "team hillclimb", "hill-climb this",
+  "optimize with a team", "autoresearch", "push this score", "forgetting team".
+  Do not use for bug fixes or feature work; use implement-tasks for those.
 ---
 
 # Team hill-climb with forgetting
