@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAgentLine, sortAgentLines, type AgentEntry } from "./agentFormat";
+import { formatAgentLine, pathDistance, sortAgentLines, type AgentEntry } from "./agentFormat";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 
 const lead = (overrides: Partial<AgentRecord> = {}): AgentRecord => ({
@@ -67,55 +67,119 @@ describe("formatAgentLine", () => {
   });
 });
 
+describe("pathDistance", () => {
+  it("returns 0 for the same directory", () => {
+    expect(pathDistance("/home/user/repos/pi", "/home/user/repos/pi")).toBe(0);
+  });
+
+  it("scores a direct subfolder as 1", () => {
+    expect(pathDistance("/home/user/repos/pi", "/home/user/repos/pi/subfolder")).toBe(1);
+  });
+
+  it("scores a sibling under a shared parent as 2", () => {
+    expect(pathDistance("/home/user/repos/pi", "/home/user/repos/other-directory")).toBe(2);
+  });
+
+  it("counts every hop up and down the tree", () => {
+    expect(pathDistance("/home/user/some/folder/repos", "/home/user/repo2")).toBe(4);
+  });
+
+  it("sums both depths when no root is shared", () => {
+    // /srv/app -> /opt/tool is ../../opt/tool: two hops up, two down.
+    expect(pathDistance("/srv/app", "/opt/tool")).toBe(4);
+  });
+
+  it("ignores trailing slashes and dot segments", () => {
+    expect(pathDistance("/home/user/repos/pi/", "/home/user/repos/pi/./sub")).toBe(1);
+  });
+});
+
 describe("sortAgentLines", () => {
   const entry = (record: AgentRecord): AgentEntry => ({
     record,
     status: AgentStatus.Available,
   });
 
+  /** Empty stamp map: every agent falls back to its startedAt. */
+  const online = (): ReadonlyMap<string, number> => new Map();
+
   it("returns empty for an empty list", () => {
-    expect(sortAgentLines([])).toEqual([]);
+    expect(sortAgentLines([], "/repo", online())).toEqual([]);
   });
 
-  it("puts leads first, sorted by cwd then startedAt, then workers by name", () => {
-    const lateLeadInB = lead({ id: "lead02", cwd: "/b", startedAt: 900 });
-    const earlyLeadInB = lead({ id: "lead01", cwd: "/b", startedAt: 100 });
-    const leadInA = lead({ id: "lead00", cwd: "/a", startedAt: 500 });
-    const carol = entry(worker({ id: "c0000003", name: "carol" }));
-    const alice = entry(worker({ id: "a0000001", name: "alice" }));
-    const bob = entry(worker({ id: "b0000002", name: "bob", startedAt: 10 }));
+  it("puts workers first, then peers by directory proximity", () => {
+    const viewer = "/home/user/repos/pi";
+    const subfolderLead = lead({ id: "aaaa0001", cwd: `${viewer}/sub`, startedAt: 100 });
+    const siblingLead = lead({ id: "bbbb0002", cwd: "/home/user/repos/other", startedAt: 200 });
+    const farLead = lead({ id: "cccc0003", cwd: "/home/user/repo2", startedAt: 300 });
+    const peerLead = lead({ id: "dddd0004", cwd: viewer, startedAt: 400 });
+    const bob = entry(worker({ id: "e0000005", name: "bob" }));
 
-    const sorted = sortAgentLines([
-      carol,
-      entry(lateLeadInB),
-      bob,
-      entry(leadInA),
-      alice,
-      entry(earlyLeadInB),
-    ]);
+    const sorted = sortAgentLines(
+      [entry(farLead), bob, entry(siblingLead), entry(subfolderLead), entry(peerLead)],
+      viewer,
+      online(),
+    );
 
     expect(sorted.map((e) => e.record.id)).toEqual([
-      "lead00", // cwd /a
-      "lead01", // cwd /b, earlier startedAt
-      "lead02",
-      "a0000001", // alice
-      "b0000002", // bob
-      "c0000003", // carol
+      "e0000005", // worker in the viewer's workspace
+      "dddd0004", // distance 0
+      "aaaa0001", // distance 1
+      "bbbb0002", // distance 2
+      "cccc0003", // distance 4
     ]);
   });
 
-  it("sorts unnamed workers by their id", () => {
-    const sorted = sortAgentLines([
-      entry(worker({ id: "zzz", name: undefined })),
-      entry(worker({ id: "aaa", name: undefined })),
+  it("breaks proximity ties by the most recent last-online time", () => {
+    const viewer = "/repo";
+    const stale = lead({ id: "aaaa0001", cwd: "/other/one", startedAt: 100 });
+    const fresh = lead({ id: "bbbb0002", cwd: "/other/two", startedAt: 50 });
+    const lastOnline = new Map([
+      ["aaaa0001", 5000],
+      ["bbbb0002", 6000],
     ]);
+
+    // Fresh is stamped online later than stale, so it leads despite the
+    // earlier startedAt.
+    const sorted = sortAgentLines([entry(stale), entry(fresh)], viewer, lastOnline);
+
+    expect(sorted.map((e) => e.record.id)).toEqual(["bbbb0002", "aaaa0001"]);
+  });
+
+  it("breaks last-online ties by the newest startedAt, then id", () => {
+    const viewer = "/repo";
+    const older = entry(lead({ id: "aaaa0001", cwd: "/repo", startedAt: 100 }));
+    const newerTiedClock = entry(lead({ id: "cccc0003", cwd: "/repo", startedAt: 200 }));
+    const newerSameClock = entry(lead({ id: "zzzz0002", cwd: "/repo", startedAt: 200 }));
+
+    const sorted = sortAgentLines([older, newerTiedClock, newerSameClock], viewer, online());
+
+    expect(sorted.map((e) => e.record.id)).toEqual(["cccc0003", "zzzz0002", "aaaa0001"]);
+  });
+
+  it("falls back to startedAt when no last-online stamp exists, newest first", () => {
+    const viewer = "/repo";
+    const early = entry(lead({ id: "aaaa0001", cwd: "/a", startedAt: 100 }));
+    const late = entry(lead({ id: "bbbb0002", cwd: "/b", startedAt: 900 }));
+
+    const sorted = sortAgentLines([early, late], viewer, online());
+
+    expect(sorted.map((e) => e.record.id)).toEqual(["bbbb0002", "aaaa0001"]);
+  });
+
+  it("sorts unnamed workers by id within the worker group", () => {
+    const sorted = sortAgentLines(
+      [entry(worker({ id: "zzz", name: undefined })), entry(worker({ id: "aaa", name: undefined }))],
+      "/repo",
+      online(),
+    );
     expect(sorted.map((e) => e.record.id)).toEqual(["aaa", "zzz"]);
   });
 
   it("does not mutate the input array", () => {
-    const input = [entry(worker({ name: "zeta" })), entry(worker({ name: "alpha" }))];
+    const input = [entry(worker({ name: "zeta" })), entry(lead({ id: "aaaa0001" }))];
     const snapshot = [...input];
-    sortAgentLines(input);
+    sortAgentLines(input, "/repo", online());
     expect(input).toEqual(snapshot);
   });
 });

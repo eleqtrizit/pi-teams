@@ -72,7 +72,17 @@ describe("S14 peer leads", () => {
       const viewer = leadA!;
       const online = await pruneAndList();
       const visible = visibleTo(viewer, online.map((entry) => entry.record));
-      const displayed = sortAgentLines(online.filter((entry) => visible.some((record) => record.id === entry.record.id)))
+      const lastOnline = new Map(
+        online.map((entry) => [
+          entry.record.id,
+          entry.status === AgentStatus.Offline ? entry.record.startedAt : Date.now(),
+        ]),
+      );
+      const displayed = sortAgentLines(
+        online.filter((entry) => visible.some((record) => record.id === entry.record.id)),
+        viewer.cwd,
+        lastOnline,
+      )
         .map((entry) => formatAgentLine(entry.record, entry.status, viewer.id));
       expect(displayed).toContain(`Pi Agent in ${cwdA}: ${ID_A}: Online (you)`);
       expect(displayed).toContain(`Pi Agent in ${cwdB}: ${ID_B}: Online`);

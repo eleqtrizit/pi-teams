@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { AgentEntry } from "./agentFormat";
+import { readAgentHistory } from "./history";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import {
   agentStatus,
@@ -603,6 +604,31 @@ describe("registry", () => {
       const entries = await pruneAndList(async () => Promise.resolve(AgentStatus.Offline));
       expect(entries).toEqual([]);
       expect(fs.existsSync(agentRecordPath("dd000004"))).toBe(false);
+    });
+
+    it("stamps lastSeenAt in the history for agents found online", async () => {
+      const onlineLead: AgentRecord = lead("aa000001", "/a", 300);
+      const offlineLead: AgentRecord = lead("bb000002", "/b", 400);
+      writeAgentRecord(onlineLead);
+      writeAgentRecord(offlineLead);
+      const lastSeenBefore = new Map(readAgentHistory().map((e) => [e.id, e.lastSeenAt]));
+
+      const clock = vi.spyOn(Date, "now").mockReturnValue(999_999);
+      try {
+        await pruneAndList(async (rec) =>
+          Promise.resolve(
+            rec.id === "bb000002" ? AgentStatus.Offline : AgentStatus.Available,
+          ),
+        );
+      } finally {
+        clock.mockRestore();
+      }
+
+      // The online lead is stamped with the prune-time clock; the offline
+      // lead keeps its registration-time stamp.
+      const lastSeenById = new Map(readAgentHistory().map((e) => [e.id, e.lastSeenAt]));
+      expect(lastSeenById.get("aa000001")).toBe(999_999);
+      expect(lastSeenById.get("bb000002")).toBe(lastSeenBefore.get("bb000002"));
     });
 
     it("keeps the newest offline lead per directory using the default status check", async () => {

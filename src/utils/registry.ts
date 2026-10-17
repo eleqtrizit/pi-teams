@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import { AgentEntry } from "./agentFormat";
 import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
-import { markAgentHistoryRemoved, upsertAgentHistory } from "./history";
+import { markAgentHistoryRemoved, touchLastSeen, upsertAgentHistory } from "./history";
 import { isAgentBusy } from "./runstate";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 
@@ -318,9 +318,10 @@ export function removeStaleSocket(id: string): void {
 /**
  * Prune the registry on disk and list the surviving agents.
  *
- * Computes each record's status, applies {@link pruneRegistry}, deletes every
- * removed record along with its stale socket file, and returns the survivors
- * paired with their statuses, in registry read order.
+ * Computes each record's status, stamps `lastSeenAt` in the history for every
+ * online record, applies {@link pruneRegistry}, deletes every removed record
+ * along with its stale socket file, and returns the survivors paired with
+ * their statuses, in registry read order.
  *
  * @param statusOf - Status function; overridden in tests for determinism
  * @returns One `{record, status}` entry per surviving agent
@@ -334,6 +335,14 @@ export async function pruneAndList(
     records.map(async (rec) => {
       statuses.set(rec.id, await statusOf(rec));
     }),
+  );
+
+  // Agents found online are online right now: record that, so an agent that
+  // later goes offline keeps a meaningful "last online" time.
+  touchLastSeen(
+    records
+      .filter((rec) => statuses.get(rec.id) !== AgentStatus.Offline)
+      .map((rec) => rec.id),
   );
 
   const { keep, remove } = pruneRegistry(records, statuses);

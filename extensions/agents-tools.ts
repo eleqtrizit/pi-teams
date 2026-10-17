@@ -8,6 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgentEntry } from "../src/utils/agentFormat";
 import { formatAgentLine, sortAgentLines } from "../src/utils/agentFormat";
+import { readAgentHistory } from "../src/utils/history";
 import { AgentStatus, type AgentRecord } from "../src/utils/models";
 import { generateAgentId, pruneAndList } from "../src/utils/registry";
 import { buildLeadCommand, buildLeadEnv, resolveLeadFolder, resolveSpawnModel } from "../src/utils/spawn";
@@ -27,6 +28,12 @@ export interface AgentToolDeps {
   isLead?: boolean;
   /** Terminal adapter used to launch spawned leads. Null when none is detected. */
   terminal?: TerminalAdapter | null;
+  /**
+   * Returns `lastSeenAt` epoch milliseconds per agent id, used to order
+   * offline peers by how recently they were last online. Defaults to reading
+   * agents.jsonl; overridden in tests.
+   */
+  getLastSeenAt?: () => ReadonlyMap<string, number>;
 }
 
 /** Time spawn_team_lead waits for the new lead's socket, mirroring worker spawns. */
@@ -59,7 +66,9 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
     label: "List Agents",
     description:
       "List peer Pi agents (leads) and your own workers with their 8-char id and " +
-      "Available/Offline/Busy status. Use the id with send_message.",
+      "Available/Offline/Busy status. Workers come first, then peers ordered by " +
+      "directory proximity (closest first), ties by the most recent last-online " +
+      "time. Use the id with send_message.",
     parameters: asPiToolSchema(Type.Object({})) as any,
     async execute() {
       const self = deps.getSelfRecord();
@@ -83,7 +92,23 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
         return entryById.get(record.id) ?? { record, status: AgentStatus.Offline };
       });
 
-      const ordered = sortAgentLines(visibleEntries);
+      // Online agents are online right now; offline ones order by the last
+      // time they were seen online (history lastSeenAt, startedAt fallback).
+      const now = Date.now();
+      const lastSeenAt =
+        deps.getLastSeenAt?.() ??
+        new Map(readAgentHistory().map((entry) => [entry.id, entry.lastSeenAt]));
+      const lastOnlineAt = new Map<string, number>();
+      for (const entry of visibleEntries) {
+        lastOnlineAt.set(
+          entry.record.id,
+          entry.status === AgentStatus.Offline
+            ? lastSeenAt.get(entry.record.id) ?? entry.record.startedAt
+            : now,
+        );
+      }
+
+      const ordered = sortAgentLines(visibleEntries, self.cwd, lastOnlineAt);
       const text = ordered
         .map((entry) => formatAgentLine(entry.record, entry.status, self.id))
         .join("\n");

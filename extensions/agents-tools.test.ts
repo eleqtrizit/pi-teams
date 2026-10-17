@@ -23,14 +23,20 @@ vi.mock("../src/utils/transport", () => ({
 /**
  * Load registerAgentTools into a mock pi API and return the `list_agents`
  * tool definition registered under the given self-record provider.
+ *
+ * `deps.getLastSeenAt` defaults to an empty stub so tests never read the
+ * developer's real agents.jsonl.
  */
-function loadListAgentsTool(getSelfRecord: () => AgentRecord | null): any {
+function loadListAgentsTool(
+  getSelfRecord: () => AgentRecord | null,
+  deps: Partial<AgentToolDeps> = {},
+): any {
   const tools = new Map<string, any>();
   registerAgentTools(
     {
       registerTool: (tool: { name: string }) => tools.set(tool.name, tool),
     } as any,
-    { getSelfRecord },
+    { getSelfRecord, getLastSeenAt: () => new Map<string, number>(), ...deps },
   );
   return tools.get("list_agents");
 }
@@ -38,8 +44,9 @@ function loadListAgentsTool(getSelfRecord: () => AgentRecord | null): any {
 /** Run the tool and return its rendered text and details. */
 async function runListAgents(
   getSelfRecord: () => AgentRecord | null,
+  deps: Partial<AgentToolDeps> = {},
 ): Promise<{ text: string; details: any }> {
-  const tool = loadListAgentsTool(getSelfRecord);
+  const tool = loadListAgentsTool(getSelfRecord, deps);
   const result = await tool.execute("call-1", {}, undefined, undefined, {});
   return { text: result.content[0].text, details: result.details };
 }
@@ -101,10 +108,10 @@ describe("list_agents", () => {
 
     expect(text).toBe(
       [
+        "Worker alpha-worker in /w/alpha: d1d1d1d1: Available",
         "Pi Agent in /w/alpha: aaaaaaaa: Available (you)",
         "Pi Agent in /w/beta: bbbbbbbb: Available",
         "Pi Agent in /w/gamma: cccccccc: Offline",
-        "Worker alpha-worker in /w/alpha: d1d1d1d1: Available",
       ].join("\n"),
     );
     expect(text).not.toContain("e2e2e2e2");
@@ -114,9 +121,6 @@ describe("list_agents", () => {
     expect(offlineLines[0]).toContain("cccccccc");
 
     expect(details.agents).toEqual([
-      { id: "aaaaaaaa", kind: "lead", cwd: "/w/alpha", status: "Available" },
-      { id: "bbbbbbbb", kind: "lead", cwd: "/w/beta", status: "Available" },
-      { id: "cccccccc", kind: "lead", cwd: "/w/gamma", status: "Offline" },
       {
         id: "d1d1d1d1",
         kind: "teammate",
@@ -124,6 +128,9 @@ describe("list_agents", () => {
         name: "alpha-worker",
         status: "Available",
       },
+      { id: "aaaaaaaa", kind: "lead", cwd: "/w/alpha", status: "Available" },
+      { id: "bbbbbbbb", kind: "lead", cwd: "/w/beta", status: "Available" },
+      { id: "cccccccc", kind: "lead", cwd: "/w/gamma", status: "Offline" },
     ]);
   });
 
@@ -151,14 +158,38 @@ describe("list_agents", () => {
 
     expect(text).toBe(
       [
-        "Pi Agent in /w/alpha: aaaaaaaa: Available",
         "Worker alpha-two in /w/alpha: f3f3f3f3: Available",
         "Worker alpha-worker in /w/alpha: d1d1d1d1: Available (you)",
+        "Pi Agent in /w/alpha: aaaaaaaa: Available",
       ].join("\n"),
     );
     expect(text).not.toContain("bbbbbbbb");
     expect(text).not.toContain("cccccccc");
     expect(text).not.toContain("e2e2e2e2");
+  });
+
+  it("orders offline peers at equal distance by their lastSeenAt, most recent first", async () => {
+    const stale = makeRecord({ id: "g1g1g1g1", cwd: "/w/delta1", startedAt: 900 });
+    const fresh = makeRecord({ id: "g2g2g2g2", cwd: "/w/delta2", startedAt: 800 });
+    vi.mocked(pruneAndList).mockResolvedValue([
+      { record: leadA, status: AgentStatus.Available },
+      { record: stale, status: AgentStatus.Offline },
+      { record: fresh, status: AgentStatus.Offline },
+    ]);
+
+    const { text } = await runListAgents(() => leadA, {
+      getLastSeenAt: () => new Map([["g1g1g1g1", 1000], ["g2g2g2g2", 5000]]),
+    });
+
+    // Both offline leads sit two hops from /w/alpha; the one last seen online
+    // more recently comes first despite its older startedAt.
+    expect(text).toBe(
+      [
+        "Pi Agent in /w/alpha: aaaaaaaa: Available (you)",
+        "Pi Agent in /w/delta2: g2g2g2g2: Offline",
+        "Pi Agent in /w/delta1: g1g1g1g1: Offline",
+      ].join("\n"),
+    );
   });
 
   it("includes self as Online when the registry has no record for this session", async () => {

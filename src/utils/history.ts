@@ -113,6 +113,30 @@ export function upsertAgentHistory(rec: AgentRecord): void {
 }
 
 /**
+ * Refresh `lastSeenAt` for agents that were just observed online.
+ *
+ * Stamps `lastSeenAt` on every listed id that has a history entry, and
+ * clears a stale `removedAt` marker because the id was just seen alive.
+ * Ids without an entry are skipped. The file is written once, only when at
+ * least one entry changed.
+ *
+ * @param ids - Agent ids observed online.
+ * @param now - Epoch milliseconds to stamp; defaults to Date.now(). Overridden in tests.
+ */
+export function touchLastSeen(ids: Iterable<string>, now: number = Date.now()): void {
+  const idSet = new Set(ids);
+  if (idSet.size === 0) return;
+  const entries = readHistoryEntries();
+  let changed = false;
+  const updated = entries.map((entry) => {
+    if (!idSet.has(entry.id)) return entry;
+    changed = true;
+    return { ...entry, lastSeenAt: now, removedAt: undefined };
+  });
+  if (changed) writeHistoryEntries(updated);
+}
+
+/**
  * Mark an agent as removed in the history without deleting its entry.
  *
  * Idempotent: a missing entry or an already-removed entry is left as is.

@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentKind } from "./models";
-import { markAgentHistoryRemoved, readAgentHistory, upsertAgentHistory } from "./history";
+import { markAgentHistoryRemoved, readAgentHistory, touchLastSeen, upsertAgentHistory } from "./history";
+import { agentHistoryPath } from "./paths";
 
 let tmpDir: string;
 let originalTmpdir: string | undefined;
@@ -81,5 +82,35 @@ describe("agent history", () => {
     const entries = readAgentHistory();
     expect(entries).toHaveLength(1);
     expect(entries[0].id).toBe("aaaaaaaa");
+  });
+
+  it("stamps lastSeenAt on listed ids and clears a stale removedAt marker", () => {
+    upsertAgentHistory(record("aaaaaaaa", "/repo/a", 100));
+    upsertAgentHistory(record("bbbbbbbb", "/repo/b", 200));
+    markAgentHistoryRemoved("aaaaaaaa");
+    const lastSeenBefore = new Map(readAgentHistory().map((e) => [e.id, e.lastSeenAt]));
+
+    touchLastSeen(["aaaaaaaa"], 9999);
+
+    const byId = new Map(readAgentHistory().map((e) => [e.id, e]));
+    expect(byId.get("aaaaaaaa")).toMatchObject({ lastSeenAt: 9999 });
+    expect(byId.get("aaaaaaaa")).not.toHaveProperty("removedAt");
+    expect(byId.get("bbbbbbbb")).toBeDefined();
+    expect((byId.get("bbbbbbbb") as { lastSeenAt: number }).lastSeenAt).toBe(
+      lastSeenBefore.get("bbbbbbbb"),
+    );
+  });
+
+  it("skips unknown ids and writes nothing for an empty id list", () => {
+    upsertAgentHistory(record("aaaaaaaa", "/repo/a", 100));
+    const file = agentHistoryPath();
+    const before = fs.statSync(file).mtimeMs;
+
+    touchLastSeen([]);
+    touchLastSeen(["nosuchid1"], 9999);
+
+    expect(fs.statSync(file).mtimeMs).toBe(before);
+    const entries = readAgentHistory();
+    expect(entries).toHaveLength(1);
   });
 });
