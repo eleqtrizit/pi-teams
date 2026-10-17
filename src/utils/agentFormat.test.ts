@@ -23,9 +23,9 @@ const worker = (overrides: Partial<AgentRecord> = {}): AgentRecord => ({
 });
 
 describe("formatAgentLine", () => {
-  it("renders an online lead", () => {
-    expect(formatAgentLine(lead(), AgentStatus.Online, "zzzz9999")).toBe(
-      "Pi Agent in /repo: abc12345: Online",
+  it("renders an available lead", () => {
+    expect(formatAgentLine(lead(), AgentStatus.Available, "zzzz9999")).toBe(
+      "Pi Agent in /repo: abc12345: Available",
     );
   });
 
@@ -36,20 +36,20 @@ describe("formatAgentLine", () => {
   });
 
   it("renders a named worker", () => {
-    expect(formatAgentLine(worker(), AgentStatus.Online, "zzzz9999")).toBe(
-      "Worker alice in /repo: def67890: Online",
+    expect(formatAgentLine(worker(), AgentStatus.Available, "zzzz9999")).toBe(
+      "Worker alice in /repo: def67890: Available",
     );
   });
 
   it("falls back to the id for an unnamed worker", () => {
-    expect(formatAgentLine(worker({ name: undefined }), AgentStatus.Online, "zzzz9999")).toBe(
-      "Worker def67890 in /repo: def67890: Online",
+    expect(formatAgentLine(worker({ name: undefined }), AgentStatus.Available, "zzzz9999")).toBe(
+      "Worker def67890 in /repo: def67890: Available",
     );
   });
 
   it("marks the calling agent with (you)", () => {
-    expect(formatAgentLine(worker(), AgentStatus.Online, "def67890")).toBe(
-      "Worker alice in /repo: def67890: Online (you)",
+    expect(formatAgentLine(worker(), AgentStatus.Available, "def67890")).toBe(
+      "Worker alice in /repo: def67890: Available (you)",
     );
   });
 
@@ -61,8 +61,8 @@ describe("formatAgentLine", () => {
 
   it("marks a readonly worker like any worker", () => {
     const rec = worker({ kind: AgentKind.ReadonlyWorker, name: "scout" });
-    expect(formatAgentLine(rec, AgentStatus.Online, "zzzz9999")).toBe(
-      "Worker scout in /repo: def67890: Online",
+    expect(formatAgentLine(rec, AgentStatus.Available, "zzzz9999")).toBe(
+      "Worker scout in /repo: def67890: Available",
     );
   });
 });
@@ -70,7 +70,7 @@ describe("formatAgentLine", () => {
 describe("sortAgentLines", () => {
   const entry = (record: AgentRecord): AgentEntry => ({
     record,
-    status: AgentStatus.Online,
+    status: AgentStatus.Available,
   });
 
   it("returns empty for an empty list", () => {

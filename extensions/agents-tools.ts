@@ -41,7 +41,7 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
  *
  * `list_agents` prunes stale registry records, filters the survivors by
  * visibility rules, and renders one line per agent. The calling agent is
- * always listed with status Online. Registered for every session, lead and
+ * always listed with status Available. Registered for every session, lead and
  * worker alike.
  *
  * `spawn_team_lead` launches an independent peer lead in an existing folder.
@@ -59,7 +59,7 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
     label: "List Agents",
     description:
       "List peer Pi agents (leads) and your own workers with their 8-char id and " +
-      "Online/Offline status. Use the id with send_message.",
+      "Available/Offline/Busy status. Use the id with send_message.",
     parameters: asPiToolSchema(Type.Object({})) as any,
     async execute() {
       const self = deps.getSelfRecord();
@@ -75,10 +75,10 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
       );
 
       // visibleTo appends the viewer when it is missing from the registry.
-      // Self is always shown Online, even when a liveness probe raced the call.
+      // Self is always shown Available, even when a liveness probe raced the call.
       const visibleEntries: AgentEntry[] = visibleRecords.map((record) => {
         if (record.id === self.id) {
-          return { record, status: AgentStatus.Online };
+          return { record, status: AgentStatus.Available };
         }
         return entryById.get(record.id) ?? { record, status: AgentStatus.Offline };
       });
@@ -170,7 +170,7 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
         }
 
         const listening = await waitForListener(id, LEAD_LISTEN_TIMEOUT_MS);
-        const status = listening ? "Online" : "started but not listening yet";
+        const status = listening ? "Available" : "started but not listening yet";
         return {
           content: [
             {

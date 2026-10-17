@@ -7,6 +7,7 @@ import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
 import * as holdRun from "../src/utils/hold";
 import { appendReply, buildWorkerReport, extractFinalReply } from "../src/utils/report";
+import { removeRunState, writeRunState } from "../src/utils/runstate";
 import { TeamMessage } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
 import {
@@ -97,8 +98,8 @@ export function mergeQueuedMessages(messages: readonly string[]): string {
 export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
   return [
     `You are Pi Agent in ${self.cwd} (id ${self.id}).`,
-    "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and Online/Offline status.",
-    'When work belongs to another directory, or you need help: if no agent there is Online, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
+    "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and Available/Offline/Busy status.",
+    'When work belongs to another directory, or you need help: if no agent there is Available, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
     "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
     "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",
   ].join("\n");
@@ -582,6 +583,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", async () => {
     isAgentRunning = true;
+    // Publish busy for the whole settle cycle: agent_settled clears it, so
+    // parked run-hold time and queued follow-up runs still report Busy.
+    if (selfRecord) writeRunState(selfRecord.id, true);
     // Do not clear pendingInboxNotifications here: messages queued by a failed
     // sendFollowUp retry, or queued mid-run for the boundary flush, would be
     // lost because no copy exists on disk. The queue is flushed at agent_end
@@ -618,6 +622,12 @@ export default function (pi: ExtensionAPI) {
 
   // agent_settled means Pi will not continue on its own. Workers report to
   // their lead; leads reply to peer leads that contacted them during the cycle.
+  // Settled is the ultimate done signal, so busy clears here, not at agent_end:
+  // parked run-hold time and queued follow-up runs keep the agent Busy.
+  pi.on("agent_settled", async () => {
+    if (selfRecord) writeRunState(selfRecord.id, false);
+  });
+
   pi.on("agent_settled", async (event) => {
     const replies = cycleReplies;
     cycleReplies = [];
@@ -667,6 +677,7 @@ export default function (pi: ExtensionAPI) {
     clearTitleRefreshTimeouts();
     isAgentRunning = false;
     pendingInboxNotifications.clear();
+    if (selfRecord) removeRunState(selfRecord.id);
   });
 
   let firstTurn = true;

@@ -376,7 +376,7 @@ describe("registry", () => {
       };
     }
 
-    it("is Online when the pid is alive and the socket accepts connections", async () => {
+    it("is Available when the pid is alive and the socket accepts connections", async () => {
       const calls: string[] = [];
       const status = await agentStatus(
         makeRecord(),
@@ -389,7 +389,7 @@ describe("registry", () => {
           return pid === process.pid;
         },
       );
-      expect(status).toBe(AgentStatus.Online);
+      expect(status).toBe(AgentStatus.Available);
       expect(calls).toEqual([String(process.pid), agentSocketPath("ab12cd34")]);
     });
 
@@ -419,7 +419,7 @@ describe("registry", () => {
       const server = net.createServer(() => {});
       await new Promise<void>((resolve) => server.listen(address, () => resolve()));
       try {
-        await expect(agentStatus(makeRecord({ id }))).resolves.toBe(AgentStatus.Online);
+        await expect(agentStatus(makeRecord({ id }))).resolves.toBe(AgentStatus.Available);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
@@ -448,17 +448,17 @@ describe("registry", () => {
         name: "keeps an online worker and removes an offline worker",
         records: [worker("bb000002", 2), worker("cc000003", 3, AgentKind.ReadonlyWorker)],
         statuses: [
-          ["bb000002", AgentStatus.Online],
+          ["bb000002", AgentStatus.Available],
           ["cc000003", AgentStatus.Offline],
         ],
         expectKeep: ["bb000002"],
         expectRemove: ["cc000003"],
       },
       {
-        name: "removes every offline lead in a directory that has an online lead",
+        name: "removes every offline lead in a directory that has an available lead",
         records: [lead("aa000001", "/a", 10), lead("bb000002", "/a", 50), lead("cc000003", "/a", 20)],
         statuses: [
-          ["aa000001", AgentStatus.Online],
+          ["aa000001", AgentStatus.Available],
           ["bb000002", AgentStatus.Offline],
           ["cc000003", AgentStatus.Offline],
         ],
@@ -504,7 +504,7 @@ describe("registry", () => {
           lead("ff000006", "/c", 5),
         ],
         statuses: [
-          ["aa000001", AgentStatus.Online],
+          ["aa000001", AgentStatus.Available],
           ["bb000002", AgentStatus.Offline],
           ["cc000003", AgentStatus.Offline],
           ["dd000004", AgentStatus.Offline],
@@ -517,7 +517,7 @@ describe("registry", () => {
       {
         name: "treats a record with no status as offline",
         records: [lead("aa000001", "/a", 10), lead("bb000002", "/a", 50), worker("cc000003", 1)],
-        statuses: [["aa000001", AgentStatus.Online]],
+        statuses: [["aa000001", AgentStatus.Available]],
         expectKeep: ["aa000001"],
         expectRemove: ["bb000002", "cc000003"],
       },
@@ -533,7 +533,7 @@ describe("registry", () => {
           ["aa000001", AgentStatus.Offline],
           ["bb000002", AgentStatus.Offline],
           ["cc000003", AgentStatus.Offline],
-          ["dd000004", AgentStatus.Online],
+          ["dd000004", AgentStatus.Available],
         ],
         expectKeep: ["aa000001", "dd000004"],
         expectRemove: ["bb000002", "cc000003"],
@@ -550,11 +550,11 @@ describe("registry", () => {
 
     it("does not mutate its inputs", () => {
       const records = [worker("bb000002", 2), lead("cc000003", "/a", 1)];
-      const statuses = new Map<string, AgentStatus>([["bb000002", AgentStatus.Online]]);
+      const statuses = new Map<string, AgentStatus>([["bb000002", AgentStatus.Available]]);
       const snapshot = records.map((r) => ({ ...r }));
       pruneRegistry(records, statuses);
       expect(records).toEqual(snapshot);
-      expect(statuses.get("bb000002")).toBe(AgentStatus.Online);
+      expect(statuses.get("bb000002")).toBe(AgentStatus.Available);
     });
   });
 
@@ -578,13 +578,13 @@ describe("registry", () => {
         Promise.resolve(
           rec.id === "bb000002" || rec.id === "dd000004"
             ? AgentStatus.Offline
-            : AgentStatus.Online,
+            : AgentStatus.Available,
         ),
       );
 
       expect(entries).toEqual([
-        { record: onlineLead, status: AgentStatus.Online },
-        { record: onlineWorker, status: AgentStatus.Online },
+        { record: onlineLead, status: AgentStatus.Available },
+        { record: onlineWorker, status: AgentStatus.Available },
       ]);
       for (const id of ["bb000002", "dd000004"]) {
         expect(fs.existsSync(agentRecordPath(id))).toBe(false);

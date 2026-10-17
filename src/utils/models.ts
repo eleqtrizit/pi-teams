@@ -8,10 +8,11 @@ export enum AgentKind {
   ReadonlyWorker = "readonly-worker",
 }
 
-/** Online/offline state of a registered agent. */
+/** Available/offline/busy state of a registered agent. */
 export enum AgentStatus {
-  Online = "Online",
+  Available = "Available",
   Offline = "Offline",
+  Busy = "Busy",
 }
 
 /**

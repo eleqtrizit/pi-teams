@@ -5,6 +5,7 @@ import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import { AgentEntry } from "./agentFormat";
 import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
 import { markAgentHistoryRemoved, upsertAgentHistory } from "./history";
+import { isAgentBusy } from "./runstate";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -211,7 +212,7 @@ export function isPidAlive(pid: number): boolean {
  * @param rec - Agent record to check
  * @param probe - Socket probe; overridden in tests
  * @param pidAlive - Pid check; overridden in tests
- * @returns Online when the process is alive and listening, otherwise Offline
+ * @returns Available when the process is alive and listening and not busy, otherwise Offline
  */
 export async function agentStatus(
   rec: AgentRecord,
@@ -226,7 +227,8 @@ export async function agentStatus(
     return AgentStatus.Offline;
   }
   const listening = await probe(address, PROBE_TIMEOUT_MS);
-  return listening ? AgentStatus.Online : AgentStatus.Offline;
+  if (!listening) return AgentStatus.Offline;
+  return isAgentBusy(rec.id) ? AgentStatus.Busy : AgentStatus.Available;
 }
 
 /**
@@ -254,7 +256,7 @@ export function pruneRegistry(
 
   const cwdHasOnlineLead = new Set<string>();
   for (const rec of records) {
-    if (rec.kind === AgentKind.Lead && statusOf(rec) === AgentStatus.Online) {
+    if (rec.kind === AgentKind.Lead && statusOf(rec) === AgentStatus.Available) {
       cwdHasOnlineLead.add(rec.cwd);
     }
   }
@@ -264,7 +266,7 @@ export function pruneRegistry(
     rec.startedAt > current.startedAt ||
     (rec.startedAt === current.startedAt && rec.id > current.id);
   for (const rec of records) {
-    if (rec.kind !== AgentKind.Lead || statusOf(rec) === AgentStatus.Online) continue;
+    if (rec.kind !== AgentKind.Lead || statusOf(rec) === AgentStatus.Available) continue;
     const current = newestOfflineLeadByCwd.get(rec.cwd);
     if (current === undefined || isNewest(rec, current)) {
       newestOfflineLeadByCwd.set(rec.cwd, rec);
@@ -275,11 +277,11 @@ export function pruneRegistry(
   const remove: string[] = [];
   for (const rec of records) {
     if (rec.kind !== AgentKind.Lead) {
-      if (statusOf(rec) === AgentStatus.Online) keep.push(rec);
+      if (statusOf(rec) === AgentStatus.Available) keep.push(rec);
       else remove.push(rec.id);
       continue;
     }
-    if (statusOf(rec) === AgentStatus.Online) {
+    if (statusOf(rec) === AgentStatus.Available) {
       keep.push(rec);
       continue;
     }

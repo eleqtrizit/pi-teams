@@ -72,6 +72,18 @@ export function agentRecordPath(id: string): string {
 }
 
 /**
+ * Path of one agent's run-state file, keyed by agent ID.
+ *
+ * @param id - Agent ID
+ * @returns Absolute path of the agent's state file
+ * @throws Error when the ID is invalid
+ */
+export function agentIdStatePath(id: string): string {
+  assertAgentId(id);
+  return path.join(registryDir(), "state", `${id}.json`);
+}
+
+/**
  * Path of the append-safe agent history file.
  *
  * Holds one JSON line per agent ever registered, keyed uniquely by agent ID,

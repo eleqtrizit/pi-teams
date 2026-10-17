@@ -81,11 +81,11 @@ const workerB = makeRecord({
 /** Survivors of a mocked pruneAndList: every lead plus both online workers. */
 function seededEntries() {
   vi.mocked(pruneAndList).mockResolvedValue([
-    { record: leadA, status: AgentStatus.Online },
-    { record: leadB, status: AgentStatus.Online },
+    { record: leadA, status: AgentStatus.Available },
+    { record: leadB, status: AgentStatus.Available },
     { record: leadC, status: AgentStatus.Offline },
-    { record: workerA, status: AgentStatus.Online },
-    { record: workerB, status: AgentStatus.Online },
+    { record: workerA, status: AgentStatus.Available },
+    { record: workerB, status: AgentStatus.Available },
   ]);
 }
 
@@ -101,10 +101,10 @@ describe("list_agents", () => {
 
     expect(text).toBe(
       [
-        "Pi Agent in /w/alpha: aaaaaaaa: Online (you)",
-        "Pi Agent in /w/beta: bbbbbbbb: Online",
+        "Pi Agent in /w/alpha: aaaaaaaa: Available (you)",
+        "Pi Agent in /w/beta: bbbbbbbb: Available",
         "Pi Agent in /w/gamma: cccccccc: Offline",
-        "Worker alpha-worker in /w/alpha: d1d1d1d1: Online",
+        "Worker alpha-worker in /w/alpha: d1d1d1d1: Available",
       ].join("\n"),
     );
     expect(text).not.toContain("e2e2e2e2");
@@ -114,15 +114,15 @@ describe("list_agents", () => {
     expect(offlineLines[0]).toContain("cccccccc");
 
     expect(details.agents).toEqual([
-      { id: "aaaaaaaa", kind: "lead", cwd: "/w/alpha", status: "Online" },
-      { id: "bbbbbbbb", kind: "lead", cwd: "/w/beta", status: "Online" },
+      { id: "aaaaaaaa", kind: "lead", cwd: "/w/alpha", status: "Available" },
+      { id: "bbbbbbbb", kind: "lead", cwd: "/w/beta", status: "Available" },
       { id: "cccccccc", kind: "lead", cwd: "/w/gamma", status: "Offline" },
       {
         id: "d1d1d1d1",
         kind: "teammate",
         cwd: "/w/alpha",
         name: "alpha-worker",
-        status: "Online",
+        status: "Available",
       },
     ]);
   });
@@ -139,21 +139,21 @@ describe("list_agents", () => {
       startedAt: 1600,
     });
     vi.mocked(pruneAndList).mockResolvedValue([
-      { record: leadA, status: AgentStatus.Online },
-      { record: leadB, status: AgentStatus.Online },
+      { record: leadA, status: AgentStatus.Available },
+      { record: leadB, status: AgentStatus.Available },
       { record: leadC, status: AgentStatus.Offline },
-      { record: workerA, status: AgentStatus.Online },
-      { record: workerB, status: AgentStatus.Online },
-      { record: sibling, status: AgentStatus.Online },
+      { record: workerA, status: AgentStatus.Available },
+      { record: workerB, status: AgentStatus.Available },
+      { record: sibling, status: AgentStatus.Available },
     ]);
 
     const { text } = await runListAgents(() => workerA);
 
     expect(text).toBe(
       [
-        "Pi Agent in /w/alpha: aaaaaaaa: Online",
-        "Worker alpha-two in /w/alpha: f3f3f3f3: Online",
-        "Worker alpha-worker in /w/alpha: d1d1d1d1: Online (you)",
+        "Pi Agent in /w/alpha: aaaaaaaa: Available",
+        "Worker alpha-two in /w/alpha: f3f3f3f3: Available",
+        "Worker alpha-worker in /w/alpha: d1d1d1d1: Available (you)",
       ].join("\n"),
     );
     expect(text).not.toContain("bbbbbbbb");
@@ -163,17 +163,17 @@ describe("list_agents", () => {
 
   it("includes self as Online when the registry has no record for this session", async () => {
     vi.mocked(pruneAndList).mockResolvedValue([
-      { record: leadB, status: AgentStatus.Online },
+      { record: leadB, status: AgentStatus.Available },
       { record: leadC, status: AgentStatus.Offline },
-      { record: workerB, status: AgentStatus.Online },
+      { record: workerB, status: AgentStatus.Available },
     ]);
 
     const { text, details } = await runListAgents(() => leadA);
 
     expect(text).toBe(
       [
-        "Pi Agent in /w/alpha: aaaaaaaa: Online (you)",
-        "Pi Agent in /w/beta: bbbbbbbb: Online",
+        "Pi Agent in /w/alpha: aaaaaaaa: Available (you)",
+        "Pi Agent in /w/beta: bbbbbbbb: Available",
         "Pi Agent in /w/gamma: cccccccc: Offline",
       ].join("\n"),
     );
@@ -181,19 +181,19 @@ describe("list_agents", () => {
       id: "aaaaaaaa",
       kind: "lead",
       cwd: "/w/alpha",
-      status: "Online",
+      status: "Available",
     });
   });
 
-  it("forces self Online when its registry entry probed Offline", async () => {
+  it("forces self Available when its registry entry probed Offline", async () => {
     vi.mocked(pruneAndList).mockResolvedValue([
       { record: leadA, status: AgentStatus.Offline },
-      { record: workerA, status: AgentStatus.Online },
+      { record: workerA, status: AgentStatus.Available },
     ]);
 
     const { text } = await runListAgents(() => leadA);
 
-    expect(text).toContain("Pi Agent in /w/alpha: aaaaaaaa: Online (you)");
+    expect(text).toContain("Pi Agent in /w/alpha: aaaaaaaa: Available (you)");
     expect(text).not.toContain("aaaaaaaa: Offline");
   });
 
@@ -210,9 +210,9 @@ describe("list_agents", () => {
 
     const { text, details } = await runListAgents(() => orphan);
 
-    expect(text).toBe("Worker lonely in /w/theta: a1b2c3d4: Online (you)");
+    expect(text).toBe("Worker lonely in /w/theta: a1b2c3d4: Available (you)");
     expect(details.agents).toEqual([
-      { id: "a1b2c3d4", kind: "teammate", cwd: "/w/theta", name: "lonely", status: "Online" },
+      { id: "a1b2c3d4", kind: "teammate", cwd: "/w/theta", name: "lonely", status: "Available" },
     ]);
   });
 
@@ -337,7 +337,7 @@ describe("spawn_team_lead", () => {
     expect(call.env.PI_AGENT_TYPE).toBe("lead");
 
     expect(vi.mocked(waitForListener)).toHaveBeenCalledWith("abcd1234", 30_000);
-    expect(text).toBe(`Pi Agent in ${folder}: abcd1234: Online`);
+    expect(text).toBe(`Pi Agent in ${folder}: abcd1234: Available`);
     expect(details).toEqual({
       id: "abcd1234",
       cwd: folder,
@@ -392,7 +392,7 @@ describe("spawn_team_lead", () => {
     expect(terminal.windowCalls).toHaveLength(1);
     expect(terminal.windowCalls[0].cwd).toBe(folder);
     expect(terminal.windowCalls[0].name).toBe("pi-lead-abcd1234");
-    expect(text).toBe(`Pi Agent in ${folder}: abcd1234: Online`);
+    expect(text).toBe(`Pi Agent in ${folder}: abcd1234: Available`);
     expect(details).toEqual({
       id: "abcd1234",
       cwd: folder,

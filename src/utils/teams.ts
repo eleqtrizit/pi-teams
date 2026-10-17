@@ -1,6 +1,7 @@
 import { execCommand } from "./terminal-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
 import { readAgentRecord, removeAgentRecord, removeStaleSocket } from "./registry";
+import { removeRunState } from "./runstate";
 
 /** Options for removing an agent from the registry and terminating it. */
 export interface RemoveAgentOptions {
@@ -34,6 +35,7 @@ export async function removeAgent(options: RemoveAgentOptions): Promise<void> {
   if (record) {
     removeAgentRecord(agentId);
     removeStaleSocket(agentId);
+    removeRunState(agentId);
   }
 
   const terminal = options.terminal ?? null;
