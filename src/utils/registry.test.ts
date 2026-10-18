@@ -8,6 +8,7 @@ import { AgentEntry } from "./agentFormat";
 import { readAgentHistory } from "./history";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import {
+  adoptOrphanedWorkers,
   agentStatus,
   ensureRegistryDir,
   generateAgentId,
@@ -425,6 +426,32 @@ describe("registry", () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
       await expect(agentStatus(makeRecord({ id }))).resolves.toBe(AgentStatus.Offline);
+    });
+  });
+
+  describe("adoptOrphanedWorkers", () => {
+    it("adopts workers whose owner lead has no record, in the lead's cwd", () => {
+      writeAgentRecord(lead("ad000001", "/a", 100));
+      writeAgentRecord({ ...worker("bb000002", 1), cwd: "/a" });
+      writeAgentRecord({ ...worker("cc000003", 2), cwd: "/a" });
+      writeAgentRecord({ ...worker("dd000004", 3), cwd: "/b" });
+      writeAgentRecord(lead("ee000005", "/a", 50));
+      writeAgentRecord(lead("ff000006", "/c", 10));
+
+      const adopted = adoptOrphanedWorkers(lead("ad000001", "/a", 100));
+
+      expect(adopted).toEqual(["bb000002", "cc000003"]);
+      expect(readAgentRecord("bb000002")?.leadId).toBe("ad000001");
+      expect(readAgentRecord("cc000003")?.leadId).toBe("ad000001");
+      // Worker with a live owner in another cwd stays untouched.
+      expect(readAgentRecord("dd000004")?.leadId).toBe("aa000001");
+    });
+
+    it("leaves workers with no leadId alone", () => {
+      writeAgentRecord(lead("ad000001", "/a", 1));
+      const orphan: AgentRecord = { id: "bb000002", kind: AgentKind.Teammate, cwd: "/a", pid: 1, startedAt: 1 };
+      writeAgentRecord(orphan);
+      expect(adoptOrphanedWorkers(lead("ad000001", "/a", 1))).toEqual([]);
     });
   });
 

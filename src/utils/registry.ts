@@ -87,6 +87,31 @@ export function updateAgentRecord(id: string, patch: Partial<AgentRecord>): void
 }
 
 /**
+ * Adopt orphaned workers in the lead's own cwd.
+ *
+ * A worker is orphaned when its `leadId` names a lead that no longer has a
+ * registry record (the lead exited without closing its workers). Orphans are
+ * invisible to every lead, so their reports can never be delivered. The lead
+ * that runs this at `session_start` claims them, which restores messaging in
+ * both directions.
+ *
+ * @param lead - The adopting lead's own record.
+ * @returns The ids of the workers that were adopted.
+ */
+export function adoptOrphanedWorkers(lead: AgentRecord): string[] {
+  const records = readAgentRecords();
+  const adopted: string[] = [];
+  for (const rec of records) {
+    if (rec.kind === AgentKind.Lead || rec.leadId === undefined) continue;
+    if (rec.cwd !== lead.cwd) continue;
+    if (records.some((other) => other.id === rec.leadId)) continue;
+    updateAgentRecord(rec.id, { leadId: lead.id });
+    adopted.push(rec.id);
+  }
+  return adopted;
+}
+
+/**
  * Validate that a parsed JSON value is a well-formed AgentRecord.
  *
  * @param value - Parsed JSON value

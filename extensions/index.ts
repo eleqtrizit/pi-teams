@@ -46,6 +46,7 @@ import {
   writeAgentRecord,
   readAgentRecords,
   updateAgentRecord,
+  adoptOrphanedWorkers,
   isPidAlive,
 } from "../src/utils/registry";
 import { assertAgentId } from "../src/utils/paths";
@@ -475,6 +476,12 @@ export default function (pi: ExtensionAPI) {
       try {
         ensureRegistryDir();
         writeAgentRecord(selfRecord);
+        if (isLead) {
+          const adopted = adoptOrphanedWorkers(selfRecord);
+          if (adopted.length > 0 && ctx.hasUI) {
+            ctx.ui.notify(`pi-teams: adopted orphaned workers: ${adopted.join(", ")}`, "info");
+          }
+        }
       } catch (e) {
         ctx.ui.notify(
           `pi-teams: cannot register agent: ${e}`,
