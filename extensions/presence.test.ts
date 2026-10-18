@@ -146,11 +146,11 @@ describe("agent presence registration", () => {
     await handlers.get("session_start")({}, ctx);
 
     expect(ui.setTitle).toHaveBeenCalledWith(
-      expect.stringContaining("Pi Agent in "),
+      expect.stringContaining("Agent: "),
     );
     expect(ui.setStatus).toHaveBeenCalledWith(
       "pi-teams",
-      expect.stringContaining("Pi Agent in "),
+      expect.stringContaining("Agent: "),
     );
   });
 

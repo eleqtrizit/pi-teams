@@ -496,7 +496,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("00-pi-teams", `[${agentName.toUpperCase()}]`);
       scheduleTerminalTitleRefreshes(fullTitle);
     } else {
-      const title = `Pi Agent in ${process.cwd()} (${agentId})`;
+      const title = `Agent: ${agentId}`;
       setSessionTitle(ctx, title);
       ctx.ui.setStatus("pi-teams", title);
     }
