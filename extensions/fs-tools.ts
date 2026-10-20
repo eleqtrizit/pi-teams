@@ -78,7 +78,7 @@ const WriteParams = Type.Object({
     Type.String({
       description:
         "Why this file is being written, in plain English: what it contains and what it is for. " +
-        "Fill this in FIRST, before path and content.",
+        "Fill this in FIRST, before path.",
     }),
   ),
   path: Type.String({
@@ -86,19 +86,20 @@ const WriteParams = Type.Object({
       "Path to the file to write (relative or absolute). Parent directories are created. " +
       "Second parameter, after description.",
   }),
-  content: Type.String({
-    description:
-      "Full content to write. This replaces the file entirely — for a partial change to an existing file, " +
-      "use edit instead.",
-  }),
   readHash: Type.Optional(
     Type.String({
       description:
         "The content_hash value printed by the read tool when you last read this file. It must match the " +
         'file\'s current on-disk content or the write is rejected. Pass "new" when the file does not exist ' +
-        "yet. Read the file first if you do not have this hash.",
+        "yet. Read the file first if you do not have this hash. Third parameter, after path.",
     }),
   ),
+  content: Type.String({
+    description:
+      "Full content to write. This replaces the file entirely — for a partial change to an existing file, " +
+      "use edit instead. Fill this LAST, after description, path and readHash, so a missing small field " +
+      "is caught before generating the content.",
+  }),
 });
 
 /** Required edit parameters, in fill order. */
@@ -110,7 +111,7 @@ const EDIT_REQUIRED = [
   "readHash",
 ] as const;
 /** Required write parameters, in fill order. */
-const WRITE_REQUIRED = ["description", "path", "content", "readHash"] as const;
+const WRITE_REQUIRED = ["description", "path", "readHash", "content"] as const;
 
 /** Tools whose rejected partial calls `amend` can complete. */
 type AmendableTool = "edit" | "write";
@@ -381,12 +382,12 @@ export function registerFsTools(pi: ExtensionAPI): void {
     description:
       "Write a file's complete content, replacing whatever was there. Creates the file and any parent " +
       "directories. ALL parameters are required (description, path, content, readHash) even though the " +
-      "schema may show some as optional. Fill in order: description, path, then content and readHash. " +
+      "schema may show some as optional. Fill in order: description, path, then readHash and content. " +
       "Use write only for new files or complete rewrites — for a partial change to an existing file, use edit.",
     promptSnippet: "Create or overwrite a file with its complete content",
     promptGuidelines: [
       "Use write only for new files or complete rewrites; use edit for partial changes to an existing file.",
-      "When calling write, fill parameters in this order: description, path, then content and readHash. " +
+      "When calling write, fill parameters in this order: description, path, then readHash and content. " +
         "State the reason for the file before generating its content.",
       'write\'s readHash must be the content_hash from your last read of that file; pass "new" only if the file does not exist yet.',
     ],

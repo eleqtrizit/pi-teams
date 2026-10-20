@@ -59,8 +59,8 @@ describe("fs tool parameter ordering", () => {
     expect(emittedPropertyOrder("write")).toEqual([
       "description",
       "path",
-      "content",
       "readHash",
+      "content",
     ]);
   });
 
@@ -112,7 +112,7 @@ describe("required-parameter validation", () => {
     const error = await executeOf("write")("t", { content: "x" }).catch(
       (e: Error) => e.message,
     );
-    expect(error).toContain("description, path, content, readHash");
+    expect(error).toContain("description, path, readHash, content");
     expect(error).toContain("Missing: description, path, readHash");
   });
 
