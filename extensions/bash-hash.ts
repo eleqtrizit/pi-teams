@@ -10,8 +10,8 @@ import type {
 /**
  * Hash lines for bash-written files.
  *
- * The `## New Files` guidance asks agents to create files with the write tool,
- * but a bash heredoc or redirect still happens. A file created that way has no
+ * Agents may create files with bash heredocs or redirects instead of the write
+ * tool. A file created that way has no
  * `content_hash` line in any tool result, so the stale-write guard has nothing
  * for the agent to pass to `edit` or `write`. This handler detects files a bash
  * command wrote (output redirection and `tee`) and appends their hash to the

@@ -699,16 +699,12 @@ export default function (pi: ExtensionAPI) {
 
   let firstTurn = true;
   pi.on("before_agent_start", async (event, ctx) => {
-    // Every session gets the new-file guidance: write (not bash heredocs) keeps
-    // the hash guard and the journal's edit/write audit trail intact.
-    const systemPromptBase = `${event.systemPrompt}\n\n## New Files\n\nUse write tool over bash tool to write new files.`;
-
     // Every lead turn gets the peer-lead collaboration guidance. A lead in
     // an auto-exit host mode also gets the run-hold note: the extension
     // holds the run open while the team is active, so the lead ends its
     // turn instead of polling and releases the session when done.
     if (isLead) {
-      let systemPrompt = systemPromptBase;
+      let systemPrompt = event.systemPrompt;
       if (holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isWorker })) {
         systemPrompt += `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`;
       }
@@ -736,7 +732,7 @@ export default function (pi: ExtensionAPI) {
 
       return {
         systemPrompt:
-          systemPromptBase +
+          event.systemPrompt +
           `\n\nYou are ${roleDescription} '${agentName}'.${modelInfo}${capabilitiesNote}\nYour lead's agent id is ${leadId}. Reply with send_message(recipient="lead").\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. Your final reply is NOT sent anywhere. When your work is done, report it to your lead with send_message(recipient="lead", expectReply=false), then end your turn and stop. If a message shows 'Reply expected: yes', answer that sender with send_message; you are reminded until you do. Set expectReply=true only when you need an answer, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, report it with send_message and then stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }

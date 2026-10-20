@@ -124,23 +124,4 @@ describe("before_agent_start peer-lead guidance", () => {
     expect(systemPrompt).toContain("Reply expected: yes");
     expect(systemPrompt).not.toContain("sent to the team-lead automatically");
   });
-
-  it("includes the new-files guidance in lead and worker prompts", async () => {
-    vi.stubEnv("PI_AGENT_NAME", "");
-    vi.stubEnv("PI_AGENT_TYPE", "");
-    vi.stubEnv("PI_AGENT_ID", "prmpld01");
-    const leadPrompt = await runBeforeAgentStart(loadHandlers(), true);
-    expect(leadPrompt).toContain(
-      "## New Files\n\nUse write tool over bash tool to write new files.",
-    );
-
-    vi.stubEnv("PI_AGENT_NAME", "worker-1");
-    vi.stubEnv("PI_AGENT_TYPE", "teammate");
-    vi.stubEnv("PI_AGENT_ID", "prmpwk01");
-    vi.stubEnv("PI_LEAD_ID", "prmpld01");
-    const workerPrompt = await runBeforeAgentStart(loadHandlers(), false);
-    expect(workerPrompt).toContain(
-      "## New Files\n\nUse write tool over bash tool to write new files.",
-    );
-  });
 });
