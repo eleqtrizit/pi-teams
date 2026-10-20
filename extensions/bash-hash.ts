@@ -12,14 +12,14 @@ import type {
  *
  * Agents may create files with bash heredocs or redirects instead of the write
  * tool. A file created that way has no
- * `content_hash` line in any tool result, so the stale-write guard has nothing
+ * `file_hash` line in any tool result, so the stale-write guard has nothing
  * for the agent to pass to `edit` or `write`. This handler detects files a bash
  * command wrote (output redirection and `tee`) and appends their hash to the
  * tool result, restoring the guard's contract.
  */
 
 /** First 8 hex characters of the sha256 digest of the file bytes. */
-function contentHash(content: Buffer): string {
+function fileHash(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 8);
 }
 
@@ -54,7 +54,7 @@ export function writtenFiles(command: string): string[] {
 }
 
 /**
- * Append `content_hash:` lines for files the bash command wrote.
+ * Append `file_hash:` lines for files the bash command wrote.
  *
  * Every match is verified against the filesystem before it is hashed, so the
  * regex's permissiveness cannot fabricate a hash. Relative paths resolve
@@ -79,8 +79,8 @@ export function registerBashHash(pi: ExtensionAPI): void {
       for (const path of writtenFiles(command)) {
         const absolute = isAbsolute(path) ? path : join(ctx.cwd, path);
         try {
-          const hash = contentHash(await readFile(absolute));
-          lines.push(`content_hash: ${hash} (bash-written: ${path})`);
+          const hash = fileHash(await readFile(absolute));
+          lines.push(`file_hash: ${hash} (bash-written: ${path})`);
         } catch {
           // Redirect matched but the file does not exist (for example a failed
           // write); nothing to hash.

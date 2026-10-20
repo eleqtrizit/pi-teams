@@ -51,7 +51,7 @@ describe("fs tool parameter ordering", () => {
       "path",
       "oldText",
       "newText",
-      "readHash",
+      "fileHash",
     ]);
   });
 
@@ -59,7 +59,7 @@ describe("fs tool parameter ordering", () => {
     expect(emittedPropertyOrder("write")).toEqual([
       "description",
       "path",
-      "readHash",
+      "fileHash",
       "content",
     ]);
   });
@@ -67,7 +67,7 @@ describe("fs tool parameter ordering", () => {
   it("registers read with no hash requirement on input", () => {
     const keys = emittedPropertyOrder("read");
     expect(keys[0]).toBe("path");
-    expect(keys).not.toContain("readHash");
+    expect(keys).not.toContain("fileHash");
   });
 
   it("registers read, edit, write, and amend once each", () => {
@@ -104,16 +104,16 @@ describe("required-parameter validation", () => {
       oldText: "x",
       newText: "y",
     }).catch((e: Error) => e.message);
-    expect(error).toContain("description, path, oldText, newText, readHash");
-    expect(error).toContain("Missing: description, readHash");
+    expect(error).toContain("description, path, oldText, newText, fileHash");
+    expect(error).toContain("Missing: description, fileHash");
   });
 
   it("rejects write naming every required parameter and each missing one", async () => {
     const error = await executeOf("write")("t", { content: "x" }).catch(
       (e: Error) => e.message,
     );
-    expect(error).toContain("description, path, readHash, content");
-    expect(error).toContain("Missing: description, path, readHash");
+    expect(error).toContain("description, path, fileHash, content");
+    expect(error).toContain("Missing: description, path, fileHash");
   });
 
   it("passes edit past requireAll when all parameters are present", async () => {
@@ -124,7 +124,7 @@ describe("required-parameter validation", () => {
       path: "/nonexistent-fs-tools-test.txt",
       oldText: "x",
       newText: "y",
-      readHash: "abc12345",
+      fileHash: "abc12345",
     }).catch((e: Error) => e.message);
     expect(error).not.toContain("requires ALL of these parameters");
   });
@@ -146,7 +146,7 @@ describe("amend", () => {
     return (tool as any).execute;
   }
 
-  /** A temp workspace with one file, plus its content_hash. */
+  /** A temp workspace with one file, plus its file_hash. */
   function makeWorkspace(): { cwd: string; file: string; hash: string } {
     const cwd = mkdtempSync(join(tmpdir(), "fs-tools-amend-"));
     const file = join(cwd, "a.txt");
@@ -180,7 +180,7 @@ describe("amend", () => {
 
   it("completes a rejected edit with only the missing fields and executes it", async () => {
     const { cwd, file, hash } = makeWorkspace();
-    // Rejected edit: missing description and readHash.
+    // Rejected edit: missing description and fileHash.
     const rejectError = await executeOf("edit")(
       "t",
       { path: file, oldText: "hello", newText: "world" },
@@ -188,14 +188,14 @@ describe("amend", () => {
       undefined,
       { cwd },
     ).catch((e: Error) => e.message);
-    expect(rejectError).toContain("Missing: description, readHash");
+    expect(rejectError).toContain("Missing: description, fileHash");
     expect(rejectError).toContain('amend(tool="edit"');
 
     const result = (await executeOf("amend")(
       "t",
       {
         tool: "edit",
-        fields: { description: "swap greeting", readHash: hash },
+        fields: { description: "swap greeting", fileHash: hash },
       },
       undefined,
       undefined,
@@ -205,7 +205,7 @@ describe("amend", () => {
       .map((part) => (part as { text?: string }).text ?? "")
       .join("\n");
     expect(readFileSync(file, "utf-8")).toBe("world");
-    expect(text).toMatch(/content_hash: [0-9a-f]{8}/);
+    expect(text).toMatch(/file_hash: [0-9a-f]{8}/);
   });
 
   it("keeps the merged partial stored when fields are still missing, then completes", async () => {
@@ -225,11 +225,11 @@ describe("amend", () => {
       undefined,
       { cwd },
     ).catch((e: Error) => e.message);
-    expect(stillMissing).toContain("still missing readHash");
+    expect(stillMissing).toContain("still missing fileHash");
 
     await executeOf("amend")(
       "t",
-      { tool: "edit", fields: { readHash: hash } },
+      { tool: "edit", fields: { fileHash: hash } },
       undefined,
       undefined,
       { cwd },
@@ -250,7 +250,7 @@ describe("amend", () => {
       "t",
       {
         tool: "write",
-        fields: { description: "create file", readHash: "new" },
+        fields: { description: "create file", fileHash: "new" },
       },
       undefined,
       undefined,

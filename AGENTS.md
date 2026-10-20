@@ -25,9 +25,9 @@ Tools are registered in `extensions/index.ts`, split by session identity into th
 | `close_myself`          | worker + spawned leads | Terminate the calling agent                                               | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`)                |
 
 `close_myself` registers for workers and for spawned leads (a lead session with a preassigned `PI_AGENT_ID`, i.e. started by `spawn_team_lead`). The interactive top-level lead session never registers it, so it cannot kill itself with one tool call. Before it removes itself, `close_myself` sends a `Closed: <label>` notice to every agent still waiting for a reply (see [Reply obligations](#reply-obligations-expectreply)); it sends nothing else. `extensions/index.ts` holds the registration gate, `registerCloseMyself` in `extensions/shared-tools.ts` holds the tool.
-| `read` | shared | Read a file; text results end with `content_hash:` | `extensions/fs-tools.ts` |
-| `edit` | shared | One targeted replacement; takes `readHash` | `extensions/fs-tools.ts` |
-| `write` | shared | Full-file write; takes `readHash` | `extensions/fs-tools.ts` |
+| `read` | shared | Read a file; text results end with `file_hash:` | `extensions/fs-tools.ts` |
+| `edit` | shared | One targeted replacement; takes `fileHash` | `extensions/fs-tools.ts` |
+| `write` | shared | Full-file write; takes `fileHash` | `extensions/fs-tools.ts` |
 | `amend` | shared | Complete a rejected edit or write with just the missing fields | `extensions/fs-tools.ts` |
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
@@ -40,8 +40,8 @@ The dollar-prefixed one-turn model substitution inputs (`$<model> <prompt...>` a
 
 `extensions/fs-tools.ts` registers hash-guarded `read`, `edit`, and `write`
 overrides (shared section of `extensions/index.ts`). Every text `read` result
-ends with a `content_hash: xxxxxxxx` line (first 8 hex chars of sha256 of the
-file bytes). `edit` and `write` take a required `readHash` parameter: if the
+ends with a `file_hash: xxxxxxxx` line (first 8 hex chars of sha256 of the
+file bytes). `edit` and `write` take a required `fileHash` parameter: if the
 file exists and the hash does not match its current on-disk content, the call
 is rejected and the agent must re-read. Successful `edit` and `write` results
 append the file's fresh hash, so follow-up edits need no extra read. Pass
@@ -49,7 +49,7 @@ append the file's fresh hash, so follow-up edits need no extra read. Pass
 guarantee (`description` first per parameter) is tested in
 `extensions/fs-tools.test.ts`.
 
-`description` and `readHash` are schema-optional but required in practice;
+`description` and `fileHash` are schema-optional but required in practice;
 `requireAll` validates them inside `execute` so a rejection names every required
 parameter and which ones are missing, instead of pi core's schema error naming
 only one. The rejected partial is stored, and the `amend` tool completes it:
@@ -60,7 +60,7 @@ fields keeps the merged partial stored, so a follow-up amend can continue.
 Bash can still create files, so `extensions/bash-hash.ts` registers a
 `tool_result` handler for `bash` results: it detects files the command wrote
 (output redirection and `tee`), verifies each path on disk, and appends
-`content_hash: <hash> (bash-written: <path>)` lines to the result. The hash
+`file_hash: <hash> (bash-written: <path>)` lines to the result. The hash
 guard therefore covers bash-written files too.
 
 This guard moved here from the pi-journal package; pi-journal now journals
@@ -150,7 +150,7 @@ pi-teams/
 │   ├── expect-reply.test.ts          # reply obligations: recording, reminders, notices, end-to-end scenarios
 │   ├── tool-registration.test.ts     # registration-by-identity contract tests
 │   ├── fs-tools.ts                 # hash-guarded read/edit/write overrides
-│   ├── bash-hash.ts                # appends content_hash lines for bash-written files
+│   ├── bash-hash.ts                # appends file_hash lines for bash-written files
 │   ├── lead-tools.ts               # lead-only tool registrations
 │   ├── shared-tools.ts             # shared and worker tool registrations
 │   └── agents-tools.ts             # list_agents and spawn_team_lead registrations

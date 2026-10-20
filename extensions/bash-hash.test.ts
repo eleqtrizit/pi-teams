@@ -79,7 +79,7 @@ describe("registerBashHash", () => {
       .map((part) => (part as { text?: string }).text ?? "")
       .join("\n");
     expect(text).toContain(
-      `content_hash: ${hashOf(file)} (bash-written: README.md)`,
+      `file_hash: ${hashOf(file)} (bash-written: README.md)`,
     );
   });
 
@@ -99,7 +99,7 @@ describe("registerBashHash", () => {
       .join("\n");
     expect(text).toContain("original output");
     expect(text).toContain(
-      `content_hash: ${hashOf(file)} (bash-written: ${file})`,
+      `file_hash: ${hashOf(file)} (bash-written: ${file})`,
     );
   });
 
