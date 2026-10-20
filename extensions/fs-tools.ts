@@ -23,23 +23,33 @@ import { Type } from "typebox";
  * or the call is rejected so the agent cannot mutate a file it saw an older
  * version of. A successful `edit` or `write` appends the file's fresh hash to its
  * result, so follow-up edits need no extra read. Pass `"new"` for a file that
- * does not exist yet.
+ * does not exist yet. `description` and `readHash` are validated inside `execute`
+ * (not by the JSON schema) so a rejected call names every required parameter and
+ * which ones are missing, instead of pi core's schema error naming only one.
  */
 
 const ReadParams = Type.Object({
-  path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
+  path: Type.String({
+    description: "Path to the file to read (relative or absolute)",
+  }),
   offset: Type.Optional(
-    Type.Number({ description: "Line number to start reading from (1-indexed)" }),
+    Type.Number({
+      description: "Line number to start reading from (1-indexed)",
+    }),
   ),
-  limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+  limit: Type.Optional(
+    Type.Number({ description: "Maximum number of lines to read" }),
+  ),
 });
 
 const EditParams = Type.Object({
-  description: Type.String({
-    description:
-      "Why this edit is needed, in plain English: what changes, what it fixes or enables, and name the " +
-      "functions/classes/imports/top-level symbols touched. Fill this in FIRST, before path and the diff.",
-  }),
+  description: Type.Optional(
+    Type.String({
+      description:
+        "Why this edit is needed, in plain English: what changes, what it fixes or enables, and name the " +
+        "functions/classes/imports/top-level symbols touched. Fill this in FIRST, before path and the diff.",
+    }),
+  ),
   path: Type.String({
     description:
       "Path to the single file to edit (relative or absolute). Second parameter, after description.",
@@ -50,20 +60,24 @@ const EditParams = Type.Object({
       "whitespace. Keep it as small as possible while still unique; do not pad it with large unchanged regions.",
   }),
   newText: Type.String({ description: "Replacement text for that region." }),
-  readHash: Type.String({
-    description:
-      "The content_hash value printed by the read tool (or by the edit/write that produced the current " +
-      'file). It must match the file\'s current on-disk content or the edit is rejected. Pass "new" when ' +
-      "the file does not exist yet. Read the file first if you do not have this hash.",
-  }),
+  readHash: Type.Optional(
+    Type.String({
+      description:
+        "The content_hash value printed by the read tool (or by the edit/write that produced the current " +
+        'file). It must match the file\'s current on-disk content or the edit is rejected. Pass "new" when ' +
+        "the file does not exist yet. Read the file first if you do not have this hash.",
+    }),
+  ),
 });
 
 const WriteParams = Type.Object({
-  description: Type.String({
-    description:
-      "Why this file is being written, in plain English: what it contains and what it is for. " +
-      "Fill this in FIRST, before path and content.",
-  }),
+  description: Type.Optional(
+    Type.String({
+      description:
+        "Why this file is being written, in plain English: what it contains and what it is for. " +
+        "Fill this in FIRST, before path and content.",
+    }),
+  ),
   path: Type.String({
     description:
       "Path to the file to write (relative or absolute). Parent directories are created. " +
@@ -74,13 +88,48 @@ const WriteParams = Type.Object({
       "Full content to write. This replaces the file entirely — for a partial change to an existing file, " +
       "use edit instead.",
   }),
-  readHash: Type.String({
-    description:
-      "The content_hash value printed by the read tool when you last read this file. It must match the " +
-      'file\'s current on-disk content or the write is rejected. Pass "new" when the file does not exist ' +
-      "yet. Read the file first if you do not have this hash.",
-  }),
+  readHash: Type.Optional(
+    Type.String({
+      description:
+        "The content_hash value printed by the read tool when you last read this file. It must match the " +
+        'file\'s current on-disk content or the write is rejected. Pass "new" when the file does not exist ' +
+        "yet. Read the file first if you do not have this hash.",
+    }),
+  ),
 });
+
+/** Required edit parameters, in fill order. */
+const EDIT_REQUIRED = [
+  "description",
+  "path",
+  "oldText",
+  "newText",
+  "readHash",
+] as const;
+/** Required write parameters, in fill order. */
+const WRITE_REQUIRED = ["description", "path", "content", "readHash"] as const;
+
+/**
+ * Reject the call unless every required parameter is present, naming the full
+ * list each time so the caller never fixes one parameter only to hit the next.
+ *
+ * Throws with a message that lists all required parameters and which ones are
+ * missing. Returns the params unchanged when everything is present.
+ */
+function requireAll(
+  tool: string,
+  params: any,
+  required: readonly string[],
+): void {
+  const missing = required.filter((key) => params?.[key] === undefined);
+  if (missing.length > 0) {
+    throw new Error(
+      `Rejected: ${tool} requires ALL of these parameters: ${required.join(", ")}. ` +
+        `Missing: ${missing.join(", ")}. ` +
+        `Supply every one of them in a single call, in this order: ${required.join(", ")}.`,
+    );
+  }
+}
 
 /** First 8 hex characters of the sha256 digest of the file bytes. */
 function contentHash(content: Buffer): string {
@@ -92,10 +141,15 @@ function contentHash(content: Buffer): string {
  *
  * Images keep their original rendering; only text results are rewritten.
  */
-function withFreshHash(result: AgentToolResult<any>, bytes: Buffer): AgentToolResult<any> {
+function withFreshHash(
+  result: AgentToolResult<any>,
+  bytes: Buffer,
+): AgentToolResult<any> {
   const hashLine = `content_hash: ${contentHash(bytes)}`;
   const text = result.content
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
+    .filter(
+      (part): part is { type: "text"; text: string } => part.type === "text",
+    )
     .map((part) => part.text)
     .join("\n");
   result.content = [{ type: "text", text: `${text}\n${hashLine}` }];
@@ -142,9 +196,20 @@ export function registerFsTools(pi: ExtensionAPI): void {
       "Each text read ends with a `content_hash:` line; edit and write require that hash for existing files.",
     ],
     parameters: asAnySchema(ReadParams),
-    async execute(toolCallId, params: any, signal, onUpdate, ctx: ExtensionContext) {
+    async execute(
+      toolCallId,
+      params: any,
+      signal,
+      onUpdate,
+      ctx: ExtensionContext,
+    ) {
       const builtinRead = createReadTool(ctx.cwd);
-      const result = await builtinRead.execute(toolCallId, params, signal, onUpdate);
+      const result = await builtinRead.execute(
+        toolCallId,
+        params,
+        signal,
+        onUpdate,
+      );
 
       // Hash the file as it exists on disk right now, regardless of any
       // offset/limit truncation in the output. Images keep their rendering.
@@ -163,17 +228,25 @@ export function registerFsTools(pi: ExtensionAPI): void {
       "Edit one file with exactly one targeted replacement. `oldText` must match a unique region of the " +
       "original file. Fill parameters in order: description, path, then oldText, newText and readHash. " +
       "Make a separate edit call for each change.",
-    promptSnippet: "Make precise file edits with exact text replacement, one targeted replacement per call",
+    promptSnippet:
+      "Make precise file edits with exact text replacement, one targeted replacement per call",
     promptGuidelines: [
       "Use edit for precise changes to an existing file; edit's oldText must match exactly one unique region, " +
-      "kept as small as possible and never padded with unchanged context.",
+        "kept as small as possible and never padded with unchanged context.",
       "Use edit with one oldText/newText pair per call; make a separate edit call for each additional change.",
       "When calling edit, fill parameters in this order: description, path, then oldText, newText and readHash. " +
-      "State the reason for the change before producing the diff.",
+        "State the reason for the change before producing the diff.",
       "edit's readHash must be the content_hash from your last read of that file; the result carries the file's fresh hash for follow-up edits.",
     ],
     parameters: asAnySchema(EditParams),
-    async execute(toolCallId, params: any, signal, onUpdate, ctx: ExtensionContext) {
+    async execute(
+      toolCallId,
+      params: any,
+      signal,
+      onUpdate,
+      ctx: ExtensionContext,
+    ) {
+      requireAll("edit", params, EDIT_REQUIRED);
       await assertFresh(params.path, params.readHash);
 
       const builtinEdit = createEditTool(ctx.cwd);
@@ -181,7 +254,12 @@ export function registerFsTools(pi: ExtensionAPI): void {
         path: params.path,
         edits: [{ oldText: params.oldText, newText: params.newText }],
       };
-      const result = await builtinEdit.execute(toolCallId, input, signal, onUpdate);
+      const result = await builtinEdit.execute(
+        toolCallId,
+        input,
+        signal,
+        onUpdate,
+      );
       await withFreshHash(result, await readFile(params.path));
       return result;
     },
@@ -198,16 +276,31 @@ export function registerFsTools(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use write only for new files or complete rewrites; use edit for partial changes to an existing file.",
       "When calling write, fill parameters in this order: description, path, then content and readHash. " +
-      "State the reason for the file before generating its content.",
+        "State the reason for the file before generating its content.",
       'write\'s readHash must be the content_hash from your last read of that file; pass "new" only if the file does not exist yet.',
     ],
     parameters: asAnySchema(WriteParams),
-    async execute(toolCallId, params: any, signal, onUpdate, ctx: ExtensionContext) {
+    async execute(
+      toolCallId,
+      params: any,
+      signal,
+      onUpdate,
+      ctx: ExtensionContext,
+    ) {
+      requireAll("write", params, WRITE_REQUIRED);
       await assertFresh(params.path, params.readHash);
 
       const builtinWrite = createWriteTool(ctx.cwd);
-      const input: WriteToolInput = { path: params.path, content: params.content };
-      const result = await builtinWrite.execute(toolCallId, input, signal, onUpdate);
+      const input: WriteToolInput = {
+        path: params.path,
+        content: params.content,
+      };
+      const result = await builtinWrite.execute(
+        toolCallId,
+        input,
+        signal,
+        onUpdate,
+      );
       await withFreshHash(result, await readFile(params.path));
       return result;
     },
