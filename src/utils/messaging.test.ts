@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   LEAD_ALIAS,
   agentLabel,
@@ -33,11 +33,13 @@ function registry(): AgentRecord[] {
 }
 
 /**
- * Tests run real socket listeners. `os.tmpdir` is mocked to a short temp
- * directory because socket paths must stay under 90 characters.
+ * Tests run real socket listeners. The registry is redirected to a short
+ * temp directory with `PI_TEAMS_REGISTRY_DIR` because socket paths must stay
+ * under 90 characters.
  */
 describe("registry messaging", () => {
   let tmp: string;
+  let originalRegistryDir: string | undefined;
   let listeners: MessageListener[];
 
   /** Start a listener for one agent id and collect what it receives. */
@@ -53,13 +55,18 @@ describe("registry messaging", () => {
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "m"));
-    vi.spyOn(os, "tmpdir").mockReturnValue(tmp);
+    originalRegistryDir = process.env.PI_TEAMS_REGISTRY_DIR;
+    process.env.PI_TEAMS_REGISTRY_DIR = tmp;
     listeners = [];
   });
 
   afterEach(async () => {
     await Promise.all(listeners.map((l) => l.close()));
-    vi.restoreAllMocks();
+    if (originalRegistryDir !== undefined) {
+      process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
+    } else {
+      delete process.env.PI_TEAMS_REGISTRY_DIR;
+    }
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 

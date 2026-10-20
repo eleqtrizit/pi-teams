@@ -30,24 +30,36 @@ function lead(id: string, cwd: string, startedAt: number): AgentRecord {
 }
 
 function worker(id: string, startedAt: number, kind: AgentKind = AgentKind.Teammate): AgentRecord {
-  return { id, kind, cwd: "/w", pid: 1, leadId: "aa000001", name: `w-${id}`, startedAt };
+  // A real directory: readAgentRecords trims records whose cwd is gone.
+  return { id, kind, cwd: "/tmp", pid: 1, leadId: "aa000001", name: `w-${id}`, startedAt };
 }
 
 describe("registry", () => {
   let tmpDir: string;
-  let originalTmpdir: string | undefined;
+  let originalRegistryDir: string | undefined;
+  let dirA: string;
+  let dirB: string;
+  let dirC: string;
 
   beforeEach(() => {
-    originalTmpdir = process.env.TMPDIR;
+    originalRegistryDir = process.env.PI_TEAMS_REGISTRY_DIR;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "r"));
-    process.env.TMPDIR = tmpDir;
+    process.env.PI_TEAMS_REGISTRY_DIR = tmpDir;
+    // Fixture working directories: readAgentRecords trims records whose cwd is gone.
+    const base = path.join(tmpDir, "cwds");
+    for (const name of ["a", "b", "c"]) {
+      fs.mkdirSync(path.join(base, name), { recursive: true });
+    }
+    dirA = path.join(base, "a");
+    dirB = path.join(base, "b");
+    dirC = path.join(base, "c");
   });
 
   afterEach(() => {
-    if (originalTmpdir !== undefined) {
-      process.env.TMPDIR = originalTmpdir;
+    if (originalRegistryDir !== undefined) {
+      process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
     } else {
-      delete process.env.TMPDIR;
+      delete process.env.PI_TEAMS_REGISTRY_DIR;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -157,7 +169,7 @@ describe("registry", () => {
       const rec2: AgentRecord = {
         id: "ef56gh78",
         kind: AgentKind.Teammate,
-        cwd: "/home",
+        cwd: dirA,
         pid: 5678,
         leadId: "ab12cd34",
         name: "worker",
@@ -256,6 +268,32 @@ describe("registry", () => {
       const dir = path.join(registryDir(), "agents");
       fs.writeFileSync(path.join(dir, ".tmp-ab12cd34-123-1.json"), "partial");
       expect(readAgentRecords()).toEqual([]);
+    });
+
+    it("trims records whose working directory no longer exists, then reloads", () => {
+      const gone = path.join(tmpDir, "gone");
+      fs.mkdirSync(gone);
+      const stale: AgentRecord = lead("ab12cd34", gone, 100);
+      const alive: AgentRecord = lead("ef56gh78", dirA, 200);
+      writeAgentRecord(stale);
+      writeAgentRecord(alive);
+      ensureRegistryDir();
+      fs.writeFileSync(agentSocketPath("ab12cd34"), "");
+
+      fs.rmSync(gone, { recursive: true });
+
+      expect(readAgentRecords()).toEqual([alive]);
+      expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(false);
+      expect(fs.existsSync(agentSocketPath("ab12cd34"))).toBe(false);
+      // The trimmed agent stays visible in the history, marked removed.
+      expect(readAgentHistory().find((e) => e.id === "ab12cd34")?.removedAt).toBeDefined();
+    });
+
+    it("returns the first load unchanged when every working directory exists", () => {
+      const rec: AgentRecord = lead("ab12cd34", dirA, 100);
+      writeAgentRecord(rec);
+      expect(readAgentRecords()).toEqual([rec]);
+      expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(true);
     });
   });
 
@@ -431,14 +469,14 @@ describe("registry", () => {
 
   describe("adoptOrphanedWorkers", () => {
     it("adopts workers whose owner lead has no record, in the lead's cwd", () => {
-      writeAgentRecord(lead("ad000001", "/a", 100));
-      writeAgentRecord({ ...worker("bb000002", 1), cwd: "/a" });
-      writeAgentRecord({ ...worker("cc000003", 2), cwd: "/a" });
-      writeAgentRecord({ ...worker("dd000004", 3), cwd: "/b" });
-      writeAgentRecord(lead("ee000005", "/a", 50));
-      writeAgentRecord(lead("ff000006", "/c", 10));
+      writeAgentRecord(lead("ad000001", dirA, 100));
+      writeAgentRecord({ ...worker("bb000002", 1), cwd: dirA });
+      writeAgentRecord({ ...worker("cc000003", 2), cwd: dirA });
+      writeAgentRecord({ ...worker("dd000004", 3), cwd: dirB });
+      writeAgentRecord(lead("ee000005", dirA, 50));
+      writeAgentRecord(lead("ff000006", dirC, 10));
 
-      const adopted = adoptOrphanedWorkers(lead("ad000001", "/a", 100));
+      const adopted = adoptOrphanedWorkers(lead("ad000001", dirA, 100));
 
       expect(adopted).toEqual(["bb000002", "cc000003"]);
       expect(readAgentRecord("bb000002")?.leadId).toBe("ad000001");
@@ -448,10 +486,10 @@ describe("registry", () => {
     });
 
     it("leaves workers with no leadId alone", () => {
-      writeAgentRecord(lead("ad000001", "/a", 1));
-      const orphan: AgentRecord = { id: "bb000002", kind: AgentKind.Teammate, cwd: "/a", pid: 1, startedAt: 1 };
+      writeAgentRecord(lead("ad000001", dirA, 1));
+      const orphan: AgentRecord = { id: "bb000002", kind: AgentKind.Teammate, cwd: dirA, pid: 1, startedAt: 1 };
       writeAgentRecord(orphan);
-      expect(adoptOrphanedWorkers(lead("ad000001", "/a", 1))).toEqual([]);
+      expect(adoptOrphanedWorkers(lead("ad000001", dirA, 1))).toEqual([]);
     });
   });
 
@@ -610,10 +648,10 @@ describe("registry", () => {
     }
 
     it("removes offline records and their stale socket files, returns survivors with statuses", async () => {
-      const onlineLead: AgentRecord = lead("aa000001", "/a", 300);
+      const onlineLead: AgentRecord = lead("aa000001", dirA, 300);
       const offlineWorker: AgentRecord = worker("bb000002", 400);
       const onlineWorker: AgentRecord = worker("cc000003", 500);
-      const offlineLead: AgentRecord = lead("dd000004", "/a", 10);
+      const offlineLead: AgentRecord = lead("dd000004", dirA, 10);
       for (const rec of [onlineLead, offlineWorker, onlineWorker, offlineLead]) {
         writeAgentRecord(rec);
         makeSocketFile(rec.id);
@@ -651,8 +689,8 @@ describe("registry", () => {
     });
 
     it("stamps lastSeenAt in the history for agents found online", async () => {
-      const onlineLead: AgentRecord = lead("aa000001", "/a", 300);
-      const offlineLead: AgentRecord = lead("bb000002", "/b", 400);
+      const onlineLead: AgentRecord = lead("aa000001", dirA, 300);
+      const offlineLead: AgentRecord = lead("bb000002", dirB, 400);
       writeAgentRecord(onlineLead);
       writeAgentRecord(offlineLead);
       const lastSeenBefore = new Map(readAgentHistory().map((e) => [e.id, e.lastSeenAt]));
@@ -683,8 +721,8 @@ describe("registry", () => {
         child.once("exit", () => resolve());
       });
 
-      const older: AgentRecord = { id: "ee000005", kind: AgentKind.Lead, cwd: "/b", pid, startedAt: 1 };
-      const newer: AgentRecord = { id: "ff000006", kind: AgentKind.Lead, cwd: "/b", pid, startedAt: 2 };
+      const older: AgentRecord = { id: "ee000005", kind: AgentKind.Lead, cwd: dirB, pid, startedAt: 1 };
+      const newer: AgentRecord = { id: "ff000006", kind: AgentKind.Lead, cwd: dirB, pid, startedAt: 2 };
       writeAgentRecord(older);
       writeAgentRecord(newer);
 

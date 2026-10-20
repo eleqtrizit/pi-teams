@@ -47,9 +47,25 @@ describe("assertAgentId", () => {
 });
 
 describe("registryDir", () => {
-  it("is a per-user directory under tmp", () => {
-    expect(registryDir().startsWith(os.tmpdir())).toBe(true);
-    expect(path.basename(registryDir())).toContain("pi-");
+  it("lives under ~/.pi/agent/pi-teams by default", () => {
+    const saved = process.env.PI_TEAMS_REGISTRY_DIR;
+    delete process.env.PI_TEAMS_REGISTRY_DIR;
+    try {
+      expect(registryDir()).toBe(path.join(os.homedir(), ".pi", "agent", "pi-teams"));
+    } finally {
+      if (saved !== undefined) process.env.PI_TEAMS_REGISTRY_DIR = saved;
+    }
+  });
+
+  it("honors the PI_TEAMS_REGISTRY_DIR override", () => {
+    const saved = process.env.PI_TEAMS_REGISTRY_DIR;
+    process.env.PI_TEAMS_REGISTRY_DIR = "/elsewhere";
+    try {
+      expect(registryDir()).toBe("/elsewhere");
+    } finally {
+      if (saved !== undefined) process.env.PI_TEAMS_REGISTRY_DIR = saved;
+      else delete process.env.PI_TEAMS_REGISTRY_DIR;
+    }
   });
 });
 

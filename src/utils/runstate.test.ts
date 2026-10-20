@@ -6,16 +6,16 @@ import { agentIdStatePath } from "./paths";
 import { BUSY_STALE_MS, isAgentBusy, removeRunState, writeRunState } from "./runstate";
 
 let tmpDir: string;
-let originalTmpdir: string | undefined;
+let originalRegistryDir: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-runstate-test-"));
-  originalTmpdir = process.env.TMPDIR;
-  process.env.TMPDIR = tmpDir;
+  originalRegistryDir = process.env.PI_TEAMS_REGISTRY_DIR;
+  process.env.PI_TEAMS_REGISTRY_DIR = tmpDir;
 });
 
 afterEach(() => {
-  process.env.TMPDIR = originalTmpdir;
+  process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -53,7 +53,7 @@ describe("run state", () => {
   });
 
   it("treats a corrupt state file as not busy", () => {
-    fs.mkdirSync(path.join(tmpDir, `pi-${process.getuid()}`, "state"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "state"), { recursive: true });
     fs.writeFileSync(agentIdStatePath("aaaaaaaa"), "{not json");
     expect(isAgentBusy("aaaaaaaa")).toBe(false);
   });

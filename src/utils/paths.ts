@@ -44,10 +44,16 @@ export function assertAgentId(id: string): void {
 /**
  * Directory that holds the per-user agent registry.
  *
+ * Defaults to `~/.pi/agent/pi-teams/` so records, sockets, run state, and the
+ * agent history survive an OS reboot. Set `PI_TEAMS_REGISTRY_DIR` to relocate
+ * it; the test suite uses that variable for isolation.
+ *
  * @returns Absolute path of the per-user registry directory
  */
 export function registryDir(): string {
-  return path.join(os.tmpdir(), `pi-${socketUserId()}`);
+  const override = process.env.PI_TEAMS_REGISTRY_DIR;
+  if (override) return override;
+  return path.join(os.homedir(), ".pi", "agent", "pi-teams");
 }
 
 /**
@@ -111,7 +117,7 @@ export function agentSocketPath(id: string): string {
   if (socket.length > MAX_UNIX_SOCKET_PATH) {
     throw new Error(
       `Socket path is ${socket.length} characters, over the ${MAX_UNIX_SOCKET_PATH} limit. ` +
-        "Set TMPDIR to a shorter directory.",
+        "Set PI_TEAMS_REGISTRY_DIR to a shorter directory.",
     );
   }
   return socket;

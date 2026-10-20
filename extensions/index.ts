@@ -446,9 +446,9 @@ export default function (pi: ExtensionAPI) {
     isAgentRunning = false;
     // Workers and leads run in different cwds, but all of them share the
     // per-user registry (agent records and Unix sockets) under
-    // <tmpdir>/pi-<uid>/. Ask pi-sandbox to allow that path for this session.
-    // Must fire from session_start so pi-sandbox is already subscribed; the
-    // event bus rejects a relative path with a UI warning.
+    // ~/.pi/agent/pi-teams/. Ask pi-sandbox to allow that path for this
+    // session. Must fire from session_start so pi-sandbox is already
+    // subscribed; the event bus rejects a relative path with a UI warning.
     pi.events?.emit("pi-sandbox:allow-path", { path: paths.registryDir() });
     if (isLead) {
       const migration = runFlavorMigration();

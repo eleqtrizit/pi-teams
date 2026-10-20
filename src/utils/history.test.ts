@@ -7,16 +7,16 @@ import { markAgentHistoryRemoved, readAgentHistory, touchLastSeen, upsertAgentHi
 import { agentHistoryPath } from "./paths";
 
 let tmpDir: string;
-let originalTmpdir: string | undefined;
+let originalRegistryDir: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-test-"));
-  originalTmpdir = process.env.TMPDIR;
-  process.env.TMPDIR = tmpDir;
+  originalRegistryDir = process.env.PI_TEAMS_REGISTRY_DIR;
+  process.env.PI_TEAMS_REGISTRY_DIR = tmpDir;
 });
 
 afterEach(() => {
-  process.env.TMPDIR = originalTmpdir;
+  process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -36,7 +36,7 @@ describe("agent history", () => {
     const entries = readAgentHistory();
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ id: "aaaaaaaa", cwd: "/repo/a", startedAt: 100 });
-    expect(fs.existsSync(path.join(tmpDir, `pi-${process.getuid()}`, "agents.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "agents.jsonl"))).toBe(true);
   });
 
   it("keeps the file unique by agent id on update", () => {

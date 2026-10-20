@@ -138,14 +138,13 @@ function isValidAgentRecord(value: unknown): value is AgentRecord {
 }
 
 /**
- * Read all valid agent records from the registry.
+ * Read all valid agent record files from the registry directory.
  *
- * Skips files that cannot be parsed or do not pass validation.
- * Files are a trust boundary, so every field is checked.
+ * Pure disk read: no validation beyond record shape, no trimming.
  *
  * @returns Array of valid agent records
  */
-export function readAgentRecords(): AgentRecord[] {
+function readValidAgentRecords(): AgentRecord[] {
   const dir = agentRecordsDir();
   if (!fs.existsSync(dir)) return [];
 
@@ -176,6 +175,25 @@ export function readAgentRecords(): AgentRecord[] {
   }
 
   return records;
+}
+
+/**
+ * Read all valid agent records, trimming agents whose working directory no
+ * longer exists. Load, check paths, and when a trim is needed remove every
+ * dangling record file and its stale socket, then load again; otherwise the
+ * first load is returned as-is.
+ *
+ * @returns Array of valid agent records whose working directories exist
+ */
+export function readAgentRecords(): AgentRecord[] {
+  const records = readValidAgentRecords();
+  const stale = records.filter((rec) => !fs.existsSync(rec.cwd));
+  if (stale.length === 0) return records;
+  for (const rec of stale) {
+    removeAgentRecord(rec.id);
+    removeStaleSocket(rec.id);
+  }
+  return readValidAgentRecords();
 }
 
 /**

@@ -30,20 +30,15 @@ function loadExtension(): {
   return { handlers };
 }
 
-function socketUserId(): string {
-  if (typeof process.getuid === "function") return String(process.getuid());
-  return os.userInfo().username.replace(/[^a-zA-Z0-9_-]/g, "_");
-}
-
 describe("agent presence registration", () => {
   let tmpDir: string;
-  let originalTmpDir: string | undefined;
+  let originalRegistryDir: string | undefined;
   const ui = { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() };
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "r"));
-    originalTmpDir = process.env.TMPDIR;
-    process.env.TMPDIR = tmpDir;
+    originalRegistryDir = process.env.PI_TEAMS_REGISTRY_DIR;
+    process.env.PI_TEAMS_REGISTRY_DIR = tmpDir;
     vi.stubEnv("PI_AGENT_ID", "");
     vi.stubEnv("PI_AGENT_NAME", "");
     vi.stubEnv("PI_AGENT_TYPE", "");
@@ -52,10 +47,10 @@ describe("agent presence registration", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    if (originalTmpDir !== undefined) {
-      process.env.TMPDIR = originalTmpDir;
+    if (originalRegistryDir !== undefined) {
+      process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
     } else {
-      delete process.env.TMPDIR;
+      delete process.env.PI_TEAMS_REGISTRY_DIR;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -72,11 +67,7 @@ describe("agent presence registration", () => {
     };
     await handlers.get("session_start")({}, ctx);
 
-    const recordDir = path.join(
-      tmpDir,
-      `pi-${socketUserId()}`,
-      "agents",
-    );
+    const recordDir = path.join(tmpDir, "agents");
     const files = fs.readdirSync(recordDir);
     expect(files.length).toBe(1);
 
@@ -102,11 +93,7 @@ describe("agent presence registration", () => {
     const ctx = { ui, hasUI: false };
     await handlers.get("session_start")({}, ctx);
 
-    const recordDir = path.join(
-      tmpDir,
-      `pi-${socketUserId()}`,
-      "agents",
-    );
+    const recordDir = path.join(tmpDir, "agents");
     expect(fs.existsSync(recordDir)).toBe(false);
   });
 
@@ -123,7 +110,7 @@ describe("agent presence registration", () => {
     };
     await handlers.get("session_start")({}, ctx);
 
-    const recordDir = path.join(tmpDir, `pi-${socketUserId()}`, "agents");
+    const recordDir = path.join(tmpDir, "agents");
     const files = fs.readdirSync(recordDir);
     expect(files.length).toBe(1);
 
@@ -165,11 +152,7 @@ describe("agent presence registration", () => {
 
     expect(process.env.PI_AGENT_ID).toBe("abc12345");
 
-    const recordDir = path.join(
-      tmpDir,
-      `pi-${socketUserId()}`,
-      "agents",
-    );
+    const recordDir = path.join(tmpDir, "agents");
     const files = fs.readdirSync(recordDir);
     expect(files.length).toBe(1);
 

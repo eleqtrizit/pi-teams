@@ -29,12 +29,12 @@ function fakeTerminal(): TerminalAdapter {
 }
 
 describe("removeAgent", () => {
-  let originalTmpdir: string | undefined;
+  let originalRegistryDir: string | undefined;
   let killProcessSpy: MockInstance;
 
   beforeEach(() => {
-    originalTmpdir = process.env.TMPDIR;
-    process.env.TMPDIR = tmpDir;
+    originalRegistryDir = process.env.PI_TEAMS_REGISTRY_DIR;
+    process.env.PI_TEAMS_REGISTRY_DIR = tmpDir;
     vi.spyOn(terminalAdapter, "execCommand").mockReturnValue({
       stdout: "node /path/to/pi --model 'prov/x'",
       stderr: "",
@@ -48,8 +48,8 @@ describe("removeAgent", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
-    if (originalTmpdir !== undefined) process.env.TMPDIR = originalTmpdir;
-    else delete process.env.TMPDIR;
+    if (originalRegistryDir !== undefined) process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
+    else delete process.env.PI_TEAMS_REGISTRY_DIR;
   });
 
   function seedRegistryRecord(overrides: Partial<AgentRecord> & { id: string }): AgentRecord {

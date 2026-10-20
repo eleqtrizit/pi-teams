@@ -16,7 +16,7 @@ export enum AgentStatus {
 }
 
 /**
- * A registered agent in the per-user tmp-dir registry.
+ * A registered agent in the per-user registry (~/.pi/agent/pi-teams).
  *
  * Every pi session that loads the pi-teams extension registers itself; one-shot
  * `pi -p` sessions that were not spawned by pi-teams do not register.
