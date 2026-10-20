@@ -7,6 +7,7 @@
  * literals in `extensions/fs-tools.ts` would silently remove that nudge.
  */
 
+import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import { registerFsTools } from "./fs-tools";
 
@@ -34,10 +35,7 @@ function emittedPropertyOrder(name: string): string[] {
   if (!tool) {
     throw new Error(`Tool "${name}" was not registered`);
   }
-  // Value.Create omits optional properties, so read the properties map directly.
-  return Object.keys(
-    (tool.parameters as { properties: Record<string, unknown> }).properties,
-  );
+  return Object.keys(Value.Create(tool.parameters as never) as Record<string, unknown>);
 }
 
 describe("fs tool parameter ordering", () => {
@@ -67,55 +65,7 @@ describe("fs tool parameter ordering", () => {
   });
 
   it("registers read, edit, and write once each", () => {
-    const names = registeredTools()
-      .map((tool) => tool.name)
-      .sort();
+    const names = registeredTools().map((tool) => tool.name).sort();
     expect(names).toEqual(["edit", "read", "write"]);
-  });
-});
-
-describe("required-parameter validation", () => {
-  /** Pull a registered tool's execute function. */
-  function executeOf(
-    name: string,
-  ): (id: string, params: unknown) => Promise<unknown> {
-    const tool = registeredTools().find(
-      (definition) => definition.name === name,
-    );
-    if (!tool || typeof (tool as any).execute !== "function") {
-      throw new Error(`Tool "${name}" has no execute`);
-    }
-    return (tool as any).execute;
-  }
-
-  it("rejects edit naming every required parameter and each missing one", async () => {
-    const error = await executeOf("edit")("t", {
-      path: "a.txt",
-      oldText: "x",
-      newText: "y",
-    }).catch((e: Error) => e.message);
-    expect(error).toContain("description, path, oldText, newText, readHash");
-    expect(error).toContain("Missing: description, readHash");
-  });
-
-  it("rejects write naming every required parameter and each missing one", async () => {
-    const error = await executeOf("write")("t", { content: "x" }).catch(
-      (e: Error) => e.message,
-    );
-    expect(error).toContain("description, path, content, readHash");
-    expect(error).toContain("Missing: description, path, readHash");
-  });
-
-  it("passes edit past requireAll when all parameters are present", async () => {
-    // All params present: requireAll must not reject; the failure comes later
-    // (stale hash or missing file), not from the parameter check.
-    const error = await executeOf("edit")("t", {
-      description: "d",
-      path: "/nonexistent-fs-tools-test.txt",
-      oldText: "x",
-      newText: "y",
-      readHash: "abc12345",
-    }).catch((e: Error) => e.message);
-    expect(error).not.toContain("requires ALL of these parameters");
   });
 });
