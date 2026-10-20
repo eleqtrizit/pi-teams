@@ -11,6 +11,7 @@ import { buildClosedNotice } from "../src/utils/obligations";
 import * as teams from "../src/utils/teams";
 import { type MessageListener, RecipientUnreachableError } from "../src/utils/transport";
 import type { TerminalAdapter } from "../src/utils/terminal-adapter";
+import { registerBashHash } from "./bash-hash";
 import { registerFsTools } from "./fs-tools";
 import { getLastUserMessageText } from "./index";
 
@@ -59,6 +60,7 @@ function formatBroadcastFailures(
 /** Register shared messaging, status, filesystem tools, and the keep_last command. */
 export function registerSharedTools(pi: ExtensionAPI, deps: SharedToolDeps): void {
   registerFsTools(pi);
+  registerBashHash(pi);
 
   pi.registerCommand("keep_last", {
     description: "Remove all session history except the last user message",

@@ -57,6 +57,12 @@ only one. The rejected partial is stored, and the `amend` tool completes it:
 stored partial and executes the completed call. A merge that still misses
 fields keeps the merged partial stored, so a follow-up amend can continue.
 
+Bash can still create files, so `extensions/bash-hash.ts` registers a
+`tool_result` handler for `bash` results: it detects files the command wrote
+(output redirection and `tee`), verifies each path on disk, and appends
+`content_hash: <hash> (bash-written: <path>)` lines to the result. The hash
+guard therefore covers bash-written files too.
+
 This guard moved here from the pi-journal package; pi-journal now journals
 `edit`/`write` mutations passively from `tool_result` events and registers no
 tools itself.
@@ -144,6 +150,7 @@ pi-teams/
 │   ├── expect-reply.test.ts          # reply obligations: recording, reminders, notices, end-to-end scenarios
 │   ├── tool-registration.test.ts     # registration-by-identity contract tests
 │   ├── fs-tools.ts                 # hash-guarded read/edit/write overrides
+│   ├── bash-hash.ts                # appends content_hash lines for bash-written files
 │   ├── lead-tools.ts               # lead-only tool registrations
 │   ├── shared-tools.ts             # shared and worker tool registrations
 │   └── agents-tools.ts             # list_agents and spawn_team_lead registrations
