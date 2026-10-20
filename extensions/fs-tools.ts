@@ -381,7 +381,7 @@ export function registerFsTools(pi: ExtensionAPI): void {
     label: "Write",
     description:
       "Write a file's complete content, replacing whatever was there. Creates the file and any parent " +
-      "directories. ALL parameters are required (description, path, content, readHash) even though the " +
+      "directories. ALL parameters are required (description, path, readHash, content) even though the " +
       "schema may show some as optional. Fill in order: description, path, then readHash and content. " +
       "Use write only for new files or complete rewrites — for a partial change to an existing file, use edit.",
     promptSnippet: "Create or overwrite a file with its complete content",
