@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import type {
   AgentToolResult,
+  AgentToolUpdateCallback,
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -25,7 +26,9 @@ import { Type } from "typebox";
  * result, so follow-up edits need no extra read. Pass `"new"` for a file that
  * does not exist yet. `description` and `readHash` are validated inside `execute`
  * (not by the JSON schema) so a rejected call names every required parameter and
- * which ones are missing, instead of pi core's schema error naming only one.
+ * which ones are missing, instead of pi core's schema error naming only one. The
+ * rejected partial is stored, and the `amend` tool completes it with just the
+ * missing fields instead of a full resend.
  */
 
 const ReadParams = Type.Object({
@@ -109,26 +112,40 @@ const EDIT_REQUIRED = [
 /** Required write parameters, in fill order. */
 const WRITE_REQUIRED = ["description", "path", "content", "readHash"] as const;
 
+/** Tools whose rejected partial calls `amend` can complete. */
+type AmendableTool = "edit" | "write";
+
+/** Last rejected partial call per tool, kept so `amend` can complete it. */
+const pendingCalls = new Map<AmendableTool, Record<string, unknown>>();
+
+/** Clear stored rejected partials. Test isolation only. */
+export function resetPendingCalls(): void {
+  pendingCalls.clear();
+}
+
 /**
  * Reject the call unless every required parameter is present, naming the full
  * list each time so the caller never fixes one parameter only to hit the next.
  *
- * Throws with a message that lists all required parameters and which ones are
- * missing. Returns the params unchanged when everything is present.
+ * The rejected partial is stored for `amend`, which can complete the call with
+ * only the missing fields instead of a full resend.
  */
 function requireAll(
-  tool: string,
+  tool: AmendableTool,
   params: any,
   required: readonly string[],
 ): void {
   const missing = required.filter((key) => params?.[key] === undefined);
-  if (missing.length > 0) {
-    throw new Error(
-      `Rejected: ${tool} requires ALL of these parameters: ${required.join(", ")}. ` +
-        `Missing: ${missing.join(", ")}. ` +
-        `Supply every one of them in a single call, in this order: ${required.join(", ")}.`,
-    );
+  if (missing.length === 0) {
+    return;
   }
+  pendingCalls.set(tool, { ...params });
+  throw new Error(
+    `Rejected: ${tool} requires ALL of these parameters: ${required.join(", ")}. ` +
+      `Missing: ${missing.join(", ")}. ` +
+      `Resend the full call, or call amend(tool="${tool}", fields={...}) with just the ` +
+      `missing parameters: ${missing.join(", ")}.`,
+  );
 }
 
 /** First 8 hex characters of the sha256 digest of the file bytes. */
@@ -177,8 +194,114 @@ async function assertFresh(path: string, readHash: string): Promise<void> {
   }
 }
 
+/**
+ * Run an edit against the built-in edit tool and append the fresh hash.
+ *
+ * Shared by the `edit` tool and `amend`, which completes a rejected edit call.
+ */
+async function runEdit(
+  toolCallId: string,
+  params: any,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback | undefined,
+  ctx: ExtensionContext,
+): Promise<AgentToolResult<any>> {
+  await assertFresh(params.path, params.readHash);
+
+  const builtinEdit = createEditTool(ctx.cwd);
+  const input: EditToolInput = {
+    path: params.path,
+    edits: [{ oldText: params.oldText, newText: params.newText }],
+  };
+  const result = await builtinEdit.execute(toolCallId, input, signal, onUpdate);
+  await withFreshHash(result, await readFile(params.path));
+  return result;
+}
+
+/**
+ * Run a write against the built-in write tool and append the fresh hash.
+ *
+ * Shared by the `write` tool and `amend`, which completes a rejected write call.
+ */
+async function runWrite(
+  toolCallId: string,
+  params: any,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback | undefined,
+  ctx: ExtensionContext,
+): Promise<AgentToolResult<any>> {
+  await assertFresh(params.path, params.readHash);
+
+  const builtinWrite = createWriteTool(ctx.cwd);
+  const input: WriteToolInput = {
+    path: params.path,
+    content: params.content,
+  };
+  const result = await builtinWrite.execute(
+    toolCallId,
+    input,
+    signal,
+    onUpdate,
+  );
+  await withFreshHash(result, await readFile(params.path));
+  return result;
+}
+
+const AmendParams = Type.Object({
+  tool: Type.String({
+    description: 'The rejected call to complete: "edit" or "write".',
+  }),
+  fields: Type.Record(Type.String(), Type.String(), {
+    description:
+      "The missing parameters and their values, keyed by parameter name. Fields already " +
+      "supplied in the rejected call stay as they were unless overridden here.",
+  }),
+});
+
 function asAnySchema<T>(schema: T): any {
   return schema;
+}
+
+/**
+ * Complete a rejected `edit` or `write` call from its stored partial.
+ *
+ * Merges the supplied fields over the rejected call's parameters, re-checks
+ * the full required list, and executes the completed call. A merge that still
+ * leaves fields missing keeps the merged partial stored, so a follow-up amend
+ * can continue.
+ */
+async function runAmend(
+  toolCallId: string,
+  params: any,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback | undefined,
+  ctx: ExtensionContext,
+): Promise<AgentToolResult<any>> {
+  const tool = params?.tool;
+  if (tool !== "edit" && tool !== "write") {
+    throw new Error('amend: tool must be "edit" or "write".');
+  }
+  const pending = pendingCalls.get(tool);
+  if (!pending) {
+    throw new Error(
+      `amend: no rejected ${tool} call is waiting. Send a normal ${tool} call first; ` +
+        "amend only completes a call that was rejected for missing parameters.",
+    );
+  }
+  const merged = { ...pending, ...params.fields };
+  pendingCalls.set(tool, merged);
+  const required = tool === "edit" ? EDIT_REQUIRED : WRITE_REQUIRED;
+  const missing = required.filter((key) => merged[key] === undefined);
+  if (missing.length > 0) {
+    throw new Error(
+      `amend: ${tool} is still missing ${missing.join(", ")}. ` +
+        "Call amend again with those fields.",
+    );
+  }
+  pendingCalls.delete(tool);
+  return tool === "edit"
+    ? runEdit(toolCallId, merged, signal, onUpdate, ctx)
+    : runWrite(toolCallId, merged, signal, onUpdate, ctx);
 }
 
 export function registerFsTools(pi: ExtensionAPI): void {
@@ -226,8 +349,9 @@ export function registerFsTools(pi: ExtensionAPI): void {
     label: "Edit",
     description:
       "Edit one file with exactly one targeted replacement. `oldText` must match a unique region of the " +
-      "original file. Fill parameters in order: description, path, then oldText, newText and readHash. " +
-      "Make a separate edit call for each change.",
+      "original file. ALL parameters are required (description, path, oldText, newText, readHash) even " +
+      "though the schema may show some as optional. Fill in order: description, path, then oldText, " +
+      "newText and readHash. Make a separate edit call for each change.",
     promptSnippet:
       "Make precise file edits with exact text replacement, one targeted replacement per call",
     promptGuidelines: [
@@ -247,21 +371,7 @@ export function registerFsTools(pi: ExtensionAPI): void {
       ctx: ExtensionContext,
     ) {
       requireAll("edit", params, EDIT_REQUIRED);
-      await assertFresh(params.path, params.readHash);
-
-      const builtinEdit = createEditTool(ctx.cwd);
-      const input: EditToolInput = {
-        path: params.path,
-        edits: [{ oldText: params.oldText, newText: params.newText }],
-      };
-      const result = await builtinEdit.execute(
-        toolCallId,
-        input,
-        signal,
-        onUpdate,
-      );
-      await withFreshHash(result, await readFile(params.path));
-      return result;
+      return runEdit(toolCallId, params, signal, onUpdate, ctx);
     },
   });
 
@@ -270,8 +380,9 @@ export function registerFsTools(pi: ExtensionAPI): void {
     label: "Write",
     description:
       "Write a file's complete content, replacing whatever was there. Creates the file and any parent " +
-      "directories. Fill parameters in order: description, path, then content and readHash. Use write only " +
-      "for new files or complete rewrites — for a partial change to an existing file, use edit.",
+      "directories. ALL parameters are required (description, path, content, readHash) even though the " +
+      "schema may show some as optional. Fill in order: description, path, then content and readHash. " +
+      "Use write only for new files or complete rewrites — for a partial change to an existing file, use edit.",
     promptSnippet: "Create or overwrite a file with its complete content",
     promptGuidelines: [
       "Use write only for new files or complete rewrites; use edit for partial changes to an existing file.",
@@ -288,21 +399,34 @@ export function registerFsTools(pi: ExtensionAPI): void {
       ctx: ExtensionContext,
     ) {
       requireAll("write", params, WRITE_REQUIRED);
-      await assertFresh(params.path, params.readHash);
+      return runWrite(toolCallId, params, signal, onUpdate, ctx);
+    },
+  });
 
-      const builtinWrite = createWriteTool(ctx.cwd);
-      const input: WriteToolInput = {
-        path: params.path,
-        content: params.content,
-      };
-      const result = await builtinWrite.execute(
-        toolCallId,
-        input,
-        signal,
-        onUpdate,
-      );
-      await withFreshHash(result, await readFile(params.path));
-      return result;
+  pi.registerTool({
+    name: "amend",
+    label: "Amend",
+    description:
+      "Complete a rejected edit or write call without resending the whole call. Use it only after edit " +
+      'or write was rejected for missing parameters: pass tool ("edit" or "write") and fields with ' +
+      "just the missing parameters. The rejected call's other parameters are reused as-is, and the " +
+      "completed call runs immediately. If fields are still missing, call amend again with those.",
+    promptSnippet:
+      "Complete a rejected edit or write call with just the missing parameters",
+    promptGuidelines: [
+      'After edit or write is rejected for missing parameters, call amend(tool="<tool>", fields={...}) ' +
+        "with only the missing parameters instead of resending the full call.",
+      "Never use amend for a call that was not rejected; send a normal edit or write call instead.",
+    ],
+    parameters: asAnySchema(AmendParams),
+    async execute(
+      toolCallId,
+      params: any,
+      signal,
+      onUpdate,
+      ctx: ExtensionContext,
+    ) {
+      return runAmend(toolCallId, params, signal, onUpdate, ctx);
     },
   });
 }

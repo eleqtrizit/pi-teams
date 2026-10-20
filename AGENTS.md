@@ -10,24 +10,25 @@ Team members sit idle until a message is delivered to them. Each agent listens o
 
 Tools are registered in `extensions/index.ts`, split by session identity into three sections: team-lead tools under `if (isLead)`, shared tools for every session, and worker tools under `if (isWorker)`. `isLead` is true when `PI_AGENT_TYPE` is unset or `"lead"`; `isWorker` is true for `PI_AGENT_TYPE` `"teammate"` or `"readonly-worker"` when the agent is not named `team-lead`.
 
-| Tool                    | Section | What it does                                         | Supporting files                                                |
-| ----------------------- | ------- | ---------------------------------------------------- | --------------------------------------------------------------- |
-| `resolve_model`         | lead    | Resolve a provider/model name for spawn calls        | `extensions/lead-tools.ts`                                      |
-| `spawn_teammate`        | lead    | Spawn a worker in a pane or separate window          | `src/adapters/*`, `src/utils/spawn.ts`, `src/utils/registry.ts` |
-| `spawn_readonly_worker` | lead    | Spawn a read-only worker with a restricted tool list | same as `spawn_teammate`                                        |
-| `spawn_team_lead`       | lead    | Spawn a peer lead in a pane or separate window       | `src/adapters/*`, `src/utils/spawn.ts`                          |
-| `close_all_workers`     | lead    | Close every worker spawned by this lead              | `src/utils/teams.ts` (`removeAgent`)                            |
-| `close_worker`          | lead    | Close one of your own workers                        | `src/utils/teams.ts` (`removeAgent`)                            |
-| `get_flavored_models`   | lead    | Show the orchestrator/worker/swarm model lists       | `src/utils/flavoredModels.ts`                                   |
-| `get_models`            | lead    | Show OSS and frontier model lists                    | `src/utils/flavoredModels.ts`                                   |
-| `send_message`          | shared  | Deliver a message to one agent, or to all (`all`); required `expectReply` | `src/utils/messaging.ts`, `src/utils/transport.ts`, `src/utils/obligations.ts` |
-| `list_agents`           | shared  | Show visible agents with status and socket availability | `src/utils/registry.ts`, `src/utils/transport.ts`             |
-| `close_myself`          | worker + spawned leads | Terminate the calling agent           | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`) |
+| Tool                    | Section                | What it does                                                              | Supporting files                                                               |
+| ----------------------- | ---------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `resolve_model`         | lead                   | Resolve a provider/model name for spawn calls                             | `extensions/lead-tools.ts`                                                     |
+| `spawn_teammate`        | lead                   | Spawn a worker in a pane or separate window                               | `src/adapters/*`, `src/utils/spawn.ts`, `src/utils/registry.ts`                |
+| `spawn_readonly_worker` | lead                   | Spawn a read-only worker with a restricted tool list                      | same as `spawn_teammate`                                                       |
+| `spawn_team_lead`       | lead                   | Spawn a peer lead in a pane or separate window                            | `src/adapters/*`, `src/utils/spawn.ts`                                         |
+| `close_all_workers`     | lead                   | Close every worker spawned by this lead                                   | `src/utils/teams.ts` (`removeAgent`)                                           |
+| `close_worker`          | lead                   | Close one of your own workers                                             | `src/utils/teams.ts` (`removeAgent`)                                           |
+| `get_flavored_models`   | lead                   | Show the orchestrator/worker/swarm model lists                            | `src/utils/flavoredModels.ts`                                                  |
+| `get_models`            | lead                   | Show OSS and frontier model lists                                         | `src/utils/flavoredModels.ts`                                                  |
+| `send_message`          | shared                 | Deliver a message to one agent, or to all (`all`); required `expectReply` | `src/utils/messaging.ts`, `src/utils/transport.ts`, `src/utils/obligations.ts` |
+| `list_agents`           | shared                 | Show visible agents with status and socket availability                   | `src/utils/registry.ts`, `src/utils/transport.ts`                              |
+| `close_myself`          | worker + spawned leads | Terminate the calling agent                                               | `src/utils/teams.ts` (`removeAgent` with `ownPid: process.pid`)                |
 
 `close_myself` registers for workers and for spawned leads (a lead session with a preassigned `PI_AGENT_ID`, i.e. started by `spawn_team_lead`). The interactive top-level lead session never registers it, so it cannot kill itself with one tool call. Before it removes itself, `close_myself` sends a `Closed: <label>` notice to every agent still waiting for a reply (see [Reply obligations](#reply-obligations-expectreply)); it sends nothing else. `extensions/index.ts` holds the registration gate, `registerCloseMyself` in `extensions/shared-tools.ts` holds the tool.
-| `read`                  | shared  | Read a file; text results end with `content_hash:`   | `extensions/fs-tools.ts`                                        |
-| `edit`                  | shared  | One targeted replacement; takes `readHash`           | `extensions/fs-tools.ts`                                        |
-| `write`                 | shared  | Full-file write; takes `readHash`                    | `extensions/fs-tools.ts`                                        |
+| `read` | shared | Read a file; text results end with `content_hash:` | `extensions/fs-tools.ts` |
+| `edit` | shared | One targeted replacement; takes `readHash` | `extensions/fs-tools.ts` |
+| `write` | shared | Full-file write; takes `readHash` | `extensions/fs-tools.ts` |
+| `amend` | shared | Complete a rejected edit or write with just the missing fields | `extensions/fs-tools.ts` |
 
 The `flavored-models` slash command is registered with the team-lead tools. It opens the interactive SettingsList and saves flavor assignments through `src/utils/flavoredModels.ts`.
 
@@ -47,6 +48,14 @@ append the file's fresh hash, so follow-up edits need no extra read. Pass
 `"new"` as the hash for a file that does not exist yet. The tool ordering
 guarantee (`description` first per parameter) is tested in
 `extensions/fs-tools.test.ts`.
+
+`description` and `readHash` are schema-optional but required in practice;
+`requireAll` validates them inside `execute` so a rejection names every required
+parameter and which ones are missing, instead of pi core's schema error naming
+only one. The rejected partial is stored, and the `amend` tool completes it:
+`amend(tool="edit"|"write", fields={...})` merges the missing fields over the
+stored partial and executes the completed call. A merge that still misses
+fields keeps the merged partial stored, so a follow-up amend can continue.
 
 This guard moved here from the pi-journal package; pi-journal now journals
 `edit`/`write` mutations passively from `tool_result` events and registers no
