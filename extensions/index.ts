@@ -52,8 +52,6 @@ import {
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
-
-
 export function formatDeliveredMessages(messages: TeamMessage[]): string {
   if (messages.length === 0) return "";
 
@@ -195,7 +193,6 @@ export function getLastUserMessageText(entries: SessionEntry[]): string | null {
 
 /** Tools granted to read-only workers at spawn and reported in spawn results. */
 
-
 export default function (pi: ExtensionAPI) {
   const idWasPreassigned = !!process.env.PI_AGENT_ID;
   const agentId = process.env.PI_AGENT_ID
@@ -236,7 +233,8 @@ export default function (pi: ExtensionAPI) {
     }
     const cwd = resolveSpawnDirectory(goals.cwd);
     const model = resolveSpawnModel(ctx, goals.modelRequest);
-    const useSeparateWindow = !goals.readonlyWorker && (goals.separateWindow ?? false);
+    const useSeparateWindow =
+      !goals.readonlyWorker && (goals.separateWindow ?? false);
     if (useSeparateWindow && !terminal.supportsWindows()) {
       throw new Error(
         `Separate windows mode is not supported in ${terminal.name}.`,
@@ -244,9 +242,13 @@ export default function (pi: ExtensionAPI) {
     }
 
     const { piCmd, agentType } = buildWorkerCommand(goals, model);
-    const ownWorkers = readAgentRecords().filter((record) => record.leadId === agentId);
+    const ownWorkers = readAgentRecords().filter(
+      (record) => record.leadId === agentId,
+    );
     if (ownWorkers.some((record) => record.name === safeName)) {
-      throw new Error(`A worker named "${safeName}" already exists under this lead.`);
+      throw new Error(
+        `A worker named "${safeName}" already exists under this lead.`,
+      );
     }
     const workerId = generateAgentId();
     const env = { ...process.env } as Record<string, string | undefined>;
@@ -262,7 +264,9 @@ export default function (pi: ExtensionAPI) {
         cwd,
         piCmd,
         env: Object.fromEntries(
-          Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          Object.entries(env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
         ),
         agents: ownWorkers,
         useSeparateWindow,
@@ -278,10 +282,19 @@ export default function (pi: ExtensionAPI) {
     // shortcut: a worker that boots after the wait keeps no terminal ids, so close_worker
     // kills its pid but leaves the pane open; pass the ids via env if that matters.
     if (listening) {
-      updateAgentRecord(workerId, useSeparateWindow ? { windowId: terminalId } : { paneId: terminalId });
+      updateAgentRecord(
+        workerId,
+        useSeparateWindow ? { windowId: terminalId } : { paneId: terminalId },
+      );
     }
 
-    return { agentId: workerId, terminalId, isWindow: useSeparateWindow, model, listening };
+    return {
+      agentId: workerId,
+      terminalId,
+      isWindow: useSeparateWindow,
+      model,
+      listening,
+    };
   }
 
   const terminal = getTerminalAdapter();
@@ -460,8 +473,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
     pendingInboxNotifications.clear();
-    const shouldSkipRegistration =
-      isLead && !ctx.hasUI && !idWasPreassigned;
+    const shouldSkipRegistration = isLead && !ctx.hasUI && !idWasPreassigned;
     if (!shouldSkipRegistration) {
       selfRecord = {
         id: agentId,
@@ -470,7 +482,9 @@ export default function (pi: ExtensionAPI) {
         pid: process.pid,
         ...(leadId ? { leadId } : {}),
         ...(workerName ? { name: workerName } : {}),
-        ...(ctx.model ? { model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+        ...(ctx.model
+          ? { model: `${ctx.model.provider}/${ctx.model.id}` }
+          : {}),
         startedAt: Date.now(),
       };
       try {
@@ -479,14 +493,14 @@ export default function (pi: ExtensionAPI) {
         if (isLead) {
           const adopted = adoptOrphanedWorkers(selfRecord);
           if (adopted.length > 0 && ctx.hasUI) {
-            ctx.ui.notify(`pi-teams: adopted orphaned workers: ${adopted.join(", ")}`, "info");
+            ctx.ui.notify(
+              `pi-teams: adopted orphaned workers: ${adopted.join(", ")}`,
+              "info",
+            );
           }
         }
       } catch (e) {
-        ctx.ui.notify(
-          `pi-teams: cannot register agent: ${e}`,
-          "error",
-        );
+        ctx.ui.notify(`pi-teams: cannot register agent: ${e}`, "error");
       }
     }
 
@@ -619,21 +633,26 @@ export default function (pi: ExtensionAPI) {
   // drafts are persisted in order and `continue: true` guarantees one more
   // provider request, so the model sees the reminder as a user entry on the
   // continuation instead of waiting for the next external message.
-  pi.on("agent_before_settle", async (event: AgentBeforeSettleEvent): Promise<BoundaryResult | undefined> => {
-    const owed = obligationsToRemind(
-      { outcome: event.outcome, canContinue: event.context.canContinue },
-      obligations,
-    );
-    if (owed.length === 0) return;
-    obligations.noteReminded(owed.map((obligation) => obligation.senderId));
-    const reminder: CustomMessageEntryDraft = {
-      type: "custom_message",
-      customType: REMINDER_CUSTOM_TYPE,
-      content: buildReminderText(owed),
-      display: true,
-    };
-    return { entries: [...event.entries, reminder], continue: true };
-  });
+  pi.on(
+    "agent_before_settle",
+    async (
+      event: AgentBeforeSettleEvent,
+    ): Promise<BoundaryResult | undefined> => {
+      const owed = obligationsToRemind(
+        { outcome: event.outcome, canContinue: event.context.canContinue },
+        obligations,
+      );
+      if (owed.length === 0) return;
+      obligations.noteReminded(owed.map((obligation) => obligation.senderId));
+      const reminder: CustomMessageEntryDraft = {
+        type: "custom_message",
+        customType: REMINDER_CUSTOM_TYPE,
+        content: buildReminderText(owed),
+        display: true,
+      };
+      return { entries: [...event.entries, reminder], continue: true };
+    },
+  );
 
   // agent_settled means Pi will not continue on its own. Workers report to
   // their lead; leads reply to peer leads that contacted them during the cycle.
@@ -647,8 +666,12 @@ export default function (pi: ExtensionAPI) {
     if (!selfRecord) return;
     const selfLabel = messaging.agentLabel(selfRecord);
     const notices = event.aborted
-      ? obligations.pending().map((obligation) => buildInterruptedNotice(selfLabel, obligation))
-      : obligations.takeExpired().map((obligation) => buildNoReplyNotice(selfLabel, obligation));
+      ? obligations
+          .pending()
+          .map((obligation) => buildInterruptedNotice(selfLabel, obligation))
+      : obligations
+          .takeExpired()
+          .map((obligation) => buildNoReplyNotice(selfLabel, obligation));
     for (const notice of notices) {
       try {
         await messaging.sendAgentMessage(
@@ -676,15 +699,18 @@ export default function (pi: ExtensionAPI) {
 
   let firstTurn = true;
   pi.on("before_agent_start", async (event, ctx) => {
+    // Every session gets the new-file guidance: write (not bash heredocs) keeps
+    // the hash guard and the journal's edit/write audit trail intact.
+    const systemPromptBase = `${event.systemPrompt}\n\n## New Files\n\nUse write tool over bash tool to write new files.`;
+
     // Every lead turn gets the peer-lead collaboration guidance. A lead in
     // an auto-exit host mode also gets the run-hold note: the extension
     // holds the run open while the team is active, so the lead ends its
     // turn instead of polling and releases the session when done.
     if (isLead) {
-      let systemPrompt = event.systemPrompt;
+      let systemPrompt = systemPromptBase;
       if (holdRun.shouldGuideLead({ hasUI: ctx.hasUI, isWorker })) {
-        systemPrompt +=
-          `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`;
+        systemPrompt += `\n\nNon-interactive session: when a team is active, the session stays alive after you end a turn. Worker messages arrive automatically as user messages; never poll, sleep, or run wait commands because they are blocked while a team is online. Respond with your plan or status and end your turn when workers are running. When every teammate has reported back and the work is complete, call close_all_workers; the workers close and the session exits normally.`;
       }
       systemPrompt += `\n\n${buildPeerLeadPrompt(
         selfRecord ?? { id: agentId, cwd: process.cwd() },
@@ -710,7 +736,7 @@ export default function (pi: ExtensionAPI) {
 
       return {
         systemPrompt:
-          event.systemPrompt +
+          systemPromptBase +
           `\n\nYou are ${roleDescription} '${agentName}'.${modelInfo}${capabilitiesNote}\nYour lead's agent id is ${leadId}. Reply with send_message(recipient="lead").\nMessages from teammates are delivered to you automatically as user messages; you do not need to fetch them. Your final reply is NOT sent anywhere. When your work is done, report it to your lead with send_message(recipient="lead", expectReply=false), then end your turn and stop. If a message shows 'Reply expected: yes', answer that sender with send_message; you are reminded until you do. Set expectReply=true only when you need an answer, such as a question mid-task. You will be woken automatically when the next message arrives.\n\nHARD RULES (violating these wastes tokens and breaks the team):\n- NEVER run sleep, polling, or wait commands (e.g. 'sleep 30', 'while true; do ...; done').\n- NEVER loop or poll to wait for messages. They arrive on their own.\n- When your work is done, report it with send_message and then stop. Do not announce that you are 'sleeping' or 'waiting' with a command. Just end your turn.`,
       };
     }
@@ -759,5 +785,4 @@ export default function (pi: ExtensionAPI) {
   if (isWorker || (isLead && idWasPreassigned)) {
     registerCloseMyself(pi, sharedToolDeps);
   }
-
 }
