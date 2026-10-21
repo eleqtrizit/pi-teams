@@ -153,7 +153,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - Terminal-specific implementations:
   - **iTerm2**: Escape sequences via AppleScript
   - **WezTerm**: CLI `set-window-title` command
-  - **herdr**: `herdr pane rename` on the current pane
+  - **herdr**: `herdr tab rename` on the session's own tab
   - **tmux/Zellij**: Pane titles within session
 
 ## Terminal Integration Details

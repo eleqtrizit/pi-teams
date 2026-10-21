@@ -112,13 +112,14 @@ export class HerdrAdapter implements TerminalAdapter {
   }
 
   /**
-   * Label the current herdr pane.
+   * Label the herdr tab that hosts this session, like WezTerm's set-tab-title.
+   * Herdr sets HERDR_TAB_ID in every pane process.
    *
    * @param title - The label to set
    */
   setTitle(title: string): void {
-    const paneId = process.env.HERDR_PANE_ID;
-    if (paneId) execCommand("herdr", ["pane", "rename", paneId, title]);
+    const tabId = process.env.HERDR_TAB_ID;
+    if (tabId) execCommand("herdr", ["tab", "rename", tabId, title]);
   }
 
   /** Separate windows are herdr tabs, the same as panes. */

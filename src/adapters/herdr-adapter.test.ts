@@ -122,10 +122,17 @@ describe("HerdrAdapter", () => {
     });
   });
 
-  it("renames the current pane for setTitle", () => {
+  it("renames the session's own tab for setTitle", () => {
+    process.env.HERDR_TAB_ID = "w1:t1";
     exec.mockReturnValue(ok());
     adapter.setTitle("pi-teams: abcd1234");
-    expect(exec).toHaveBeenCalledWith("herdr", ["pane", "rename", "w1:p1", "pi-teams: abcd1234"]);
+    expect(exec).toHaveBeenCalledWith("herdr", ["tab", "rename", "w1:t1", "pi-teams: abcd1234"]);
+  });
+
+  it("skips setTitle outside a herdr tab", () => {
+    delete process.env.HERDR_TAB_ID;
+    adapter.setTitle("x");
+    expect(exec).not.toHaveBeenCalled();
   });
 
   it("renames a tab for setWindowTitle", () => {
