@@ -104,7 +104,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 ### 🤖 Agent Spawning
 
 - Launch specialized teammates with different models and thinking levels
-- Support for separate OS windows (iTerm2, WezTerm) or terminal panes (tmux, Zellij)
+- Support for separate OS windows (iTerm2, WezTerm), herdr tabs, or terminal panes (herdr, tmux, Zellij)
 - Automatic model resolution with fuzzy matching
 - Spawn peer leads in other directories for cross-project collaboration
 
@@ -126,6 +126,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### 🖥️ Terminal Integration
 
+- **herdr** - Pane-based spawning with `herdr pane split`; separate windows open as herdr tabs
 - **tmux** - Pane-based spawning with `tmux split-window`
 - **Zellij** - Pane-based spawning with `zellij run`
 - **iTerm2** - macOS native with AppleScript window/pane management
@@ -152,6 +153,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - Terminal-specific implementations:
   - **iTerm2**: Escape sequences via AppleScript
   - **WezTerm**: CLI `set-window-title` command
+  - **herdr**: `herdr pane rename` on the current pane
   - **tmux/Zellij**: Pane titles within session
 
 ## Terminal Integration Details
@@ -160,6 +162,7 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 | Terminal    | Detection                | Pane Management          | Window Support |
 | ----------- | ------------------------ | ------------------------ | -------------- |
+| **herdr**   | `HERDR_ENV=1` and `HERDR_PANE_ID` | `herdr pane split` | ✅ (tabs) |
 | **tmux**    | `TMUX` env var           | `tmux split-window`      | ❌             |
 | **Zellij**  | `ZELLIJ` env var         | `zellij run`             | ❌             |
 | **iTerm2**  | `TERM_PROGRAM=iTerm.app` | AppleScript splits       | ✅             |
@@ -167,10 +170,19 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 ### Detection Priority Order
 
-1. **tmux** - if `TMUX` env is set
-2. **Zellij** - if `ZELLIJ` env is set and not in tmux
-3. **iTerm2** - if `TERM_PROGRAM=iTerm.app` and not in tmux/zellij
-4. **WezTerm** - if `WEZTERM_PANE` env is set and not in tmux/zellij
+1. **herdr** - if `HERDR_ENV=1` and `HERDR_PANE_ID` are set; herdr wins because it is the innermost multiplexer
+2. **Orca** - if `TERM_PROGRAM=Orca`
+3. **tmux** - if `TMUX` env is set
+4. **Zellij** - if `ZELLIJ` env is set and not in tmux
+5. **iTerm2** - if `TERM_PROGRAM=iTerm.app` and not in tmux/zellij
+6. **WezTerm** - if `WEZTERM_PANE` env is set and not in tmux/zellij
+
+### herdr Auto-Layout
+
+- First worker: splits the lead's pane to the right
+- Later workers: split the previous worker's pane downward
+- `separate_window=true`: opens a new tab in the lead's workspace
+- Each worker pane runs `exec pi ...`, so the pane closes when pi exits
 
 ### WezTerm Auto-Layout
 
@@ -335,7 +347,7 @@ it migrates the settings once:
 
 - **pi coding agent** (https://github.com/mariozechner/pi-coding-agent)
 - **Node.js** (for extension runtime)
-- **Terminal emulator**: tmux, Zellij, iTerm2, or WezTerm
+- **Terminal emulator**: herdr, tmux, Zellij, iTerm2, WezTerm, or Orca
 
 ## Development
 
@@ -355,6 +367,7 @@ pi-teams/
 │   │   ├── tmux-adapter.ts          # tmux implementation
 │   │   ├── zellij-adapter.ts        # Zellij implementation
 │   │   ├── iterm2-adapter.ts        # iTerm2 implementation
+│   │   ├── herdr-adapter.ts         # herdr implementation
 │   │   └── wezterm-adapter.ts       # WezTerm implementation
 │   └── utils/
 │       ├── teams.ts                 # Shared removal path
