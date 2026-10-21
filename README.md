@@ -104,7 +104,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 ### 🤖 Agent Spawning
 
 - Launch specialized teammates with different models and thinking levels
-- Support for separate OS windows (iTerm2, WezTerm), herdr tabs, or terminal panes (herdr, tmux, Zellij)
+- Support for separate OS windows (iTerm2, WezTerm), one herdr tab per agent, or terminal panes (tmux, Zellij)
 - Automatic model resolution with fuzzy matching
 - Spawn peer leads in other directories for cross-project collaboration
 
@@ -126,7 +126,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### 🖥️ Terminal Integration
 
-- **herdr** - Pane-based spawning with `herdr pane split`; separate windows open as herdr tabs
+- **herdr** - Every agent opens in its own tab with `herdr tab create`
 - **tmux** - Pane-based spawning with `tmux split-window`
 - **Zellij** - Pane-based spawning with `zellij run`
 - **iTerm2** - macOS native with AppleScript window/pane management
@@ -162,7 +162,7 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 | Terminal    | Detection                | Pane Management          | Window Support |
 | ----------- | ------------------------ | ------------------------ | -------------- |
-| **herdr**   | `HERDR_ENV=1` and `HERDR_PANE_ID` | `herdr pane split` | ✅ (tabs) |
+| **herdr**   | `HERDR_ENV=1` and `HERDR_PANE_ID` | `herdr tab create` | ✅ (tabs) |
 | **tmux**    | `TMUX` env var           | `tmux split-window`      | ❌             |
 | **Zellij**  | `ZELLIJ` env var         | `zellij run`             | ❌             |
 | **iTerm2**  | `TERM_PROGRAM=iTerm.app` | AppleScript splits       | ✅             |
@@ -177,12 +177,11 @@ pi-teams automatically detects and integrates with your terminal environment:
 5. **iTerm2** - if `TERM_PROGRAM=iTerm.app` and not in tmux/zellij
 6. **WezTerm** - if `WEZTERM_PANE` env is set and not in tmux/zellij
 
-### herdr Auto-Layout
+### herdr Layout
 
-- First worker: splits the lead's pane to the right
-- Later workers: split the previous worker's pane downward
-- `separate_window=true`: opens a new tab in the lead's workspace
-- Each worker pane runs `exec pi ...`, so the pane closes when pi exits
+- Every spawned agent, including read-only workers, opens in a new tab in the lead's workspace
+- The tab label is the agent name; `separate_window` has no extra effect in herdr
+- Each tab runs `exec pi ...`, so the tab closes when pi exits
 
 ### WezTerm Auto-Layout
 

@@ -8,13 +8,20 @@ import * as terminalAdapter from "../utils/terminal-adapter";
 
 type Exec = { stdout: string; stderr: string; status: number | null };
 const ok = (result: unknown = { type: "ok" }): Exec => ({ stdout: JSON.stringify({ result }), stderr: "", status: 0 });
-const notFound: Exec = { stdout: "", stderr: '{"error":{"code":"pane_not_found"}}', status: 1 };
-const splitResult = (paneId: string) => ok({ pane: { pane_id: paneId }, type: "pane_info" });
+const notFound: Exec = { stdout: "", stderr: '{"error":{"code":"tab_not_found"}}', status: 1 };
+const tabCreated = (tabId: string, paneId: string) =>
+  ok({ tab: { tab_id: tabId }, root_pane: { pane_id: paneId }, type: "tab_created" });
 
 describe("HerdrAdapter", () => {
   let adapter: HerdrAdapter;
   let exec: ReturnType<typeof vi.spyOn>;
   const savedEnv = { ...process.env };
+  const opts = {
+    name: "alice",
+    cwd: "/work",
+    command: "pi --model 'a/b'",
+    env: { PI_AGENT_ID: "abcd1234", HOME: "/home/x" },
+  };
 
   beforeEach(() => {
     adapter = new HerdrAdapter();
@@ -46,108 +53,84 @@ describe("HerdrAdapter", () => {
   });
 
   describe("spawn", () => {
-    const opts = {
-      name: "alice",
-      cwd: "/work",
-      command: "pi --model 'a/b'",
-      env: { PI_AGENT_ID: "abcd1234", HOME: "/home/x" },
-    };
+    it("opens a labeled tab in the lead's workspace, passes PI_ env, and execs the command", () => {
+      exec.mockReturnValueOnce(tabCreated("w1:t2", "w1:p4")).mockReturnValueOnce(ok());
 
-    it("splits the lead pane right, passes PI_ env, and execs the command", () => {
-      exec.mockReturnValueOnce(splitResult("w1:p2")).mockReturnValueOnce(ok());
-
-      expect(adapter.spawn(opts)).toBe("herdr_w1:p2");
+      expect(adapter.spawn(opts)).toBe("herdr_tab_w1:t2");
       expect(exec.mock.calls[0]).toEqual([
         "herdr",
-        ["pane", "split", "w1:p1", "--direction", "right", "--cwd", "/work",
+        ["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "alice",
           "--env", "PI_AGENT_ID=abcd1234", "--no-focus"],
       ]);
-      expect(exec.mock.calls[1]).toEqual(["herdr", ["pane", "run", "w1:p2", "exec pi --model 'a/b'"]]);
+      expect(exec.mock.calls[1]).toEqual(["herdr", ["pane", "run", "w1:p4", "exec pi --model 'a/b'"]]);
     });
 
-    it("stacks the next worker below the previous live worker pane", () => {
-      exec
-        .mockReturnValueOnce(splitResult("w1:p2"))
-        .mockReturnValueOnce(ok())
-        .mockReturnValueOnce(ok()) // pane get w1:p2
-        .mockReturnValueOnce(splitResult("w1:p3"))
-        .mockReturnValueOnce(ok());
-      adapter.spawn(opts);
-
-      expect(adapter.spawn({ ...opts, name: "bob" })).toBe("herdr_w1:p3");
-      expect(exec.mock.calls[2]).toEqual(["herdr", ["pane", "get", "w1:p2"]]);
-      expect(exec.mock.calls[3][1].slice(0, 5)).toEqual(["pane", "split", "w1:p2", "--direction", "down"]);
+    it("prefixes the label with the team name", () => {
+      exec.mockReturnValueOnce(tabCreated("w1:t2", "w1:p4")).mockReturnValueOnce(ok());
+      adapter.spawn({ ...opts, teamName: "t" });
+      expect(exec.mock.calls[0][1]).toContain("t: alice");
     });
 
-    it("splits the lead pane right again when the previous worker pane is gone", () => {
-      exec
-        .mockReturnValueOnce(splitResult("w1:p2"))
-        .mockReturnValueOnce(ok())
-        .mockReturnValueOnce(notFound)
-        .mockReturnValueOnce(splitResult("w1:p3"))
-        .mockReturnValueOnce(ok());
+    it("omits --workspace outside a herdr workspace", () => {
+      delete process.env.HERDR_WORKSPACE_ID;
+      exec.mockReturnValueOnce(tabCreated("w1:t2", "w1:p4")).mockReturnValueOnce(ok());
       adapter.spawn(opts);
-      adapter.spawn(opts);
-
-      expect(exec.mock.calls[3][1].slice(0, 5)).toEqual(["pane", "split", "w1:p1", "--direction", "right"]);
+      expect(exec.mock.calls[0][1]).not.toContain("--workspace");
     });
 
-    it("throws when the split fails", () => {
+    it("throws when tab creation fails", () => {
       exec.mockReturnValueOnce({ stdout: "", stderr: "boom", status: 1 });
-      expect(() => adapter.spawn(opts)).toThrow(/herdr pane split failed with status 1: boom/);
+      expect(() => adapter.spawn(opts)).toThrow(/herdr tab create failed with status 1: boom/);
     });
+
+    it("throws when the command cannot start", () => {
+      exec.mockReturnValueOnce(tabCreated("w1:t2", "w1:p4")).mockReturnValueOnce({ stdout: "", stderr: "x", status: 1 });
+      expect(() => adapter.spawn(opts)).toThrow(/herdr pane run failed/);
+    });
+  });
+
+  it("spawnWindow opens the same tab as spawn", () => {
+    exec.mockReturnValueOnce(tabCreated("w1:t3", "w1:p5")).mockReturnValueOnce(ok());
+    expect(adapter.spawnWindow(opts)).toBe("herdr_tab_w1:t3");
+    expect(exec.mock.calls[0][1].slice(0, 2)).toEqual(["tab", "create"]);
   });
 
   describe("kill / isAlive", () => {
-    it("closes a herdr pane", () => {
+    it("closes the tab through both kill and killWindow", () => {
       exec.mockReturnValue(ok());
-      adapter.kill("herdr_w1:p2");
-      expect(exec).toHaveBeenCalledWith("herdr", ["pane", "close", "w1:p2"]);
-    });
-
-    it("ignores foreign and tab ids", () => {
-      adapter.kill("%3");
       adapter.kill("herdr_tab_w1:t2");
-      expect(exec).not.toHaveBeenCalled();
-      expect(adapter.isAlive("iterm_x")).toBe(false);
-    });
-
-    it("reports liveness from pane get", () => {
-      exec.mockReturnValueOnce(ok()).mockReturnValueOnce(notFound);
-      expect(adapter.isAlive("herdr_w1:p2")).toBe(true);
-      expect(adapter.isAlive("herdr_w1:p2")).toBe(false);
-    });
-  });
-
-  describe("tabs as windows", () => {
-    it("creates a labeled tab in the current workspace and runs the command in its root pane", () => {
-      exec
-        .mockReturnValueOnce(ok({ tab: { tab_id: "w1:t2" }, root_pane: { pane_id: "w1:p4" }, type: "tab_created" }))
-        .mockReturnValueOnce(ok());
-
-      const id = adapter.spawnWindow({ name: "alice", cwd: "/work", command: "pi", env: { PI_X: "1" }, teamName: "t" });
-
-      expect(id).toBe("herdr_tab_w1:t2");
-      expect(exec.mock.calls[0]).toEqual([
-        "herdr",
-        ["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "t: alice",
-          "--env", "PI_X=1", "--no-focus"],
+      adapter.killWindow("herdr_tab_w1:t3");
+      expect(exec.mock.calls).toEqual([
+        ["herdr", ["tab", "close", "w1:t2"]],
+        ["herdr", ["tab", "close", "w1:t3"]],
       ]);
-      expect(exec.mock.calls[1]).toEqual(["herdr", ["pane", "run", "w1:p4", "exec pi"]]);
     });
 
-    it("closes and probes tabs", () => {
+    it("ignores ids owned by other adapters", () => {
+      adapter.kill("%3");
+      adapter.killWindow("iterm_x");
+      expect(exec).not.toHaveBeenCalled();
+      expect(adapter.isAlive("zellij_x")).toBe(false);
+      expect(adapter.isWindowAlive("orca_x")).toBe(false);
+    });
+
+    it("reports liveness from tab get", () => {
       exec.mockReturnValueOnce(ok()).mockReturnValueOnce(notFound);
-      adapter.killWindow("herdr_tab_w1:t2");
-      expect(exec).toHaveBeenCalledWith("herdr", ["tab", "close", "w1:t2"]);
+      expect(adapter.isAlive("herdr_tab_w1:t2")).toBe(true);
       expect(adapter.isWindowAlive("herdr_tab_w1:t2")).toBe(false);
-      expect(adapter.isWindowAlive("herdr_w1:p2")).toBe(false);
+      expect(exec).toHaveBeenCalledWith("herdr", ["tab", "get", "w1:t2"]);
     });
   });
 
   it("renames the current pane for setTitle", () => {
     exec.mockReturnValue(ok());
-    adapter.setTitle("Agent: pi-teams");
-    expect(exec).toHaveBeenCalledWith("herdr", ["pane", "rename", "w1:p1", "Agent: pi-teams"]);
+    adapter.setTitle("pi-teams: abcd1234");
+    expect(exec).toHaveBeenCalledWith("herdr", ["pane", "rename", "w1:p1", "pi-teams: abcd1234"]);
+  });
+
+  it("renames a tab for setWindowTitle", () => {
+    exec.mockReturnValue(ok());
+    adapter.setWindowTitle("herdr_tab_w1:t2", "bob");
+    expect(exec).toHaveBeenCalledWith("herdr", ["tab", "rename", "w1:t2", "bob"]);
   });
 });

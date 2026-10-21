@@ -4,17 +4,15 @@
  * Implements the TerminalAdapter interface for the herdr terminal multiplexer.
  * Uses the `herdr` CLI, which prints JSON responses for every command.
  *
- * - Panes: the first worker splits the lead's pane to the right; later workers
- *   split the previous worker's pane downward (main-vertical layout).
- * - Windows: herdr has no OS windows, so a separate window maps to a herdr tab
- *   in the lead's workspace.
+ * Every spawned agent gets a full herdr tab in the lead's workspace, labeled
+ * with the agent name. Herdr has no OS windows, so pane and window requests
+ * both open a tab; read-only workers, which never request a window, get the
+ * same layout.
  */
 
 import { TerminalAdapter, SpawnOptions, execCommand } from "../utils/terminal-adapter";
 
-/** Prefix for pane ids returned by spawn(). */
-const PANE_PREFIX = "herdr_";
-/** Prefix for tab ids returned by spawnWindow(). */
+/** Prefix for tab ids returned by spawn() and spawnWindow(). */
 const TAB_PREFIX = "herdr_tab_";
 
 /**
@@ -37,47 +35,17 @@ function herdrJson(args: string[]): Record<string, any> {
 }
 
 /**
- * Build `--env KEY=VALUE` arguments for the PI_ variables in an environment.
+ * Extract the herdr tab id from an id returned by this adapter.
  *
- * @param env - Full environment for the spawned process
- * @returns Flattened `--env` arguments
+ * @param id - Id returned from spawn() or spawnWindow()
+ * @returns The herdr tab id, or null for ids owned by another adapter
  */
-function piEnvArgs(env: Record<string, string>): string[] {
-  return Object.entries(env)
-    .filter(([k]) => k.startsWith("PI_"))
-    .flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-}
-
-/**
- * Start a command in a herdr pane's shell. `exec` replaces the shell, so the
- * pane closes when pi exits.
- *
- * @param paneId - Herdr pane id (for example `w1:p2`)
- * @param command - Command line to run
- * @throws Error if herdr rejects the input
- */
-function runInPane(paneId: string, command: string): void {
-  const res = execCommand("herdr", ["pane", "run", paneId, `exec ${command}`]);
-  if (res.status !== 0) {
-    throw new Error(`herdr pane run failed with status ${res.status}: ${res.stderr}`);
-  }
-}
-
-/**
- * Check a herdr object by its `get` command; herdr exits 1 on `*_not_found`.
- *
- * @param kind - `pane` or `tab`
- * @param id - Herdr id
- * @returns true if the object exists
- */
-function herdrExists(kind: "pane" | "tab", id: string): boolean {
-  return execCommand("herdr", [kind, "get", id]).status === 0;
+function tabIdOf(id: string): string | null {
+  return id?.startsWith(TAB_PREFIX) ? id.slice(TAB_PREFIX.length) : null;
 }
 
 export class HerdrAdapter implements TerminalAdapter {
   readonly name = "herdr";
-  /** Last pane this adapter spawned, used to stack later workers below it. */
-  private lastPaneId: string | null = null;
 
   /**
    * Detect a herdr-managed pane. Herdr sets HERDR_ENV=1 and HERDR_PANE_ID in
@@ -90,48 +58,57 @@ export class HerdrAdapter implements TerminalAdapter {
   }
 
   /**
-   * Split a pane and start the command in it.
+   * Open a herdr tab in the current workspace and start the command in its
+   * root pane. PI_ variables pass through `--env`. `exec` replaces the shell,
+   * so the tab closes when pi exits.
    *
    * @param options - Spawn configuration
-   * @returns Pane id in the format `herdr_<pane_id>`
-   * @throws Error if the split or the command start fails
+   * @returns Tab id in the format `herdr_tab_<tab_id>`
+   * @throws Error if tab creation or the command start fails
    */
   spawn(options: SpawnOptions): string {
-    const stackBelow = this.lastPaneId !== null && herdrExists("pane", this.lastPaneId);
-    const target = stackBelow ? this.lastPaneId! : process.env.HERDR_PANE_ID!;
+    const workspace = process.env.HERDR_WORKSPACE_ID;
+    const label = options.teamName ? `${options.teamName}: ${options.name}` : options.name;
+    const envArgs = Object.entries(options.env)
+      .filter(([k]) => k.startsWith("PI_"))
+      .flatMap(([k, v]) => ["--env", `${k}=${v}`]);
     const result = herdrJson([
-      "pane", "split", target,
-      "--direction", stackBelow ? "down" : "right",
+      "tab", "create",
+      ...(workspace ? ["--workspace", workspace] : []),
       "--cwd", options.cwd,
-      ...piEnvArgs(options.env),
+      "--label", label,
+      ...envArgs,
       "--no-focus",
     ]);
-    const paneId: string | undefined = result.pane?.pane_id;
-    if (!paneId) {
-      throw new Error(`herdr pane split returned no pane id: ${JSON.stringify(result)}`);
+    const tabId: string | undefined = result.tab?.tab_id;
+    const paneId: string | undefined = result.root_pane?.pane_id;
+    if (!tabId || !paneId) {
+      throw new Error(`herdr tab create returned unexpected response: ${JSON.stringify(result)}`);
     }
-    runInPane(paneId, options.command);
-    this.lastPaneId = paneId;
-    return `${PANE_PREFIX}${paneId}`;
+    const run = execCommand("herdr", ["pane", "run", paneId, `exec ${options.command}`]);
+    if (run.status !== 0) {
+      throw new Error(`herdr pane run failed with status ${run.status}: ${run.stderr}`);
+    }
+    return `${TAB_PREFIX}${tabId}`;
   }
 
   /**
-   * Close a herdr pane. Idempotent.
+   * Close a herdr tab. Idempotent.
    *
    * @param paneId - Id returned from spawn()
    */
   kill(paneId: string): void {
-    if (!paneId?.startsWith(PANE_PREFIX) || paneId.startsWith(TAB_PREFIX)) return;
-    execCommand("herdr", ["pane", "close", paneId.slice(PANE_PREFIX.length)]);
+    const tabId = tabIdOf(paneId);
+    if (tabId) execCommand("herdr", ["tab", "close", tabId]);
   }
 
   /**
    * @param paneId - Id returned from spawn()
-   * @returns true if the herdr pane still exists
+   * @returns true if the herdr tab still exists (herdr exits 1 on tab_not_found)
    */
   isAlive(paneId: string): boolean {
-    if (!paneId?.startsWith(PANE_PREFIX) || paneId.startsWith(TAB_PREFIX)) return false;
-    return herdrExists("pane", paneId.slice(PANE_PREFIX.length));
+    const tabId = tabIdOf(paneId);
+    return tabId !== null && execCommand("herdr", ["tab", "get", tabId]).status === 0;
   }
 
   /**
@@ -141,41 +118,16 @@ export class HerdrAdapter implements TerminalAdapter {
    */
   setTitle(title: string): void {
     const paneId = process.env.HERDR_PANE_ID;
-    if (!paneId) return;
-    execCommand("herdr", ["pane", "rename", paneId, title]);
+    if (paneId) execCommand("herdr", ["pane", "rename", paneId, title]);
   }
 
-  /** Separate windows map to herdr tabs. */
+  /** Separate windows are herdr tabs, the same as panes. */
   supportsWindows(): boolean {
     return true;
   }
 
-  /**
-   * Create a herdr tab in the current workspace and start the command in its
-   * root pane.
-   *
-   * @param options - Spawn configuration
-   * @returns Tab id in the format `herdr_tab_<tab_id>`
-   * @throws Error if tab creation or the command start fails
-   */
   spawnWindow(options: SpawnOptions): string {
-    const workspace = process.env.HERDR_WORKSPACE_ID;
-    const title = options.teamName ? `${options.teamName}: ${options.name}` : options.name;
-    const result = herdrJson([
-      "tab", "create",
-      ...(workspace ? ["--workspace", workspace] : []),
-      "--cwd", options.cwd,
-      "--label", title,
-      ...piEnvArgs(options.env),
-      "--no-focus",
-    ]);
-    const tabId: string | undefined = result.tab?.tab_id;
-    const paneId: string | undefined = result.root_pane?.pane_id;
-    if (!tabId || !paneId) {
-      throw new Error(`herdr tab create returned unexpected response: ${JSON.stringify(result)}`);
-    }
-    runInPane(paneId, options.command);
-    return `${TAB_PREFIX}${tabId}`;
+    return this.spawn(options);
   }
 
   /**
@@ -185,26 +137,15 @@ export class HerdrAdapter implements TerminalAdapter {
    * @param title - The label to set
    */
   setWindowTitle(windowId: string, title: string): void {
-    if (!windowId?.startsWith(TAB_PREFIX)) return;
-    execCommand("herdr", ["tab", "rename", windowId.slice(TAB_PREFIX.length), title]);
+    const tabId = tabIdOf(windowId);
+    if (tabId) execCommand("herdr", ["tab", "rename", tabId, title]);
   }
 
-  /**
-   * Close a herdr tab. Idempotent.
-   *
-   * @param windowId - Id returned from spawnWindow()
-   */
   killWindow(windowId: string): void {
-    if (!windowId?.startsWith(TAB_PREFIX)) return;
-    execCommand("herdr", ["tab", "close", windowId.slice(TAB_PREFIX.length)]);
+    this.kill(windowId);
   }
 
-  /**
-   * @param windowId - Id returned from spawnWindow()
-   * @returns true if the herdr tab still exists
-   */
   isWindowAlive(windowId: string): boolean {
-    if (!windowId?.startsWith(TAB_PREFIX)) return false;
-    return herdrExists("tab", windowId.slice(TAB_PREFIX.length));
+    return this.isAlive(windowId);
   }
 }
