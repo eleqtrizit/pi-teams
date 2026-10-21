@@ -63,6 +63,7 @@ describe("agent presence registration", () => {
     const ctx = {
       ui,
       hasUI: true,
+      cwd: "/tmp/pi-teams-test",
       model: { provider: "openai", id: "gpt-4" },
     };
     await handlers.get("session_start")({}, ctx);
@@ -90,7 +91,7 @@ describe("agent presence registration", () => {
     vi.stubEnv("PI_AGENT_TYPE", "lead");
 
     const { handlers } = loadExtension();
-    const ctx = { ui, hasUI: false };
+    const ctx = { ui, hasUI: false, cwd: "/tmp/pi-teams-test" };
     await handlers.get("session_start")({}, ctx);
 
     const recordDir = path.join(tmpDir, "agents");
@@ -106,6 +107,7 @@ describe("agent presence registration", () => {
     const ctx = {
       ui,
       hasUI: false,
+      cwd: "/tmp/pi-teams-test",
       model: { provider: "anthropic", id: "claude-3" },
     };
     await handlers.get("session_start")({}, ctx);
@@ -129,15 +131,15 @@ describe("agent presence registration", () => {
     vi.stubEnv("PI_AGENT_TYPE", "lead");
 
     const { handlers } = loadExtension();
-    const ctx = { ui, hasUI: true };
+    const ctx = { ui, hasUI: true, cwd: "/tmp/pi-teams-test" };
     await handlers.get("session_start")({}, ctx);
 
     expect(ui.setTitle).toHaveBeenCalledWith(
-      expect.stringContaining("Agent: "),
+      expect.stringContaining("pi-teams-test: "),
     );
     expect(ui.setStatus).toHaveBeenCalledWith(
       "pi-teams",
-      expect.stringContaining("Agent: "),
+      expect.stringContaining("pi-teams-test: "),
     );
   });
 
@@ -147,7 +149,7 @@ describe("agent presence registration", () => {
     vi.stubEnv("PI_AGENT_TYPE", "lead");
 
     const { handlers } = loadExtension();
-    const ctx = { ui, hasUI: true };
+    const ctx = { ui, hasUI: true, cwd: "/tmp/pi-teams-test" };
     await handlers.get("session_start")({}, ctx);
 
     expect(process.env.PI_AGENT_ID).toBe("abc12345");

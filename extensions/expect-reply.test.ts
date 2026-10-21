@@ -132,6 +132,7 @@ describe("expectReply obligations", () => {
     await handlers.get("session_start")?.({}, {
       ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
       hasUI,
+      cwd: "/tmp/pi-teams-test",
       model: { provider: "test", id: "model" },
     });
   }
@@ -492,6 +493,7 @@ describe("expectReply end-to-end scenarios", () => {
     await instance.handlers.get("session_start")?.({}, {
       ui: { notify: vi.fn(), setStatus: vi.fn(), setTitle: vi.fn() },
       hasUI,
+      cwd: "/tmp/pi-teams-test",
       model: { provider: "test", id: "model" },
     });
     return instance;
