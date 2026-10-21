@@ -6,6 +6,7 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { basename } from "node:path";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
 import * as holdRun from "../src/utils/hold";
@@ -510,7 +511,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("00-pi-teams", `[${agentName.toUpperCase()}]`);
       scheduleTerminalTitleRefreshes(fullTitle);
     } else {
-      const title = `Agent: ${agentId}`;
+      const title = `${basename(ctx.cwd)}: ${agentId}`;
       setSessionTitle(ctx, title);
       ctx.ui.setStatus("pi-teams", title);
     }
