@@ -53,7 +53,14 @@ import {
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
-export function formatDeliveredMessages(messages: TeamMessage[]): string {
+/**
+ * Format delivered team messages as one user message.
+ *
+ * @param messages - Messages to format
+ * @param selfId - The receiving agent's id; a matching `to` renders as "You (<id>)"
+ * @returns Formatted text, or "" for no messages
+ */
+export function formatDeliveredMessages(messages: TeamMessage[], selfId: string): string {
   if (messages.length === 0) return "";
 
   const formatOne = (m: TeamMessage): string => {
@@ -63,7 +70,7 @@ export function formatDeliveredMessages(messages: TeamMessage[]): string {
       .slice(0, 19);
     return [
       `**From:** ${m.fromLabel} (${m.from})`,
-      `**To:** ${m.to}`,
+      `**To:** ${m.to === selfId ? `You (${m.to})` : m.to}`,
       `Reply with send_message(recipient="${m.from}").`,
       m.expectReply === true
         ? `Reply expected: yes. Answer with send_message(recipient="${m.from}").`
@@ -412,7 +419,7 @@ export default function (pi: ExtensionAPI) {
     if (message.expectReply === true) {
       obligations.record(sender.id, message.fromLabel, message.subject);
     }
-    deliverPendingMessage(formatDeliveredMessages([message]));
+    deliverPendingMessage(formatDeliveredMessages([message], agentId));
   }
 
   /** Start the current agent-ID listener once, independently of team membership. */

@@ -246,7 +246,7 @@ describe("scopedPatternMatches", () => {
 
 describe("formatDeliveredMessages", () => {
   it("returns an empty string for no messages", () => {
-    expect(formatDeliveredMessages([])).toBe("");
+    expect(formatDeliveredMessages([], "other-id")).toBe("");
   });
 
   it("formats a single message with header fields and body", () => {
@@ -263,7 +263,7 @@ describe("formatDeliveredMessages", () => {
       },
     ];
 
-    const output = formatDeliveredMessages(messages);
+    const output = formatDeliveredMessages(messages, "other-id");
     expect(output).toContain("**From:** Worker alice in /workspace (worker-id)");
     expect(output).toContain("**To:** team-lead-id");
     expect(output).toContain('Reply with send_message(recipient="worker-id").');
@@ -272,6 +272,20 @@ describe("formatDeliveredMessages", () => {
     expect(output).toContain("**Timestamp:** 2026-05-28 10:00:00");
     expect(output).toContain("first report");
     expect(output).not.toContain("delivered-message");
+  });
+
+  it("renders the To line as You (<id>) when the message is addressed to the receiver", () => {
+    const message: TeamMessage = {
+      id: "aaa11111",
+      from: "worker-id",
+      to: "team-lead-id",
+      fromLabel: "Worker alice in /workspace",
+      subject: "Hi",
+      text: "hello",
+      timestamp: "2026-05-28T10:00:00.000Z",
+    };
+
+    expect(formatDeliveredMessages([message], "team-lead-id")).toContain("**To:** You (team-lead-id)");
   });
 
   it("wraps multiple messages with ordered boundaries", () => {
@@ -296,7 +310,7 @@ describe("formatDeliveredMessages", () => {
       },
     ];
 
-    const output = formatDeliveredMessages(messages);
+    const output = formatDeliveredMessages(messages, "other-id");
     expect(output).toContain("Multiple messages were delivered");
     expect(output).toContain('<delivered-message index="1">');
     expect(output).toContain('<delivered-message index="2">');
@@ -318,7 +332,7 @@ describe("formatDeliveredMessages", () => {
       },
     ];
 
-    const output = formatDeliveredMessages(messages);
+    const output = formatDeliveredMessages(messages, "other-id");
     expect(output).toContain(
       'Reply expected: yes. Answer with send_message(recipient="worker-id").',
     );
@@ -339,7 +353,7 @@ describe("formatDeliveredMessages", () => {
       },
     ];
 
-    const output = formatDeliveredMessages(messages);
+    const output = formatDeliveredMessages(messages, "other-id");
     expect(output).toContain("Reply expected: no.");
     expect(output).not.toContain("Reply expected: yes.");
   });
@@ -367,7 +381,7 @@ describe("formatDeliveredMessages", () => {
       },
     ];
 
-    const output = formatDeliveredMessages(messages);
+    const output = formatDeliveredMessages(messages, "other-id");
     expect(output).toContain(
       'Reply expected: yes. Answer with send_message(recipient="worker-one").',
     );
