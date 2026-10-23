@@ -237,6 +237,50 @@ describe("amend", () => {
     expect(readFileSync(file, "utf-8")).toBe("world");
   });
 
+  it("rejects a stale-hash write with the full current contents in the error", async () => {
+    const { cwd, file } = makeWorkspace();
+    const error = await executeOf("write")(
+      "t",
+      {
+        description: "overwrite",
+        path: file,
+        fileHash: "00000000",
+        content: "clobber",
+      },
+      undefined,
+      undefined,
+      { cwd },
+    ).catch((e: Error) => e.message);
+    expect(error).toContain("changed since it was last read");
+    expect(error).toContain(`Current contents of ${file}:`);
+    expect(error).toContain("hello");
+    // The file must be untouched.
+    expect(readFileSync(file, "utf-8")).toBe("hello");
+  });
+
+  it("rejects a stale-hash write of a large file with the line count instead of contents", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "fs-tools-amend-"));
+    const file = join(cwd, "big.txt");
+    writeFileSync(file, Array.from({ length: 101 }, (_, i) => `line ${i}`).join("\n"));
+    const error = await executeOf("write")(
+      "t",
+      {
+        description: "overwrite",
+        path: file,
+        fileHash: "00000000",
+        content: "clobber",
+      },
+      undefined,
+      undefined,
+      { cwd },
+    ).catch((e: Error) => e.message);
+    expect(error).toContain("You're trying to overwrite a file of 101 lines (");
+    expect(error).toMatch(/current file_hash: [0-9a-f]{8}/);
+    expect(error).toContain("Re-read the file to understand what you're overwriting.");
+    expect(error).not.toContain("Current contents of");
+    expect(readFileSync(file, "utf-8")).toContain("line 100");
+  });
+
   it("completes a rejected write with only the missing fields", async () => {
     const { cwd, file } = makeWorkspace();
     await executeOf("write")(

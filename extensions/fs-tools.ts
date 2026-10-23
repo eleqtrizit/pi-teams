@@ -174,24 +174,49 @@ function withFreshHash(
   return result;
 }
 
+/** Read a file's bytes, or null when it does not exist. */
+async function readCurrentBytes(path: string): Promise<Buffer | null> {
+  try {
+    return await readFile(path);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Verify the caller holds the file's current hash, or throw.
  *
  * A missing file is accepted: any hash is valid for a file that does not exist yet.
+ * On a hash mismatch, `includeContent` attaches the file's full on-disk contents
+ * to the error so the caller sees everything it was about to overwrite or patch.
  */
-async function assertFresh(path: string, expectedHash: string): Promise<void> {
-  let currentHash: string | null = null;
-  try {
-    currentHash = fileHash(await readFile(path));
-  } catch {
+async function assertFresh(
+  path: string,
+  expectedHash: string,
+  includeContent = false,
+): Promise<void> {
+  const bytes = await readCurrentBytes(path);
+  if (!bytes) {
     return;
   }
+  const currentHash = fileHash(bytes);
   if (expectedHash !== currentHash) {
-    throw new Error(
+    let detail =
       `Rejected: ${path} changed since it was last read ` +
-        `(expected file_hash ${expectedHash}, current is ${currentHash}). ` +
-        "Read the file again, then retry with the fresh hash.",
-    );
+      `(expected file_hash ${expectedHash}, current is ${currentHash}). ` +
+      "Read the file again, then retry with the fresh hash.";
+    if (includeContent) {
+      const lines = bytes.toString("utf8").split("\n").length;
+      if (lines <= 100) {
+        detail += `\n\nCurrent contents of ${path}:\n${bytes.toString("utf8")}`;
+      } else {
+        detail +=
+          `\n\nYou're trying to overwrite a file of ${lines} lines (current file_hash: ${currentHash}). ` +
+          "Recommendation: Re-read the file to understand what you're overwriting. " +
+          "If you accept the current contents, you can retry write with this file_hash.";
+      }
+    }
+    throw new Error(detail);
   }
 }
 
@@ -231,7 +256,8 @@ async function runWrite(
   onUpdate: AgentToolUpdateCallback | undefined,
   ctx: ExtensionContext,
 ): Promise<AgentToolResult<any>> {
-  await assertFresh(params.path, params.fileHash);
+  // On a stale hash, show the agent everything it was about to overwrite.
+  await assertFresh(params.path, params.fileHash, true);
 
   const builtinWrite = createWriteTool(ctx.cwd);
   const input: WriteToolInput = {
@@ -389,7 +415,8 @@ export function registerFsTools(pi: ExtensionAPI): void {
       "Use write only for new files or complete rewrites; use edit for partial changes to an existing file.",
       "When calling write, fill parameters in this order: description, path, then fileHash and content. " +
         "State the reason for the file before generating its content.",
-      'write\'s fileHash must be the file_hash from your last read of that file; pass "new" only if the file does not exist yet.',
+      'write\'s fileHash must be the file_hash from your last read of that file; pass "new" only if the file does not exist yet. ' +
+      "A write rejected for a stale hash includes the file's full current contents, so read that output instead of re-reading the file.",
     ],
     parameters: asAnySchema(WriteParams),
     async execute(
