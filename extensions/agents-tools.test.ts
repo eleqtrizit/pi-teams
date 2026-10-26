@@ -5,7 +5,10 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AgentKind, AgentStatus, type AgentRecord } from "../src/utils/models";
 import { generateAgentId, pruneAndList } from "../src/utils/registry";
-import type { SpawnOptions, TerminalAdapter } from "../src/utils/terminal-adapter";
+import type {
+  SpawnOptions,
+  TerminalAdapter,
+} from "../src/utils/terminal-adapter";
 import { waitForListener } from "../src/utils/transport";
 import { registerAgentTools, type AgentToolDeps } from "./agents-tools";
 
@@ -51,7 +54,9 @@ async function runListAgents(
   return { text: result.content[0].text, details: result.details };
 }
 
-function makeRecord(overrides: Partial<AgentRecord> & { id: string }): AgentRecord {
+function makeRecord(
+  overrides: Partial<AgentRecord> & { id: string },
+): AgentRecord {
   return {
     kind: AgentKind.Lead,
     cwd: "/w/alpha",
@@ -116,7 +121,9 @@ describe("list_agents", () => {
     );
     expect(text).not.toContain("e2e2e2e2");
     expect(text).not.toContain("beta-worker");
-    const offlineLines = text.split("\n").filter((line) => line.endsWith("Offline"));
+    const offlineLines = text
+      .split("\n")
+      .filter((line) => line.endsWith("Offline"));
     expect(offlineLines).toHaveLength(1);
     expect(offlineLines[0]).toContain("cccccccc");
 
@@ -132,6 +139,24 @@ describe("list_agents", () => {
       { id: "bbbbbbbb", kind: "lead", cwd: "/w/beta", status: "Idling" },
       { id: "cccccccc", kind: "lead", cwd: "/w/gamma", status: "Offline" },
     ]);
+  });
+
+  it("omits offline agents when onlineOnly is true", async () => {
+    seededEntries();
+
+    const tool = loadListAgentsTool(() => leadA);
+    const result = await tool.execute(
+      "call-1",
+      { onlineOnly: true },
+      undefined,
+      undefined,
+      {},
+    );
+    const text: string = result.content[0].text;
+
+    expect(text).not.toContain("cccccccc");
+    expect(text).toContain("bbbbbbbb");
+    expect(text).toContain("aaaaaaaa");
   });
 
   it("lists own lead and sibling workers for a worker, excluding peer leads", async () => {
@@ -169,8 +194,16 @@ describe("list_agents", () => {
   });
 
   it("orders offline peers at equal distance by their lastSeenAt, most recent first", async () => {
-    const stale = makeRecord({ id: "g1g1g1g1", cwd: "/w/delta1", startedAt: 900 });
-    const fresh = makeRecord({ id: "g2g2g2g2", cwd: "/w/delta2", startedAt: 800 });
+    const stale = makeRecord({
+      id: "g1g1g1g1",
+      cwd: "/w/delta1",
+      startedAt: 900,
+    });
+    const fresh = makeRecord({
+      id: "g2g2g2g2",
+      cwd: "/w/delta2",
+      startedAt: 800,
+    });
     vi.mocked(pruneAndList).mockResolvedValue([
       { record: leadA, status: AgentStatus.Idling },
       { record: stale, status: AgentStatus.Offline },
@@ -178,7 +211,11 @@ describe("list_agents", () => {
     ]);
 
     const { text } = await runListAgents(() => leadA, {
-      getLastSeenAt: () => new Map([["g1g1g1g1", 1000], ["g2g2g2g2", 5000]]),
+      getLastSeenAt: () =>
+        new Map([
+          ["g1g1g1g1", 1000],
+          ["g2g2g2g2", 5000],
+        ]),
     });
 
     // Both offline leads sit two hops from /w/alpha; the one last seen online
@@ -243,7 +280,13 @@ describe("list_agents", () => {
 
     expect(text).toBe("Worker lonely in /w/theta: a1b2c3d4: Idling (you)");
     expect(details.agents).toEqual([
-      { id: "a1b2c3d4", kind: "teammate", cwd: "/w/theta", name: "lonely", status: "Idling" },
+      {
+        id: "a1b2c3d4",
+        kind: "teammate",
+        cwd: "/w/theta",
+        name: "lonely",
+        status: "Idling",
+      },
     ]);
   });
 
@@ -259,7 +302,10 @@ describe("list_agents", () => {
 /** Minimal terminal adapter that records spawn and spawnWindow calls. */
 function fakeTerminal(
   overrides: Partial<TerminalAdapter> = {},
-): TerminalAdapter & { spawnCalls: SpawnOptions[]; windowCalls: SpawnOptions[] } {
+): TerminalAdapter & {
+  spawnCalls: SpawnOptions[];
+  windowCalls: SpawnOptions[];
+} {
   const spawnCalls: SpawnOptions[] = [];
   const windowCalls: SpawnOptions[] = [];
   const adapter: TerminalAdapter = {
@@ -288,7 +334,9 @@ function fakeTerminal(
 /** Extension context stub: a single provider/model pair in the registry. */
 const fakeCtx = {
   model: { provider: "provider", id: "model" },
-  modelRegistry: { getAvailable: () => [{ provider: "provider", id: "model" }] },
+  modelRegistry: {
+    getAvailable: () => [{ provider: "provider", id: "model" }],
+  },
 } as unknown as ExtensionContext;
 
 /** Register the agent tools with a mock pi API and return them by name. */
@@ -308,7 +356,13 @@ async function runSpawnLead(
   tool: any,
   params: Record<string, unknown>,
 ): Promise<{ text: string; details: any }> {
-  const result = await tool.execute("call-1", params, undefined, undefined, fakeCtx);
+  const result = await tool.execute(
+    "call-1",
+    params,
+    undefined,
+    undefined,
+    fakeCtx,
+  );
   return { text: result.content[0].text, details: result.details };
 }
 
@@ -322,7 +376,8 @@ describe("spawn_team_lead", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+    for (const dir of tempDirs)
+      fs.rmSync(dir, { recursive: true, force: true });
     tempDirs.length = 0;
   });
 
@@ -334,9 +389,16 @@ describe("spawn_team_lead", () => {
   }
 
   it("registers only for leads, while list_agents stays registered for everyone", () => {
-    expect(loadAgentTools({ isLead: true, terminal: fakeTerminal() }).get("spawn_team_lead")).toBeDefined();
+    expect(
+      loadAgentTools({ isLead: true, terminal: fakeTerminal() }).get(
+        "spawn_team_lead",
+      ),
+    ).toBeDefined();
 
-    const workerTools = loadAgentTools({ isLead: false, terminal: fakeTerminal() });
+    const workerTools = loadAgentTools({
+      isLead: false,
+      terminal: fakeTerminal(),
+    });
     expect(workerTools.get("spawn_team_lead")).toBeUndefined();
     expect(workerTools.get("list_agents")).toBeDefined();
 
@@ -344,7 +406,8 @@ describe("spawn_team_lead", () => {
     const omittedTools = new Map<string, any>();
     registerAgentTools(
       {
-        registerTool: (tool: { name: string }) => omittedTools.set(tool.name, tool),
+        registerTool: (tool: { name: string }) =>
+          omittedTools.set(tool.name, tool),
       } as any,
       { getSelfRecord: () => leadA, terminal: fakeTerminal() },
     );
@@ -357,7 +420,10 @@ describe("spawn_team_lead", () => {
     const terminal = fakeTerminal();
     const tool = loadAgentTools({ terminal }).get("spawn_team_lead");
 
-    const { text, details } = await runSpawnLead(tool, { folder, model: "provider/model" });
+    const { text, details } = await runSpawnLead(tool, {
+      folder,
+      model: "provider/model",
+    });
 
     expect(terminal.spawnCalls).toHaveLength(1);
     const call = terminal.spawnCalls[0];
@@ -398,17 +464,23 @@ describe("spawn_team_lead", () => {
     const tool = loadAgentTools({ terminal }).get("spawn_team_lead");
     await runSpawnLead(tool, { folder: makeFolder() });
 
-    expect(terminal.spawnCalls[0].command).toContain("--model 'provider/model'");
+    expect(terminal.spawnCalls[0].command).toContain(
+      "--model 'provider/model'",
+    );
   });
 
   it("reports started but not listening yet when the socket never appears", async () => {
     vi.mocked(waitForListener).mockResolvedValue(false);
     const folder = makeFolder();
-    const tool = loadAgentTools({ terminal: fakeTerminal() }).get("spawn_team_lead");
+    const tool = loadAgentTools({ terminal: fakeTerminal() }).get(
+      "spawn_team_lead",
+    );
 
     const { text, details } = await runSpawnLead(tool, { folder });
 
-    expect(text).toBe(`Pi Agent in ${folder}: abcd1234: started but not listening yet`);
+    expect(text).toBe(
+      `Pi Agent in ${folder}: abcd1234: started but not listening yet`,
+    );
     expect(details.listening).toBe(false);
   });
 
@@ -417,7 +489,10 @@ describe("spawn_team_lead", () => {
     const terminal = fakeTerminal({ supportsWindows: () => true });
     const tool = loadAgentTools({ terminal }).get("spawn_team_lead");
 
-    const { text, details } = await runSpawnLead(tool, { folder, separate_window: true });
+    const { text, details } = await runSpawnLead(tool, {
+      folder,
+      separate_window: true,
+    });
 
     expect(terminal.spawnCalls).toHaveLength(0);
     expect(terminal.windowCalls).toHaveLength(1);
@@ -434,10 +509,12 @@ describe("spawn_team_lead", () => {
   });
 
   it("throws when separate_window is requested without window support", async () => {
-    const tool = loadAgentTools({ terminal: fakeTerminal() }).get("spawn_team_lead");
-    await expect(runSpawnLead(tool, { folder: makeFolder(), separate_window: true })).rejects.toThrow(
-      "Separate windows mode is not supported in fake.",
+    const tool = loadAgentTools({ terminal: fakeTerminal() }).get(
+      "spawn_team_lead",
     );
+    await expect(
+      runSpawnLead(tool, { folder: makeFolder(), separate_window: true }),
+    ).rejects.toThrow("Separate windows mode is not supported in fake.");
   });
 
   it("throws when no terminal adapter is detected", async () => {
@@ -449,21 +526,27 @@ describe("spawn_team_lead", () => {
 
   it("throws when the folder does not exist or is not a directory", async () => {
     const missing = path.join(makeFolder(), "missing-subdir");
-    const tool = loadAgentTools({ terminal: fakeTerminal() }).get("spawn_team_lead");
+    const tool = loadAgentTools({ terminal: fakeTerminal() }).get(
+      "spawn_team_lead",
+    );
     await expect(runSpawnLead(tool, { folder: missing })).rejects.toThrow(
       `Directory '${missing}' does not exist or is not a directory.`,
     );
   });
 
   it("throws when the model is not fully qualified", async () => {
-    const tool = loadAgentTools({ terminal: fakeTerminal() }).get("spawn_team_lead");
-    await expect(runSpawnLead(tool, { folder: makeFolder(), model: "model" })).rejects.toThrow(
-      /not fully qualified/,
+    const tool = loadAgentTools({ terminal: fakeTerminal() }).get(
+      "spawn_team_lead",
     );
+    await expect(
+      runSpawnLead(tool, { folder: makeFolder(), model: "model" }),
+    ).rejects.toThrow(/not fully qualified/);
   });
 
   it("throws when the model is not in the registry", async () => {
-    const tool = loadAgentTools({ terminal: fakeTerminal() }).get("spawn_team_lead");
+    const tool = loadAgentTools({ terminal: fakeTerminal() }).get(
+      "spawn_team_lead",
+    );
     await expect(
       runSpawnLead(tool, { folder: makeFolder(), model: "provider/other" }),
     ).rejects.toThrow(/not available in the current registry/);

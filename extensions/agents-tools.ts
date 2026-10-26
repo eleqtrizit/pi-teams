@@ -11,7 +11,12 @@ import { formatAgentLine, sortAgentLines } from "../src/utils/agentFormat";
 import { readAgentHistory } from "../src/utils/history";
 import { AgentStatus, type AgentRecord } from "../src/utils/models";
 import { generateAgentId, pruneAndList } from "../src/utils/registry";
-import { buildLeadCommand, buildLeadEnv, resolveLeadFolder, resolveSpawnModel } from "../src/utils/spawn";
+import {
+  buildLeadCommand,
+  buildLeadEnv,
+  resolveLeadFolder,
+  resolveSpawnModel,
+} from "../src/utils/spawn";
 import type { TerminalAdapter } from "../src/utils/terminal-adapter";
 import { waitForListener } from "../src/utils/transport";
 import { visibleTo } from "../src/utils/visibility";
@@ -60,7 +65,10 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
  * @param deps - Provides this session's registry record lazily, plus the
  *   caller's lead identity and terminal adapter for spawn_team_lead.
  */
-export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void {
+export function registerAgentTools(
+  pi: ExtensionAPI,
+  deps: AgentToolDeps,
+): void {
   pi.registerTool({
     name: "list_agents",
     label: "List Agents",
@@ -68,16 +76,31 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
       "List peer Pi agents (leads) and your own workers with their 8-char id and " +
       "Idling/Offline/Busy status (Idling = settled, no run in progress). Workers come first, then peers ordered by " +
       "directory proximity (closest first), ties by the most recent last-online " +
-      "time. Use the id with send_message.",
-    parameters: asPiToolSchema(Type.Object({})) as any,
-    async execute() {
+      "time. Use the id with send_message. Pass onlineOnly=true to omit Offline agents.",
+    parameters: asPiToolSchema(
+      Type.Object({
+        onlineOnly: Type.Optional(
+          Type.Boolean({
+            default: false,
+            description:
+              "When true, list only agents that are online right now " +
+              "(Idling or Busy); omit Offline agents. Defaults to false.",
+          }),
+        ),
+      }),
+    ) as any,
+    async execute(_toolCallId, params: { onlineOnly?: boolean }) {
       const self = deps.getSelfRecord();
       if (!self) {
-        throw new Error("This session is not registered in the agent registry.");
+        throw new Error(
+          "This session is not registered in the agent registry.",
+        );
       }
 
       const entries = await pruneAndList();
-      const entryById = new Map(entries.map((entry) => [entry.record.id, entry]));
+      const entryById = new Map(
+        entries.map((entry) => [entry.record.id, entry]),
+      );
       const visibleRecords = visibleTo(
         self,
         entries.map((entry) => entry.record),
@@ -85,25 +108,32 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
 
       // visibleTo appends the viewer when it is missing from the registry.
       // Self is always shown Idling, even when a liveness probe raced the call.
-      const visibleEntries: AgentEntry[] = visibleRecords.map((record) => {
-        if (record.id === self.id) {
-          return { record, status: AgentStatus.Idling };
-        }
-        return entryById.get(record.id) ?? { record, status: AgentStatus.Offline };
-      });
+      const onlineOnly = params.onlineOnly === true;
+      const visibleEntries: AgentEntry[] = visibleRecords
+        .map((record) => {
+          if (record.id === self.id) {
+            return { record, status: AgentStatus.Idling };
+          }
+          return (
+            entryById.get(record.id) ?? { record, status: AgentStatus.Offline }
+          );
+        })
+        .filter((entry) => !onlineOnly || entry.status !== AgentStatus.Offline);
 
       // Online agents are online right now; offline ones order by the last
       // time they were seen online (history lastSeenAt, startedAt fallback).
       const now = Date.now();
       const lastSeenAt =
         deps.getLastSeenAt?.() ??
-        new Map(readAgentHistory().map((entry) => [entry.id, entry.lastSeenAt]));
+        new Map(
+          readAgentHistory().map((entry) => [entry.id, entry.lastSeenAt]),
+        );
       const lastOnlineAt = new Map<string, number>();
       for (const entry of visibleEntries) {
         lastOnlineAt.set(
           entry.record.id,
           entry.status === AgentStatus.Offline
-            ? lastSeenAt.get(entry.record.id) ?? entry.record.startedAt
+            ? (lastSeenAt.get(entry.record.id) ?? entry.record.startedAt)
             : now,
         );
       }
@@ -157,7 +187,8 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
           separate_window: Type.Optional(
             Type.Boolean({
               default: false,
-              description: "Open the new lead in a separate OS window instead of a pane",
+              description:
+                "Open the new lead in a separate OS window instead of a pane",
             }),
           ),
         }),
@@ -203,7 +234,13 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
               text: `Pi Agent in ${folder}: ${id}: ${status}`,
             },
           ],
-          details: { id, cwd: folder, terminalId, isWindow: useSeparateWindow, listening },
+          details: {
+            id,
+            cwd: folder,
+            terminalId,
+            isWindow: useSeparateWindow,
+            listening,
+          },
         };
       },
     });

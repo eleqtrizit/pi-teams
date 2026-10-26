@@ -60,7 +60,10 @@ import { AgentKind, type AgentRecord } from "../src/utils/models";
  * @param selfId - The receiving agent's id; a matching `to` renders as "You (<id>)"
  * @returns Formatted text, or "" for no messages
  */
-export function formatDeliveredMessages(messages: TeamMessage[], selfId: string): string {
+export function formatDeliveredMessages(
+  messages: TeamMessage[],
+  selfId: string,
+): string {
   if (messages.length === 0) return "";
 
   const formatOne = (m: TeamMessage): string => {
@@ -124,6 +127,7 @@ export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
     "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
     "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",
     "Agent ids are ephemeral: they change every session. Use them only for send_message; never record them in documents, notes, tasks, or comments. Identify agents by name and working directory instead.",
+    "When the user asks to list agents, run list_agents and list all agents, including offline ones; pass onlineOnly only if the user explicitly asks for online agents.",
     "When the user asks to plan work as tasks, use the make-tasks skill. When tasks exist and need implementation by a team, use the implement-tasks skill.",
   ].join("\n");
 }
