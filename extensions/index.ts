@@ -118,8 +118,8 @@ export function mergeQueuedMessages(messages: readonly string[]): string {
 export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
   return [
     `You are Pi Agent in ${self.cwd} (id ${self.id}).`,
-    "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and Available/Offline/Busy status.",
-    'When work belongs to another directory, or you need help: if no agent there is Available, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
+    "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and status. Statuses mean: Idling = alive and settled, no run in progress; Busy = mid-run, it may be doing work or waiting on its own workers; Offline = not running, its socket accepts nothing.",
+    'When work belongs to another directory, or you need help: if no agent there is Idling, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
     "Set expectReply=true on send_message when you assign a task or ask a question; set it to false for replies, reports, and acknowledgments. A message showing 'Reply expected: yes' must be answered with send_message.",
     "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
     "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",

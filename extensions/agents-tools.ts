@@ -48,7 +48,7 @@ function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
  *
  * `list_agents` prunes stale registry records, filters the survivors by
  * visibility rules, and renders one line per agent. The calling agent is
- * always listed with status Available. Registered for every session, lead and
+ * always listed with status Idling. Registered for every session, lead and
  * worker alike.
  *
  * `spawn_team_lead` launches an independent peer lead in an existing folder.
@@ -66,7 +66,7 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
     label: "List Agents",
     description:
       "List peer Pi agents (leads) and your own workers with their 8-char id and " +
-      "Available/Offline/Busy status. Workers come first, then peers ordered by " +
+      "Idling/Offline/Busy status (Idling = settled, no run in progress). Workers come first, then peers ordered by " +
       "directory proximity (closest first), ties by the most recent last-online " +
       "time. Use the id with send_message.",
     parameters: asPiToolSchema(Type.Object({})) as any,
@@ -84,10 +84,10 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
       );
 
       // visibleTo appends the viewer when it is missing from the registry.
-      // Self is always shown Available, even when a liveness probe raced the call.
+      // Self is always shown Idling, even when a liveness probe raced the call.
       const visibleEntries: AgentEntry[] = visibleRecords.map((record) => {
         if (record.id === self.id) {
-          return { record, status: AgentStatus.Available };
+          return { record, status: AgentStatus.Idling };
         }
         return entryById.get(record.id) ?? { record, status: AgentStatus.Offline };
       });
@@ -195,7 +195,7 @@ export function registerAgentTools(pi: ExtensionAPI, deps: AgentToolDeps): void 
         }
 
         const listening = await waitForListener(id, LEAD_LISTEN_TIMEOUT_MS);
-        const status = listening ? "Available" : "started but not listening yet";
+        const status = listening ? "Idling" : "started but not listening yet";
         return {
           content: [
             {

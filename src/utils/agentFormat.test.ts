@@ -24,8 +24,8 @@ const worker = (overrides: Partial<AgentRecord> = {}): AgentRecord => ({
 
 describe("formatAgentLine", () => {
   it("renders an available lead", () => {
-    expect(formatAgentLine(lead(), AgentStatus.Available, "zzzz9999")).toBe(
-      "Pi Agent in /repo: abc12345: Available",
+    expect(formatAgentLine(lead(), AgentStatus.Idling, "zzzz9999")).toBe(
+      "Pi Agent in /repo: abc12345: Idling",
     );
   });
 
@@ -36,20 +36,20 @@ describe("formatAgentLine", () => {
   });
 
   it("renders a named worker", () => {
-    expect(formatAgentLine(worker(), AgentStatus.Available, "zzzz9999")).toBe(
-      "Worker alice in /repo: def67890: Available",
+    expect(formatAgentLine(worker(), AgentStatus.Idling, "zzzz9999")).toBe(
+      "Worker alice in /repo: def67890: Idling",
     );
   });
 
   it("falls back to the id for an unnamed worker", () => {
-    expect(formatAgentLine(worker({ name: undefined }), AgentStatus.Available, "zzzz9999")).toBe(
-      "Worker def67890 in /repo: def67890: Available",
+    expect(formatAgentLine(worker({ name: undefined }), AgentStatus.Idling, "zzzz9999")).toBe(
+      "Worker def67890 in /repo: def67890: Idling",
     );
   });
 
   it("marks the calling agent with (you)", () => {
-    expect(formatAgentLine(worker(), AgentStatus.Available, "def67890")).toBe(
-      "Worker alice in /repo: def67890: Available (you)",
+    expect(formatAgentLine(worker(), AgentStatus.Idling, "def67890")).toBe(
+      "Worker alice in /repo: def67890: Idling (you)",
     );
   });
 
@@ -61,8 +61,8 @@ describe("formatAgentLine", () => {
 
   it("marks a readonly worker like any worker", () => {
     const rec = worker({ kind: AgentKind.ReadonlyWorker, name: "scout" });
-    expect(formatAgentLine(rec, AgentStatus.Available, "zzzz9999")).toBe(
-      "Worker scout in /repo: def67890: Available",
+    expect(formatAgentLine(rec, AgentStatus.Idling, "zzzz9999")).toBe(
+      "Worker scout in /repo: def67890: Idling",
     );
   });
 });
@@ -97,7 +97,7 @@ describe("pathDistance", () => {
 describe("sortAgentLines", () => {
   const entry = (record: AgentRecord): AgentEntry => ({
     record,
-    status: AgentStatus.Available,
+    status: AgentStatus.Idling,
   });
 
   /** Empty stamp map: every agent falls back to its startedAt. */

@@ -19,7 +19,7 @@ export interface RunState {
 }
 
 /**
- * A busy state older than this is treated as Available.
+ * A busy state older than this is treated as Idling.
  *
  * `agent_settled` normally clears busy, but a crash, kill -9, or SIGKILL from
  * close_myself can leave a stale busy file behind. The timestamp expires it.

@@ -255,7 +255,7 @@ export function isPidAlive(pid: number): boolean {
  * @param rec - Agent record to check
  * @param probe - Socket probe; overridden in tests
  * @param pidAlive - Pid check; overridden in tests
- * @returns Available when the process is alive and listening and not busy, otherwise Offline
+ * @returns Idling when the process is alive and listening and not busy, otherwise Offline
  */
 export async function agentStatus(
   rec: AgentRecord,
@@ -271,7 +271,7 @@ export async function agentStatus(
   }
   const listening = await probe(address, PROBE_TIMEOUT_MS);
   if (!listening) return AgentStatus.Offline;
-  return isAgentBusy(rec.id) ? AgentStatus.Busy : AgentStatus.Available;
+  return isAgentBusy(rec.id) ? AgentStatus.Busy : AgentStatus.Idling;
 }
 
 /**
@@ -297,7 +297,7 @@ export function pruneRegistry(
   const statusOf = (rec: AgentRecord): AgentStatus =>
     statuses.get(rec.id) ?? AgentStatus.Offline;
 
-  /** A Busy agent (mid-run) is alive and must survive pruning like an Available one. */
+  /** A Busy agent (mid-run) is alive and must survive pruning like an Idling one. */
   const isOnline = (rec: AgentRecord): boolean => statusOf(rec) !== AgentStatus.Offline;
 
   const cwdHasOnlineLead = new Set<string>();
