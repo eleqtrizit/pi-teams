@@ -241,14 +241,14 @@ All agent data is stored in the per-user registry under your home directory, so 
 │   └── <id>.json            # Agent registry record
 ├── state/
 │   └── <id>.json            # Busy/available run state
-├── agents.jsonl             # History of every agent ever registered
+├── agents.jsonl             # lastSeenAt side table, one entry per registered record
 └── s/
     └── <id>.sock            # Unix domain socket for messaging
 ```
 
 The directory has mode 0700 and each socket has mode 0600, so only your user can send messages to your agents. Messages are not stored on disk. If the recipient is not running, the sender gets an error.
 
-Every load of the registry trims agents whose working directory no longer exists: the record file and stale socket are removed, and the agent is marked removed in `agents.jsonl`. Set `PI_TEAMS_REGISTRY_DIR` to relocate the registry root.
+Every load of the registry trims agents whose working directory no longer exists: the record file, stale socket, and history entry are removed. Set `PI_TEAMS_REGISTRY_DIR` to relocate the registry root.
 
 ## Security
 

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { AgentEntry } from "./agentFormat";
-import { readAgentHistory } from "./history";
+import { historyKey, readAgentHistory } from "./history";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import {
   adoptOrphanedWorkers,
@@ -21,7 +21,7 @@ import {
   updateAgentRecord,
   writeAgentRecord,
 } from "./registry";
-import { agentRecordPath, agentSocketPath, registryDir } from "./paths";
+import { agentHistoryPath, agentRecordPath, agentSocketPath, registryDir } from "./paths";
 
 const posixOnly = process.platform === "win32" ? it.skip : it;
 
@@ -285,8 +285,10 @@ describe("registry", () => {
       expect(readAgentRecords()).toEqual([alive]);
       expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(false);
       expect(fs.existsSync(agentSocketPath("ab12cd34"))).toBe(false);
-      // The trimmed agent stays visible in the history, marked removed.
-      expect(readAgentHistory().find((e) => e.id === "ab12cd34")?.removedAt).toBeDefined();
+      // The trimmed record's history entry is removed with the record.
+      const entries = readAgentHistory();
+      expect(entries).toHaveLength(1);
+      expect(entries.every((e) => e.cwd === dirA)).toBe(true);
     });
 
     it("returns the first load unchanged when every working directory exists", () => {
@@ -693,7 +695,9 @@ describe("registry", () => {
       const offlineLead: AgentRecord = lead("bb000002", dirB, 400);
       writeAgentRecord(onlineLead);
       writeAgentRecord(offlineLead);
-      const lastSeenBefore = new Map(readAgentHistory().map((e) => [e.id, e.lastSeenAt]));
+      const lastSeenBefore = new Map(
+        readAgentHistory().map((e) => [historyKey(e.cwd, e.startedAt), e.lastSeenAt]),
+      );
 
       const clock = vi.spyOn(Date, "now").mockReturnValue(999_999);
       try {
@@ -708,9 +712,106 @@ describe("registry", () => {
 
       // The online lead is stamped with the prune-time clock; the offline
       // lead keeps its registration-time stamp.
-      const lastSeenById = new Map(readAgentHistory().map((e) => [e.id, e.lastSeenAt]));
-      expect(lastSeenById.get("aa000001")).toBe(999_999);
-      expect(lastSeenById.get("bb000002")).toBe(lastSeenBefore.get("bb000002"));
+      const lastSeenByCwd = new Map(
+        readAgentHistory().map((e) => [historyKey(e.cwd, e.startedAt), e.lastSeenAt]),
+      );
+      expect(lastSeenByCwd.get(historyKey(dirA, 300))).toBe(999_999);
+      expect(lastSeenByCwd.get(historyKey(dirB, 400))).toBe(
+        lastSeenBefore.get(historyKey(dirB, 400)),
+      );
+    });
+
+    it("collapses duplicate history entries for a cwd whose records are all offline", async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(999_999);
+      let offlineLead: AgentRecord;
+      try {
+        offlineLead = lead("bb000002", dirB, 50);
+        writeAgentRecord(offlineLead);
+        // Simulate a leftover older entry for the same cwd.
+        const entries = [
+          ...readAgentHistory(),
+          { cwd: dirB, startedAt: 10, lastSeenAt: 5 },
+        ];
+        fs.writeFileSync(
+          agentHistoryPath(),
+          entries.map((e) => JSON.stringify(e)).join("\n") + "\n",
+          { mode: 0o600 },
+        );
+
+        await pruneAndList(async () => Promise.resolve(AgentStatus.Offline));
+      } finally {
+        clock.mockRestore();
+      }
+
+      const after = readAgentHistory().filter((e) => e.cwd === dirB);
+      expect(after).toEqual([{ cwd: dirB, startedAt: 50, lastSeenAt: 999_999 }]);
+    });
+
+    it("keeps the pruned lead's newer lastSeenAt on the surviving lead's entry", async () => {
+      const older: AgentRecord = lead("bb000002", dirB, 100);
+      const newer: AgentRecord = lead("cc000003", dirB, 200);
+      writeAgentRecord(older);
+      writeAgentRecord(newer);
+      // The older lead was online until recently (5000); the survivor has
+      // not been online since it registered (200).
+      const patched = readAgentHistory().map((e) => {
+        if (e.cwd !== dirB) return e;
+        if (e.startedAt === 100) return { ...e, lastSeenAt: 5000 };
+        if (e.startedAt === 200) return { ...e, lastSeenAt: 200 };
+        return e;
+      });
+      fs.writeFileSync(
+        agentHistoryPath(),
+        patched.map((e) => JSON.stringify(e)).join("\n") + "\n",
+        { mode: 0o600 },
+      );
+
+      const entries = await pruneAndList(async () => Promise.resolve(AgentStatus.Offline));
+
+      // pruneRegistry keeps only the newer lead; the survivor's entry must
+      // carry the directory's real recency (5000), not the newer record's
+      // stale stamp.
+      expect(entries).toEqual([{ record: newer, status: AgentStatus.Offline }]);
+      expect(readAgentHistory().filter((e) => e.cwd === dirB)).toEqual([
+        { cwd: dirB, startedAt: 200, lastSeenAt: 5000 },
+      ]);
+    });
+
+    it("does not drop the entry of a record registered while the probes run", async () => {
+      const offlineLead: AgentRecord = lead("bb000002", dirB, 200);
+      writeAgentRecord(offlineLead);
+
+      let lateStartedAt = 0;
+      const entries = await pruneAndList(async (rec) => {
+        // Register mid-probe like a session that starts between the snapshot
+        // read and the socket probes. Its startedAt is past snapshotTime.
+        lateStartedAt = Date.now() + 1;
+        writeAgentRecord(lead("ee000008", dirB, lateStartedAt));
+        return Promise.resolve(rec.id === "bb000002" ? AgentStatus.Offline : AgentStatus.Idling);
+      });
+
+      expect(entries).toEqual([{ record: offlineLead, status: AgentStatus.Offline }]);
+      const dirBEntries = readAgentHistory().filter((e) => e.cwd === dirB);
+      expect(dirBEntries).toHaveLength(2);
+      expect(dirBEntries.map((e) => e.startedAt)).toContain(lateStartedAt);
+    });
+
+    it("keeps the shared history entry when one same-key sibling is removed", () => {
+      const first: AgentRecord = { ...lead("bb000002", dirB, 77), kind: AgentKind.Teammate };
+      const second: AgentRecord = { ...lead("cc000003", dirB, 77), kind: AgentKind.Teammate };
+      writeAgentRecord(first);
+      writeAgentRecord(second);
+      expect(readAgentHistory().filter((e) => e.cwd === dirB)).toHaveLength(1);
+
+      // Closing one sibling must not strip the survivor's recency.
+      removeAgentRecord("bb000002");
+      const afterFirst = readAgentHistory().filter((e) => e.cwd === dirB);
+      expect(afterFirst).toHaveLength(1);
+      expect(afterFirst[0].startedAt).toBe(77);
+
+      // Closing the last sibling removes the entry for good.
+      removeAgentRecord("cc000003");
+      expect(readAgentHistory().filter((e) => e.cwd === dirB)).toHaveLength(0);
     });
 
     it("keeps the newest offline lead per directory using the default status check", async () => {

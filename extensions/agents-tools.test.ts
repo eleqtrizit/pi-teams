@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AgentKind, AgentStatus, type AgentRecord } from "../src/utils/models";
+import { historyKey } from "../src/utils/history";
 import { generateAgentId, pruneAndList } from "../src/utils/registry";
 import type {
   SpawnOptions,
@@ -213,8 +214,8 @@ describe("list_agents", () => {
     const { text } = await runListAgents(() => leadA, {
       getLastSeenAt: () =>
         new Map([
-          ["g1g1g1g1", 1000],
-          ["g2g2g2g2", 5000],
+          [historyKey("/w/delta1", 900), 1000],
+          [historyKey("/w/delta2", 800), 5000],
         ]),
     });
 

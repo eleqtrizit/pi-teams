@@ -90,15 +90,29 @@ export function agentIdStatePath(id: string): string {
 }
 
 /**
- * Path of the append-safe agent history file.
+ * Path of the `lastSeenAt` side table for registered agent records.
  *
- * Holds one JSON line per agent ever registered, keyed uniquely by agent ID,
- * so offline and removed agents stay visible after their live record is gone.
+ * Holds one JSON line per registered record, keyed by `(cwd, startedAt)`.
+ * An entry exists only while its record file does: registration creates it,
+ * list passes refresh it, and record removal deletes it. All mutations run
+ * under the cross-process lock at {@link agentHistoryLockPath}, and a cwd
+ * whose records are all offline is compacted to a single entry.
  *
  * @returns Absolute path of the agents.jsonl history file
  */
 export function agentHistoryPath(): string {
   return path.join(registryDir(), "agents.jsonl");
+}
+
+/**
+ * Path of the lock file that serializes agents.jsonl mutations across
+ * processes. Never held across ticks: each read-modify-write cycle acquires
+ * and releases it.
+ *
+ * @returns Absolute path of the agents.jsonl lock file
+ */
+export function agentHistoryLockPath(): string {
+  return path.join(registryDir(), "agents.jsonl.lock");
 }
 
 /**

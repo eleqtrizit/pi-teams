@@ -129,7 +129,7 @@ The decision logic lives in `src/utils/hold.ts` (`shouldHoldWhileTeamActive`, `c
 - **`.pi/tool.log`** (per workspace): no longer written here. The `edit`/`write` audit trail moved to the separate `pi-journal` extension.
 - **Agent records** under `~/.pi/agent/pi-teams/agents/<id>.json`: one JSON file per registered agent. Written by `src/utils/registry.ts` and read by every tool that needs to resolve or list agents. Set `PI_TEAMS_REGISTRY_DIR` to relocate the registry root (the test suite uses it for isolation).
 - **Sockets** under `~/.pi/agent/pi-teams/s/`: one `<id>.sock` per listening agent, mode 0600 inside a 0700 directory. Written by `src/utils/transport.ts`.
-- **Trim on load:** `readAgentRecords` loads the records, checks that each record's `cwd` still exists, removes every dangling record file and its stale socket (marking the agent removed in `agents.jsonl`), then reloads. Agents whose working directory was deleted disappear from every tool automatically.
+- **Trim on load:** `readAgentRecords` loads the records, checks that each record's `cwd` still exists, removes every dangling record file, its stale socket, and its `agents.jsonl` history entry, then reloads. Agents whose working directory was deleted disappear from every tool automatically.
 
 ## Model Resolution
 
@@ -167,6 +167,9 @@ pi-teams/
 │       ├── messaging.ts            # send and broadcast through the transport
 │       ├── paths.ts                  # registry and socket path builders and sanitizeName
 │       ├── registry.ts             # agent record I/O, id generation, prune/collapse, liveness
+│       ├── filelock.ts              # cross-process lock that serializes agents.jsonl writes
+│       ├── pid.ts                   # shared isPidAlive liveness check
+│       ├── history.ts               # agents.jsonl lastSeenAt side table: upsert, remove, and the locked sync pass
 │       ├── agentFormat.ts          # list_agents line formatting and sort order
 │       ├── modelSearch.ts            # model resolution ladder and fuzzy top matches
 │       ├── spawn.ts                  # buildWorkerCommand, spawnWorkerProcess, lead spawn helpers
@@ -175,6 +178,7 @@ pi-teams/
 │       ├── visibility.ts           # lead/worker visibility and broadcast rules
 │       └── flavoredModels.ts         # orchestrator/worker/swarm lists, legacy migration
 ├── docs/                             # terminal research and release notes (working notes under docs/notes)
+├── test/                             # child suites spawned by the filelock contention test
 ├── AGENTS.md                         # this file
 ├── README.md                         # user-facing documentation
 └── package.json                      # pi-package manifest: extension entry points
@@ -186,10 +190,10 @@ pi-teams/
 - **Registration:** at `session_start` the extension writes an `AgentRecord` to the per-user registry at `~/.pi/agent/pi-teams/` (`src/utils/registry.ts`) and starts a socket listener through `src/utils/transport.ts`. The registry lives under the home directory, so records, sockets, run state, and the `agents.jsonl` history survive a reboot; `readAgentRecords` trims records whose `cwd` no longer exists on every load. One-shot `pi -p` sessions that were not spawned by pi-teams skip registration when they have no preassigned id and no UI.
 - **Spawn:** the lead's spawn tools generate a fresh agent id, build a launch command (`src/utils/spawn.ts`), and launch a child pi process through the adapter. The child loads its own configured extensions; `PI_AGENT_ID`, `PI_LEAD_ID`, `PI_AGENT_NAME`, and `PI_AGENT_TYPE` drive its identity.
 - **Delivery:** `src/utils/messaging.ts` sends to a recipient's socket and waits for the acknowledgement. The extension injects the received body as a user message. `spawn_teammate` and `spawn_readonly_worker` wait up to 30 seconds for the worker's socket before they return.
-- **Concurrency:** the transport needs no lock because each message is one connection. Registry writes are atomic (temp file + rename), so two sessions never clobber the same record.
+- **Concurrency:** the transport needs no lock because each message is one connection. Registry writes are atomic (temp file + rename), so two sessions never clobber the same record. `agents.jsonl` is shared by every session, so its read-modify-write cycles run under a cross-process lock (`src/utils/filelock.ts`: scratch-file plus atomic `link` acquisition that always carries the holder pid, age-based stale steal via atomic rename, ownership-checked release) at `agents.jsonl.lock`. One list pass runs a single locked `syncAgentHistory` transaction (`src/utils/history.ts`): it stamps online records (upserting missing entries so losses self-heal), drops pruned records' entries while preserving each directory's newest `lastSeenAt`, collapses cwds whose records are all offline (socket-probed) to one entry keyed to the newest surviving record, and drops entries whose cwd directory is gone. Entries started after the probed snapshot are never touched: they belong to sessions that registered while the probes ran, and their presence blocks compaction of the whole cwd. The shutdown path (`removeAgent`) deletes a history entry only when no surviving record shares its `(cwd, startedAt)` key.
 - **Removal:** every shutdown path (`close_myself`, `close_worker`, `close_all_workers`) runs `removeAgent` (`src/utils/teams.ts`): registry record removal, socket cleanup, pane or window close through the adapter, then SIGKILL by pid.
 - **Run hold:** `src/utils/hold.ts` decides when a non-interactive lead's run stays parked, using registry worker counts and pid checks for liveness.
-- **State on disk:** agent state lives under `~/.pi/agent/pi-teams/`: `agents/<id>.json` records, `s/<id>.sock` sockets, `state/<id>.json` run state, and the `agents.jsonl` history. The directory has mode 0700 and files have mode 0600, so only your user can read or message your agents.
+- **State on disk:** agent state lives under `~/.pi/agent/pi-teams/`: `agents/<id>.json` records, `s/<id>.sock` sockets, `state/<id>.json` run state, the `agents.jsonl` history, and its `agents.jsonl.lock` lock file. The directory has mode 0700 and files have mode 0600, so only your user can read or message your agents.
 
 ## Peer leads
 

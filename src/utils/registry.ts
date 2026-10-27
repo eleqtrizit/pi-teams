@@ -4,9 +4,10 @@ import { randomBytes } from "node:crypto";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import { AgentEntry } from "./agentFormat";
 import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
-import { markAgentHistoryRemoved, touchLastSeen, upsertAgentHistory } from "./history";
+import { removeFromAgentHistory, syncAgentHistory, upsertAgentHistory } from "./history";
 import { isAgentBusy } from "./runstate";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
+import { isPidAlive } from "./pid";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const ID_LENGTH = 8;
@@ -138,6 +139,30 @@ function isValidAgentRecord(value: unknown): value is AgentRecord {
 }
 
 /**
+ * Read one agent record file by id, with no trim pass and no registry-wide
+ * read.
+ *
+ * @param id - Agent ID (file name without the .json suffix)
+ * @returns The valid record, or undefined when the file is missing or malformed
+ */
+function readAgentRecordFile(id: string): AgentRecord | undefined {
+  if (!AGENT_ID_PATTERN.test(id)) return undefined;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(agentRecordPath(id), "utf8");
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  return isValidAgentRecord(parsed) && parsed.id === id ? parsed : undefined;
+}
+
+/**
  * Read all valid agent record files from the registry directory.
  *
  * Pure disk read: no validation beyond record shape, no trimming.
@@ -148,30 +173,11 @@ function readValidAgentRecords(): AgentRecord[] {
   const dir = agentRecordsDir();
   if (!fs.existsSync(dir)) return [];
 
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
   const records: AgentRecord[] = [];
-
-  for (const file of files) {
-    const id = file.slice(0, -5); // remove ".json"
-    if (!AGENT_ID_PATTERN.test(id)) continue;
-
-    const fullPath = path.join(dir, file);
-    let raw: string;
-    try {
-      raw = fs.readFileSync(fullPath, "utf8");
-    } catch {
-      continue;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-
-    if (!isValidAgentRecord(parsed) || parsed.id !== id) continue;
-    records.push(parsed);
+  for (const file of fs.readdirSync(dir)) {
+    if (!file.endsWith(".json")) continue;
+    const rec = readAgentRecordFile(file.slice(0, -5)); // remove ".json"
+    if (rec) records.push(rec);
   }
 
   return records;
@@ -208,14 +214,15 @@ export function readAgentRecord(id: string): AgentRecord | undefined {
 }
 
 /**
- * Remove an agent record by ID.
+ * Remove an agent record file by ID, leaving the history untouched.
  *
- * Ignores ENOENT (the file is already gone).
+ * Ignores ENOENT (the file is already gone). Used by the list pass, which
+ * removes pruned records' history entries in one locked transaction through
+ * `syncAgentHistory` so their recency is preserved.
  *
  * @param id - Agent ID
  */
-export function removeAgentRecord(id: string): void {
-  markAgentHistoryRemoved(id);
+export function removeAgentRecordFile(id: string): void {
   const file = agentRecordPath(id);
   try {
     fs.rmSync(file, { force: true });
@@ -226,24 +233,32 @@ export function removeAgentRecord(id: string): void {
 }
 
 /**
- * Check whether a process with the given pid exists.
+ * Remove an agent record by ID, along with its history entry.
  *
- * Signal 0 performs no signal delivery; it only checks existence and
- * permission. An EPERM error means the process exists but belongs to
- * another user, which still proves it is alive.
+ * Reads the record first so its `(cwd, startedAt)` key is known. The
+ * history entry is deleted only when no other surviving record shares the
+ * key: parallel spawns in one cwd can land in the same millisecond, and
+ * deleting the shared entry would strip a live sibling of its recency. A
+ * missing or malformed record leaves nothing to remove from the history.
  *
- * @param pid - Process id to check
- * @returns True when the process exists
+ * @param id - Agent ID
  */
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    return err.code === "EPERM";
-  }
+export function removeAgentRecord(id: string): void {
+  const rec = readAgentRecordFile(id);
+  removeAgentRecordFile(id);
+  if (!rec) return;
+  const siblingSharesKey = readValidAgentRecords().some(
+    (other) => other.cwd === rec.cwd && other.startedAt === rec.startedAt,
+  );
+  if (!siblingSharesKey) removeFromAgentHistory(rec.cwd, rec.startedAt);
 }
+
+/**
+ * Re-exported from `pid.ts` so existing importers hold.ts and
+ * extensions/index.ts keep working; the implementation is shared with the
+ * filelock's stale-holder check.
+ */
+export { isPidAlive };
 
 /**
  * Check whether a registered agent is online.
@@ -364,10 +379,13 @@ export function removeStaleSocket(id: string): void {
 /**
  * Prune the registry on disk and list the surviving agents.
  *
- * Computes each record's status, stamps `lastSeenAt` in the history for every
- * online record, applies {@link pruneRegistry}, deletes every removed record
- * along with its stale socket file, and returns the survivors paired with
- * their statuses, in registry read order.
+ * Reads a record snapshot, computes each record's status (pid plus socket
+ * probe), applies {@link pruneRegistry}, runs one locked history transaction
+ * (`syncAgentHistory`: stamp online records, drop pruned records' entries
+ * while preserving directory recency, compact fully offline cwds, drop
+ * dead-directory orphans), deletes every removed record file along with its
+ * stale socket, and returns the survivors paired with their statuses, in
+ * registry read order.
  *
  * @param statusOf - Status function; overridden in tests for determinism
  * @returns One `{record, status}` entry per surviving agent
@@ -375,6 +393,7 @@ export function removeStaleSocket(id: string): void {
 export async function pruneAndList(
   statusOf: (rec: AgentRecord) => Promise<AgentStatus> = (rec) => agentStatus(rec),
 ): Promise<AgentEntry[]> {
+  const snapshotTime = Date.now();
   const records = readAgentRecords();
   const statuses = new Map<string, AgentStatus>();
   await Promise.all(
@@ -383,17 +402,24 @@ export async function pruneAndList(
     }),
   );
 
-  // Agents found online are online right now: record that, so an agent that
-  // later goes offline keeps a meaningful "last online" time.
-  touchLastSeen(
-    records
-      .filter((rec) => statuses.get(rec.id) !== AgentStatus.Offline)
-      .map((rec) => rec.id),
-  );
-
   const { keep, remove } = pruneRegistry(records, statuses);
+  const removedIds = new Set(remove);
+
+  // One locked history transaction per list pass: stamp online records
+  // (self-healing missing entries), drop pruned records' entries while
+  // preserving each directory's newest lastSeenAt, compact fully offline
+  // cwds to a single entry, and drop entries whose cwd directory is gone.
+  // Entries started after snapshotTime are left alone: they belong to
+  // sessions that registered while the probes were awaited.
+  syncAgentHistory({
+    snapshotTime,
+    onlineRecords: records.filter((rec) => statuses.get(rec.id) !== AgentStatus.Offline),
+    removedRecords: records.filter((rec) => removedIds.has(rec.id)),
+    keepRecords: keep,
+  });
+
   for (const id of remove) {
-    removeAgentRecord(id);
+    removeAgentRecordFile(id);
     removeStaleSocket(id);
   }
 

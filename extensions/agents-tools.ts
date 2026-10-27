@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgentEntry } from "../src/utils/agentFormat";
 import { formatAgentLine, sortAgentLines } from "../src/utils/agentFormat";
-import { readAgentHistory } from "../src/utils/history";
+import { historyKey, readAgentHistory } from "../src/utils/history";
 import { AgentStatus, type AgentRecord } from "../src/utils/models";
 import { generateAgentId, pruneAndList } from "../src/utils/registry";
 import {
@@ -34,9 +34,9 @@ export interface AgentToolDeps {
   /** Terminal adapter used to launch spawned leads. Null when none is detected. */
   terminal?: TerminalAdapter | null;
   /**
-   * Returns `lastSeenAt` epoch milliseconds per agent id, used to order
-   * offline peers by how recently they were last online. Defaults to reading
-   * agents.jsonl; overridden in tests.
+   * Returns `lastSeenAt` epoch milliseconds per `historyKey(cwd, startedAt)`,
+   * used to order offline peers by how recently they were last online.
+   * Defaults to reading agents.jsonl; overridden in tests.
    */
   getLastSeenAt?: () => ReadonlyMap<string, number>;
 }
@@ -126,14 +126,18 @@ export function registerAgentTools(
       const lastSeenAt =
         deps.getLastSeenAt?.() ??
         new Map(
-          readAgentHistory().map((entry) => [entry.id, entry.lastSeenAt]),
+          readAgentHistory().map((entry) => [
+            historyKey(entry.cwd, entry.startedAt),
+            entry.lastSeenAt,
+          ]),
         );
       const lastOnlineAt = new Map<string, number>();
       for (const entry of visibleEntries) {
+        const rec = entry.record;
         lastOnlineAt.set(
-          entry.record.id,
+          rec.id,
           entry.status === AgentStatus.Offline
-            ? (lastSeenAt.get(entry.record.id) ?? entry.record.startedAt)
+            ? (lastSeenAt.get(historyKey(rec.cwd, rec.startedAt)) ?? rec.startedAt)
             : now,
         );
       }
