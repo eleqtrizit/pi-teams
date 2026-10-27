@@ -12,7 +12,6 @@ import {
   agentStatus,
   ensureRegistryDir,
   generateAgentId,
-  isPidAlive,
   pruneAndList,
   pruneRegistry,
   readAgentRecord,
@@ -21,6 +20,7 @@ import {
   updateAgentRecord,
   writeAgentRecord,
 } from "./registry";
+import { isPidAlive } from "./pid";
 import { agentHistoryPath, agentRecordPath, agentSocketPath, registryDir } from "./paths";
 
 const posixOnly = process.platform === "win32" ? it.skip : it;
@@ -144,6 +144,16 @@ describe("registry", () => {
       const dir = path.join(registryDir(), "agents");
       const files = fs.readdirSync(dir);
       expect(files.every((f) => !f.startsWith("."))).toBe(true);
+    });
+
+    it("records the registration in the history with a fresh lastSeenAt stamp", () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(123_456);
+      try {
+        writeAgentRecord(lead("ab12cd34", dirA, 1000));
+      } finally {
+        clock.mockRestore();
+      }
+      expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 1000, lastSeenAt: 123_456 }]);
     });
   });
 
@@ -291,6 +301,40 @@ describe("registry", () => {
       expect(entries.every((e) => e.cwd === dirA)).toBe(true);
     });
 
+    it("trims several stale records with one locked history mutation", () => {
+      const stale: AgentRecord[] = [];
+      for (const [id, name, startedAt] of [
+        ["ab000001", "gone-1", 100],
+        ["cd000002", "gone-2", 200],
+        ["ef000003", "gone-3", 300],
+      ] as const) {
+        const gone = path.join(tmpDir, name);
+        fs.mkdirSync(gone);
+        stale.push(lead(id, gone, startedAt));
+      }
+      const alive = lead("99aaa999", dirA, 400);
+      for (const rec of [...stale, alive]) writeAgentRecord(rec);
+      for (const rec of stale) fs.rmSync(rec.cwd, { recursive: true });
+
+      // Each history mutation is one atomic rename onto agents.jsonl.
+      const renames = vi.spyOn(fs, "renameSync");
+      const history = agentHistoryPath();
+      let historyRenames: Array<Parameters<typeof fs.renameSync>> = [];
+      try {
+        expect(readAgentRecords()).toEqual([alive]);
+        historyRenames = renames.mock.calls.filter((call) => call[1] === history);
+      } finally {
+        renames.mockRestore();
+      }
+      expect(historyRenames).toHaveLength(1);
+      for (const rec of stale) {
+        expect(fs.existsSync(agentRecordPath(rec.id))).toBe(false);
+      }
+      const entries = readAgentHistory();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].cwd).toBe(dirA);
+    });
+
     it("returns the first load unchanged when every working directory exists", () => {
       const rec: AgentRecord = lead("ab12cd34", dirA, 100);
       writeAgentRecord(rec);
@@ -381,6 +425,28 @@ describe("registry", () => {
       writeAgentRecord(rec);
       updateAgentRecord("ab12cd34", { id: "zz99zz99", paneId: "pane-1" } as any);
       expect(readAgentRecord("ab12cd34")?.id).toBe("ab12cd34");
+    });
+
+    it("does not refresh lastSeenAt in the history when patching metadata", () => {
+      writeAgentRecord(lead("ab12cd34", dirA, 1000));
+      const stamped = readAgentHistory().find(
+        (e) => historyKey(e.cwd, e.startedAt) === historyKey(dirA, 1000),
+      );
+      expect(stamped).toBeDefined();
+
+      // If the patch stamped the record, the mocked clock would show it.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(9_999_999);
+      try {
+        updateAgentRecord("ab12cd34", { paneId: "pane-1", windowId: "win-1" });
+      } finally {
+        clock.mockRestore();
+      }
+
+      expect(readAgentRecord("ab12cd34")?.paneId).toBe("pane-1");
+      const after = readAgentHistory().find(
+        (e) => historyKey(e.cwd, e.startedAt) === historyKey(dirA, 1000),
+      );
+      expect(after?.lastSeenAt).toBe(stamped?.lastSeenAt);
     });
   });
 
@@ -492,6 +558,28 @@ describe("registry", () => {
       const orphan: AgentRecord = { id: "bb000002", kind: AgentKind.Teammate, cwd: dirA, pid: 1, startedAt: 1 };
       writeAgentRecord(orphan);
       expect(adoptOrphanedWorkers(lead("ad000001", dirA, 1))).toEqual([]);
+    });
+
+    it("keeps the adopted worker's registration stamp instead of refreshing lastSeenAt", () => {
+      writeAgentRecord(lead("ad000001", dirA, 100));
+      writeAgentRecord({ ...worker("bb000002", 1), cwd: dirA });
+      const before = readAgentHistory().find(
+        (e) => historyKey(e.cwd, e.startedAt) === historyKey(dirA, 1),
+      );
+      expect(before).toBeDefined();
+
+      // Adopting an offline worker must not mark it as recently seen.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(9_999_999);
+      try {
+        expect(adoptOrphanedWorkers(lead("ad000001", dirA, 100))).toEqual(["bb000002"]);
+      } finally {
+        clock.mockRestore();
+      }
+
+      const after = readAgentHistory().find(
+        (e) => historyKey(e.cwd, e.startedAt) === historyKey(dirA, 1),
+      );
+      expect(after?.lastSeenAt).toBe(before?.lastSeenAt);
     });
   });
 

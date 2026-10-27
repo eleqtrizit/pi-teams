@@ -94,9 +94,11 @@ export function agentIdStatePath(id: string): string {
  *
  * Holds one JSON line per registered record, keyed by `(cwd, startedAt)`.
  * An entry exists only while its record file does: registration creates it,
- * list passes refresh it, and record removal deletes it. All mutations run
- * under the cross-process lock at {@link agentHistoryLockPath}, and a cwd
- * whose records are all offline is compacted to a single entry.
+ * list passes refresh it, the list pass drops entries whose record no
+ * longer exists in the registry, and record removal deletes it. All
+ * mutations run under the cross-process lock at
+ * {@link agentHistoryLockPath}, and a cwd whose records are all offline is
+ * compacted to a single entry.
  *
  * @returns Absolute path of the agents.jsonl history file
  */

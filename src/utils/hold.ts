@@ -1,5 +1,5 @@
 import { AgentRecord, AgentKind } from "./models";
-import { isPidAlive } from "./registry";
+import { isPidAlive } from "./pid";
 
 /** Interval between worker-message queue checks while the run is on hold. */
 export const RUN_HOLD_MESSAGE_POLL_MS = 1000;

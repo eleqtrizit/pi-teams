@@ -48,8 +48,8 @@ import {
   readAgentRecords,
   updateAgentRecord,
   adoptOrphanedWorkers,
-  isPidAlive,
 } from "../src/utils/registry";
+import { isPidAlive } from "../src/utils/pid";
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 

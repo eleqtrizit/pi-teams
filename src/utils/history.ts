@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { AgentRecord } from "./models";
@@ -12,9 +13,11 @@ import { withLockFile } from "./filelock";
  * Every mutation runs under the cross-process lock file next to
  * `agents.jsonl`, so two pi sessions can never lose each other's writes.
  * An entry exists only while its record file exists: registration creates
- * it, `list_agents` refreshes `lastSeenAt` for online records, and record
- * removal deletes it. Cwds whose records are all offline are compacted to a
- * single entry by the list pass. `model` is kept for future
+ * it, `list_agents` refreshes `lastSeenAt` for online records and
+ * self-heals missing entries for surviving records, the list pass drops
+ * entries whose record no longer exists in the registry, and record
+ * removal deletes it. Cwds whose records are all offline are compacted to
+ * a single entry by the list pass. `model` is kept for future
  * load-distribution use.
  */
 export interface AgentHistoryEntry {
@@ -28,9 +31,9 @@ export interface AgentHistoryEntry {
 /**
  * Stable join key shared by the history readers and writers.
  *
- * The `\n` separator cannot appear in an `cwd` value (paths never contain
- * newlines), and `startedAt` serializes without one, so `(cwd, startedAt)`
- * pairs never collide on the concatenated key.
+ * Paths may contain `\n`, but a cwd's final numeric component (`startedAt`,
+ * serialized by JSON) cannot, so `(cwd, startedAt)` pairs never collide on
+ * the concatenated key.
  */
 export function historyKey(cwd: string, startedAt: number): string {
   return `${cwd}\n${startedAt}`;
@@ -83,15 +86,20 @@ function readHistoryEntries(): AgentHistoryEntry[] {
  *
  * @param entries - Deduplicated entries to persist
  */
+export function compareHistoryEntries(a: AgentHistoryEntry, b: AgentHistoryEntry): number {
+  return a.cwd.localeCompare(b.cwd) || a.startedAt - b.startedAt;
+}
+
 function writeHistoryEntries(entries: AgentHistoryEntry[]): void {
   ensurePrivateDir(registryDir());
-  const sorted = [...entries].sort(
-    (a, b) => a.cwd.localeCompare(b.cwd) || a.startedAt - b.startedAt,
-  );
+  const sorted = [...entries].sort(compareHistoryEntries);
   const body = sorted.map((entry) => JSON.stringify(entry)).join("\n") + (sorted.length ? "\n" : "");
 
   const file = agentHistoryPath();
-  const tmp = path.join(path.dirname(file), `.tmp-agents-${process.pid}-${Date.now()}.jsonl`);
+  const tmp = path.join(
+    path.dirname(file),
+    `.tmp-agents-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.jsonl`,
+  );
   fs.writeFileSync(tmp, body, { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
@@ -168,6 +176,26 @@ export function removeFromAgentHistory(cwd: string, startedAt: number): void {
   });
 }
 
+/**
+ * Delete the history entries of several records in one locked pass.
+ *
+ * Unlike {@link removeFromAgentHistory}, which the shutdown path calls per
+ * record, this is the batch form for the registry's trim pass: N stale
+ * records cost one history transaction, not N. Callers must hold the
+ * surviving records' keys themselves: the trim pass removes only records
+ * whose cwd is gone from disk, so no surviving record shares a removed key.
+ *
+ * @param records - Key fields of the records whose entries to delete
+ */
+export function removeHistoryEntries(records: ReadonlyArray<HistoryRecordKey>): void {
+  const keys = new Set(records.map((rec) => historyKey(rec.cwd, rec.startedAt)));
+  if (keys.size === 0) return;
+  mutateEntries((entries) => {
+    const kept = entries.filter((e) => !keys.has(historyKey(e.cwd, e.startedAt)));
+    return kept.length !== entries.length ? kept : null;
+  });
+}
+
 /** One record's history identity, the three fields the side table tracks. */
 export type HistoryRecordKey = Pick<AgentRecord, "cwd" | "startedAt" | "model">;
 
@@ -182,8 +210,12 @@ export type HistoryRecordKey = Pick<AgentRecord, "cwd" | "startedAt" | "model">;
 export interface HistorySyncInput {
   /** Records the probe found online: their entries get `lastSeenAt = now`. */
   onlineRecords: ReadonlyArray<HistoryRecordKey>;
-  /** Records the prune removed: their entries are dropped. */
-  removedRecords: ReadonlyArray<HistoryRecordKey>;
+  /**
+   * Every record in the probed snapshot: online, kept, and removed. An
+   * entry that is not concurrent and matches none of them has no record
+   * file anymore, so Step 3 drops it instead of orphaning it forever.
+   */
+  allRecords: ReadonlyArray<HistoryRecordKey>;
   /** Records that survive the prune: they key the compaction keepers. */
   keepRecords: ReadonlyArray<HistoryRecordKey>;
   /** Epoch ms at which the snapshot was read. See the guard notes below. */
@@ -203,18 +235,76 @@ function groupByCwd(
   return byCwd;
 }
 
-/** The newest record per cwd, to key each compaction keeper. */
-function newestRecordByCwd(
-  records: ReadonlyArray<HistoryRecordKey>,
-): Map<string, HistoryRecordKey> {
-  const newest = new Map<string, HistoryRecordKey>();
-  for (const rec of records) {
-    const current = newest.get(rec.cwd);
+/** Stamp online entries and self-heal missing online and surviving keys. */
+export function stampOnline(
+  entries: ReadonlyArray<AgentHistoryEntry>,
+  onlineRecords: ReadonlyArray<HistoryRecordKey>,
+  keepRecords: ReadonlyArray<HistoryRecordKey>,
+  now: number,
+): AgentHistoryEntry[] {
+  const keyOf = (entry: { cwd: string; startedAt: number }): string =>
+    historyKey(entry.cwd, entry.startedAt);
+  const onlineKeys = new Set(onlineRecords.map(keyOf));
+  const stamped = entries.map((entry) =>
+    onlineKeys.has(keyOf(entry)) ? { ...entry, lastSeenAt: now } : entry,
+  );
+  const stampedKeys = new Set(stamped.map(keyOf));
+
+  for (const rec of onlineRecords) {
+    const key = keyOf(rec);
+    if (stampedKeys.has(key)) continue;
+    stamped.push({
+      cwd: rec.cwd,
+      startedAt: rec.startedAt,
+      ...(rec.model !== undefined && { model: rec.model }),
+      lastSeenAt: now,
+    });
+    stampedKeys.add(key);
+  }
+  for (const rec of keepRecords) {
+    const key = keyOf(rec);
+    if (stampedKeys.has(key)) continue;
+    stamped.push({
+      cwd: rec.cwd,
+      startedAt: rec.startedAt,
+      ...(rec.model !== undefined && { model: rec.model }),
+      lastSeenAt: rec.startedAt,
+    });
+    stampedKeys.add(key);
+  }
+  return stamped;
+}
+
+/** Compute compacted entries for fully offline cwds without concurrent records. */
+export function computeHistoryKeepers(
+  entries: ReadonlyArray<AgentHistoryEntry>,
+  onlineRecords: ReadonlyArray<HistoryRecordKey>,
+  keepRecords: ReadonlyArray<HistoryRecordKey>,
+  isConcurrent: (entry: AgentHistoryEntry) => boolean,
+): Map<string, AgentHistoryEntry> {
+  const onlineCwds = new Set(onlineRecords.map((rec) => rec.cwd));
+  const newestKeepByCwd = new Map<string, HistoryRecordKey>();
+  for (const rec of keepRecords) {
+    const current = newestKeepByCwd.get(rec.cwd);
     if (current === undefined || rec.startedAt > current.startedAt) {
-      newest.set(rec.cwd, rec);
+      newestKeepByCwd.set(rec.cwd, rec);
     }
   }
-  return newest;
+
+  const keepers = new Map<string, AgentHistoryEntry>();
+  for (const [cwd, group] of groupByCwd(entries)) {
+    if (onlineCwds.has(cwd) || group.length < 2 || group.some(isConcurrent)) continue;
+    const record = newestKeepByCwd.get(cwd);
+    if (record === undefined) continue;
+    const lastSeenAt = Math.max(...group.map((entry) => entry.lastSeenAt));
+    keepers.set(cwd, {
+      cwd,
+      startedAt: record.startedAt,
+      ...(record.model !== undefined && { model: record.model }),
+      lastSeenAt,
+    });
+  }
+  return keepers;
 }
 
 /**
@@ -224,88 +314,69 @@ function newestRecordByCwd(
  *
  * 1. Stamp and self-heal online keys. A missing entry for an online record
  *    is created (upserted) rather than skipped, so an entry lost anywhere
- *    (a stolen write, a past race) is restored on the next list pass.
+ *    (a stolen write, a past race) is restored on the next list pass. A
+ *    missing entry for a surviving offline record is created with
+ *    `lastSeenAt = startedAt` (a session is never seen before it starts),
+ *    which also guarantees Step 3 meets an entry for every keeper key.
  * 2. Compute compaction keepers for each cwd that has no online record and
  *    at least two entries. The keeper is keyed to the cwd's newest surviving
  *    record and carries the group's newest `lastSeenAt`, so recency that
  *    lives on a soon-to-be-dropped entry is preserved (an offline lead
  *    pruned next to its newer sibling must not drag the directory's recency
  *    down with it).
- * 3. Rebuild the entry list: orphaned entries for cwd directories that no
- *    longer exist on disk are dropped, pruned-record entries are dropped,
- *    and every compacted cwd collapses to its single keeper.
+ * 3. Rebuild the entry list. Entries for cwd directories that no longer
+ *    exist on disk are dropped, and non-concurrent entries whose key
+ *    matches no record in the snapshot are dropped: their record file is
+ *    gone, and keeping them would orphan them forever, because a cwd with
+ *    an online record never compacts. Every compacted cwd collapses to its
+ *    single keeper. A pruned record's entry survives the pruning pass (its
+ *    key is in `allRecords`) and either folds into the cwd's keeper through
+ *    compaction or drops on the next pass as an orphan.
  *
  * Two guards keep the pass safe against records registered while the
  * socket probes were awaited (the snapshot is stale for them):
  *
- * - Entries with `startedAt > snapshotTime` are never modified, dropped, or
- *   counted for compaction. A registration during the probe always starts
- *   after the snapshot read, so this is exactly the concurrent case.
- * - A cwd containing one of those entry never compacts at all, even when
+ * - Entries with `lastSeenAt > snapshotTime` or `startedAt > snapshotTime`
+ *   are never dropped or counted for compaction. `upsertAgentHistory`
+ *   stamps `lastSeenAt` with the write time, so an entry written while the
+ *   probes ran always carries a `lastSeenAt` after the snapshot read. The
+ *   `startedAt` clause remains as a fallback: `startedAt` is stamped at
+ *   session start, before the record and its history entry are written, so
+ *   a write landing in the same millisecond as the snapshot still reads as
+ *   concurrent.
+ * - A cwd containing one of those entries never compacts at all, even when
  *   every known record in it is offline.
  */
 export function syncAgentHistory(input: HistorySyncInput): void {
-  const { onlineRecords, removedRecords, keepRecords, snapshotTime } = input;
   mutateEntries((entries) => {
-    const now = Date.now();
-    const keyOf = (e: { cwd: string; startedAt: number }) => historyKey(e.cwd, e.startedAt);
-    const onlineKeys = new Set(onlineRecords.map(keyOf));
-    const removedKeys = new Set(removedRecords.map(keyOf));
-    const keepKeys = new Set(keepRecords.map(keyOf));
-
-    // 1. Stamp online entries; upsert the missing ones.
-    let stamped = entries.map((e) => (onlineKeys.has(keyOf(e)) ? { ...e, lastSeenAt: now } : e));
-    for (const rec of onlineRecords) {
-      if (stamped.some((e) => keyOf(e) === keyOf(rec))) continue;
-      stamped.push({
-        cwd: rec.cwd,
-        startedAt: rec.startedAt,
-        ...(rec.model !== undefined && { model: rec.model }),
-        lastSeenAt: now,
-      });
-    }
-
-    // 2. Compaction keepers for fully offline, fully snapshotted cwds.
-    const onlineCwds = new Set(onlineRecords.map((rec) => rec.cwd));
-    const newestKeepByCwd = newestRecordByCwd(keepRecords);
-    const keepers = new Map<string, AgentHistoryEntry>();
-    for (const [cwd, group] of groupByCwd(stamped)) {
-      if (onlineCwds.has(cwd) || group.length < 2) continue;
-      if (group.some((e) => e.startedAt > snapshotTime)) continue; // concurrent registration
-      const keeperKey = newestKeepByCwd.get(cwd);
-      if (keeperKey === undefined) continue; // nothing survives to look the entry up
-      let lastSeenAt = group[0].lastSeenAt;
-      for (const e of group) if (e.lastSeenAt > lastSeenAt) lastSeenAt = e.lastSeenAt;
-      keepers.set(cwd, {
-        cwd,
-        startedAt: keeperKey.startedAt,
-        ...(keeperKey.model !== undefined && { model: keeperKey.model }),
-        lastSeenAt,
-      });
-    }
-
-    // 3. Rebuild: drop dead-directory orphans and pruned entries, collapse
-    //    compacted cwds to their keeper.
+    const keyOf = (entry: { cwd: string; startedAt: number }): string =>
+      historyKey(entry.cwd, entry.startedAt);
+    const concurrent = (entry: AgentHistoryEntry): boolean =>
+      entry.lastSeenAt > input.snapshotTime || entry.startedAt > input.snapshotTime;
+    const stamped = stampOnline(entries, input.onlineRecords, input.keepRecords, Date.now());
+    const keepers = computeHistoryKeepers(
+      stamped,
+      input.onlineRecords,
+      input.keepRecords,
+      concurrent,
+    );
+    const allKeys = new Set(input.allRecords.map(keyOf));
     const emitted = new Set<string>();
     const next: AgentHistoryEntry[] = [];
-    for (const e of stamped) {
-      if (!fs.existsSync(e.cwd)) continue; // orphan: its record was trimmed with its directory
-      if (e.startedAt <= snapshotTime && removedKeys.has(keyOf(e)) && !keepKeys.has(keyOf(e))) {
-        continue; // pruned record's entry, unless a surviving sibling shares it
-      }
-      const keeper = keepers.get(e.cwd);
-      if (keeper !== undefined) {
-        if (emitted.has(e.cwd)) continue;
-        emitted.add(e.cwd);
+
+    for (const entry of stamped) {
+      if (!fs.existsSync(entry.cwd)) continue;
+      if (!concurrent(entry) && !allKeys.has(keyOf(entry))) continue;
+      const keeper = keepers.get(entry.cwd);
+      if (keeper === undefined) next.push(entry);
+      else if (!emitted.has(entry.cwd)) {
+        emitted.add(entry.cwd);
         next.push(keeper);
-      } else {
-        next.push(e);
       }
     }
-    const canon = (list: ReadonlyArray<AgentHistoryEntry>): string =>
-      JSON.stringify(
-        [...list].sort((a, b) => a.cwd.localeCompare(b.cwd) || a.startedAt - b.startedAt),
-      );
-    return canon(next) === canon(entries) ? null : next;
+
+    next.sort(compareHistoryEntries);
+    const current = [...entries].sort(compareHistoryEntries);
+    return JSON.stringify(next) === JSON.stringify(current) ? null : next;
   });
 }

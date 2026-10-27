@@ -17,7 +17,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Backdate a lock file so it counts as past the steal timeout. */
+/** Backdate a lock file to test whether elapsed time alone affects ownership. */
 function ageLock(lockPath: string, ageMs: number): void {
   const past = new Date(Date.now() - ageMs);
   fs.utimesSync(lockPath, past, past);
@@ -56,9 +56,17 @@ describe("withLockFile", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("steals a fresh lock only after the steal timeout, using the file's age", () => {
-    // Held by a live pid (ourselves), but backdated past the timeout.
+  it("does not steal an aged lock while its holder process is alive", () => {
     fs.writeFileSync(lockPath, String(process.pid), { mode: 0o600 });
+    ageLock(lockPath, 3_000);
+
+    expect(() => withLockFile(lockPath, () => "unexpected")).toThrow();
+  });
+
+  it("steals an old unreadable lock after the timeout", () => {
+    // A corrupt pid file is untrusted content, not a live holder: the
+    // timeout steals it so waiters always make progress.
+    fs.writeFileSync(lockPath, "not-a-pid", { mode: 0o600 });
     ageLock(lockPath, 3_000);
 
     const result = withLockFile(lockPath, () => "ok");
@@ -66,13 +74,10 @@ describe("withLockFile", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it("steals an old unreadable lock", () => {
+  it("does not steal a fresh unreadable lock before the timeout", () => {
     fs.writeFileSync(lockPath, "not-a-pid", { mode: 0o600 });
-    ageLock(lockPath, 3_000);
 
-    const result = withLockFile(lockPath, () => "ok");
-    expect(result).toBe("ok");
-    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(() => withLockFile(lockPath, () => "unexpected")).toThrow();
   });
 
   it("does not delete a lock that was stolen from us mid-critical-section", () => {
@@ -138,6 +143,68 @@ describe("withLockFile", () => {
         String(children * iterations),
       );
       expect(fs.existsSync(childLock)).toBe(false);
+    },
+    120_000,
+  );
+
+  // Deterministic stale-steal takeover. A true interleaving (steal landing
+  // between one contender's inspection and rename) is not schedulable from
+  // the outside, so this test fixes the ordering instead: a dead-pid lock is
+  // pre-planted, then a racer child and the parent contend for it. Whoever
+  // arrives first steals the dead lock; the other waits on the now-live
+  // holder. stealStaleLock's inode fencing guarantees exactly one holder at
+  // a time either way, which the exact counter proves.
+  contentionTest(
+    "steals a pre-planted dead-pid lock while a racer contends",
+    async () => {
+      const iterations = 50;
+      const counterFile = path.join(tmpDir, "counter");
+      const takeoverLock = path.join(tmpDir, "takeover.lock");
+      fs.writeFileSync(counterFile, "");
+
+      // Spawn and fully reap a child, so its pid is provably dead.
+      const dead = spawn(process.execPath, ["-e", "process.exit(0)"]);
+      await new Promise<void>((resolve) => dead.once("exit", () => resolve()));
+      fs.writeFileSync(takeoverLock, String(dead.pid), { mode: 0o600 });
+
+      const vitestBin = path.join(process.cwd(), "node_modules", ".bin", "vitest");
+      const childArgs = [
+        vitestBin,
+        "run",
+        "--config",
+        "test/filelock-child.config.ts",
+        "test/filelock-child.test.ts",
+      ];
+      const racer = new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, childArgs, {
+          env: {
+            ...process.env,
+            COUNTER_FILE: counterFile,
+            LOCK_FILE: takeoverLock,
+            ITERATIONS: String(iterations),
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let stderr = "";
+        child.stderr?.on("data", (chunk) => (stderr += String(chunk)));
+        child.once("error", reject);
+        child.once("exit", (code) => resolve({ code, stderr }));
+      });
+
+      const parent = (async () => {
+        for (let i = 0; i < iterations; i++) {
+          withLockFile(takeoverLock, () => {
+            const value = Number(fs.readFileSync(counterFile, "utf8").trim() || "0");
+            fs.writeFileSync(counterFile, String(value + 1));
+          });
+        }
+      })();
+
+      const [racerResult] = await Promise.all([racer, parent]);
+      expect(racerResult.code).toBe(0);
+
+      expect(fs.readFileSync(counterFile, "utf8").trim()).toBe(String(2 * iterations));
+      expect(fs.existsSync(takeoverLock)).toBe(false);
     },
     120_000,
   );

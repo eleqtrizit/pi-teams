@@ -4,7 +4,12 @@ import { randomBytes } from "node:crypto";
 import { AgentKind, AgentRecord, AgentStatus } from "./models";
 import { AgentEntry } from "./agentFormat";
 import { agentRecordPath, agentRecordsDir, agentSocketPath, registryDir, AGENT_ID_PATTERN } from "./paths";
-import { removeFromAgentHistory, syncAgentHistory, upsertAgentHistory } from "./history";
+import {
+  removeFromAgentHistory,
+  removeHistoryEntries,
+  syncAgentHistory,
+  upsertAgentHistory,
+} from "./history";
 import { isAgentBusy } from "./runstate";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 import { isPidAlive } from "./pid";
@@ -55,7 +60,7 @@ export function ensureRegistryDir(): void {
 }
 
 /**
- * Write an agent record atomically.
+ * Write an agent record atomically, without touching the history side table.
  *
  * Writes to a temporary file in the same directory, sets mode 0600,
  * then renames it into place so readers never see a partial file.
@@ -63,18 +68,38 @@ export function ensureRegistryDir(): void {
  * @param rec - Agent record to persist
  * @throws Error when the record cannot be written
  */
-export function writeAgentRecord(rec: AgentRecord): void {
+function writeAgentRecordFile(rec: AgentRecord): void {
   const file = agentRecordPath(rec.id);
   ensureRegistryDir();
   const dir = path.dirname(file);
   const tmp = path.join(dir, `.tmp-${rec.id}-${process.pid}-${Date.now()}.json`);
   fs.writeFileSync(tmp, JSON.stringify(rec), { mode: 0o600 });
   fs.renameSync(tmp, file);
+}
+
+/**
+ * Write an agent record atomically and record it in the history side table
+ * with a fresh `lastSeenAt` stamp.
+ *
+ * This is the full-registration path called from `session_start`; metadata
+ * patches must go through {@link updateAgentRecord} instead, which persists
+ * the record without refreshing `lastSeenAt`, so an offline agent that gets
+ * patched (a pane id, an adoption) never reads as recently seen.
+ *
+ * @param rec - Agent record to persist
+ * @throws Error when the record cannot be written
+ */
+export function writeAgentRecord(rec: AgentRecord): void {
+  writeAgentRecordFile(rec);
   upsertAgentHistory(rec);
 }
 
 /**
  * Patch an existing agent record and persist the updated version.
+ *
+ * Writes through {@link writeAgentRecordFile}, so the record file changes
+ * but the `agents.jsonl` history does not: a metadata patch keeps the
+ * record's existing `lastSeenAt` instead of stamping it as seen now.
  *
  * @param id - Agent ID to update
  * @param patch - Partial record with the fields to change
@@ -84,7 +109,7 @@ export function updateAgentRecord(id: string, patch: Partial<AgentRecord>): void
   const rec = readAgentRecord(id);
   if (!rec) throw new Error(`Agent ${id} not found`);
   const updated: AgentRecord = { ...rec, ...patch, id };
-  writeAgentRecord(updated);
+  writeAgentRecordFile(updated);
 }
 
 /**
@@ -186,8 +211,9 @@ function readValidAgentRecords(): AgentRecord[] {
 /**
  * Read all valid agent records, trimming agents whose working directory no
  * longer exists. Load, check paths, and when a trim is needed remove every
- * dangling record file and its stale socket, then load again; otherwise the
- * first load is returned as-is.
+ * dangling record file and its stale socket, then remove all their history
+ * keys in one locked batch pass, then load again; otherwise the first load
+ * is returned as-is.
  *
  * @returns Array of valid agent records whose working directories exist
  */
@@ -195,10 +221,17 @@ export function readAgentRecords(): AgentRecord[] {
   const records = readValidAgentRecords();
   const stale = records.filter((rec) => !fs.existsSync(rec.cwd));
   if (stale.length === 0) return records;
+  // One batch, not one removal per stale record: the former per-record
+  // path re-read each record, rescanned the whole directory, and took the
+  // history lock once per record. No surviving record shares a stale
+  // record's (cwd, startedAt) key, because the cwd half of the key belongs
+  // to a directory that no longer exists, so the batch removal never drops
+  // a surviving record's recency.
   for (const rec of stale) {
-    removeAgentRecord(rec.id);
+    removeAgentRecordFile(rec.id);
     removeStaleSocket(rec.id);
   }
+  removeHistoryEntries(stale);
   return readValidAgentRecords();
 }
 
@@ -217,8 +250,9 @@ export function readAgentRecord(id: string): AgentRecord | undefined {
  * Remove an agent record file by ID, leaving the history untouched.
  *
  * Ignores ENOENT (the file is already gone). Used by the list pass, which
- * removes pruned records' history entries in one locked transaction through
- * `syncAgentHistory` so their recency is preserved.
+ * syncs the history side table in one locked transaction through
+ * `syncAgentHistory` so pruning a record never costs its directory the
+ * recency carried by the record's entry.
  *
  * @param id - Agent ID
  */
@@ -252,13 +286,6 @@ export function removeAgentRecord(id: string): void {
   );
   if (!siblingSharesKey) removeFromAgentHistory(rec.cwd, rec.startedAt);
 }
-
-/**
- * Re-exported from `pid.ts` so existing importers hold.ts and
- * extensions/index.ts keep working; the implementation is shared with the
- * filelock's stale-holder check.
- */
-export { isPidAlive };
 
 /**
  * Check whether a registered agent is online.
@@ -381,11 +408,12 @@ export function removeStaleSocket(id: string): void {
  *
  * Reads a record snapshot, computes each record's status (pid plus socket
  * probe), applies {@link pruneRegistry}, runs one locked history transaction
- * (`syncAgentHistory`: stamp online records, drop pruned records' entries
- * while preserving directory recency, compact fully offline cwds, drop
- * dead-directory orphans), deletes every removed record file along with its
- * stale socket, and returns the survivors paired with their statuses, in
- * registry read order.
+ * (`syncAgentHistory`: stamp online records, self-heal missing entries for
+ * surviving records, drop entries whose record no longer exists in the
+ * registry, compact fully offline cwds while preserving directory recency,
+ * drop dead-directory orphans), deletes every removed record file along
+ * with its stale socket, and returns the survivors paired with their
+ * statuses, in registry read order.
  *
  * @param statusOf - Status function; overridden in tests for determinism
  * @returns One `{record, status}` entry per surviving agent
@@ -403,18 +431,18 @@ export async function pruneAndList(
   );
 
   const { keep, remove } = pruneRegistry(records, statuses);
-  const removedIds = new Set(remove);
 
   // One locked history transaction per list pass: stamp online records
-  // (self-healing missing entries), drop pruned records' entries while
-  // preserving each directory's newest lastSeenAt, compact fully offline
-  // cwds to a single entry, and drop entries whose cwd directory is gone.
-  // Entries started after snapshotTime are left alone: they belong to
+  // and self-heal missing entries for surviving records, drop entries
+  // whose record no longer exists in the registry, compact fully offline
+  // cwds to a single entry that keeps the directory's newest lastSeenAt,
+  // and drop entries whose cwd directory is gone. Entries with lastSeenAt
+  // or startedAt after snapshotTime are left alone: they were written by
   // sessions that registered while the probes were awaited.
   syncAgentHistory({
     snapshotTime,
     onlineRecords: records.filter((rec) => statuses.get(rec.id) !== AgentStatus.Offline),
-    removedRecords: records.filter((rec) => removedIds.has(rec.id)),
+    allRecords: records,
     keepRecords: keep,
   });
 

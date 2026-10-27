@@ -4,8 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentKind } from "./models";
 import {
+  compareHistoryEntries,
+  computeHistoryKeepers,
   readAgentHistory,
   removeFromAgentHistory,
+  stampOnline,
   syncAgentHistory,
   upsertAgentHistory,
 } from "./history";
@@ -35,6 +38,70 @@ function record(cwd: string, startedAt: number, model?: string) {
     model,
   };
 }
+
+describe("pure history stages", () => {
+  it("stamps online entries and self-heals online and surviving keys once each", () => {
+    const entries = [
+      { cwd: "/repo/a", startedAt: 100, lastSeenAt: 1 },
+      { cwd: "/repo/b", startedAt: 200, lastSeenAt: 2 },
+    ];
+    const onlineRecords = [
+      { cwd: "/repo/a", startedAt: 100, model: "prov/a" },
+      { cwd: "/repo/c", startedAt: 300, model: "prov/c" },
+    ];
+    const keepRecords = [
+      { cwd: "/repo/c", startedAt: 300, model: "prov/c" },
+      { cwd: "/repo/d", startedAt: 400 },
+    ];
+
+    expect(stampOnline(entries, onlineRecords, keepRecords, 999)).toEqual([
+      { cwd: "/repo/a", startedAt: 100, lastSeenAt: 999 },
+      { cwd: "/repo/b", startedAt: 200, lastSeenAt: 2 },
+      { cwd: "/repo/c", startedAt: 300, model: "prov/c", lastSeenAt: 999 },
+      { cwd: "/repo/d", startedAt: 400, lastSeenAt: 400 },
+    ]);
+  });
+
+  it("computes keepers from the newest survivor and the group's max recency", () => {
+    const entries = [
+      { cwd: "/repo/a", startedAt: 100, lastSeenAt: 900 },
+      { cwd: "/repo/a", startedAt: 200, lastSeenAt: 500 },
+      { cwd: "/repo/b", startedAt: 100, lastSeenAt: 100 },
+      { cwd: "/repo/b", startedAt: 200, lastSeenAt: 200 },
+      { cwd: "/repo/c", startedAt: 100, lastSeenAt: 100 },
+      { cwd: "/repo/c", startedAt: 200, lastSeenAt: 200 },
+    ];
+    const result = computeHistoryKeepers(
+      entries,
+      [{ cwd: "/repo/b", startedAt: 100 }],
+      [
+        { cwd: "/repo/a", startedAt: 150 },
+        { cwd: "/repo/a", startedAt: 250, model: "prov/a" },
+        { cwd: "/repo/b", startedAt: 300 },
+        { cwd: "/repo/c", startedAt: 300 },
+      ],
+      (entry) => entry.cwd === "/repo/c" && entry.startedAt === 200,
+    );
+
+    expect([...result.values()]).toEqual([
+      { cwd: "/repo/a", startedAt: 250, model: "prov/a", lastSeenAt: 900 },
+    ]);
+  });
+
+  it("compares history by cwd then startedAt", () => {
+    const entries = [
+      { cwd: "/repo/b", startedAt: 100, lastSeenAt: 1 },
+      { cwd: "/repo/a", startedAt: 200, lastSeenAt: 1 },
+      { cwd: "/repo/a", startedAt: 100, lastSeenAt: 1 },
+    ];
+
+    expect([...entries].sort(compareHistoryEntries).map(({ cwd, startedAt }) => [cwd, startedAt])).toEqual([
+      ["/repo/a", 100],
+      ["/repo/a", 200],
+      ["/repo/b", 100],
+    ]);
+  });
+});
 
 describe("agent history", () => {
   it("creates the file with one entry on first upsert, keeping model", () => {
@@ -163,8 +230,14 @@ describe("agent history", () => {
       syncAgentHistory({
         snapshotTime: 500,
         onlineRecords: [{ cwd: dirA, startedAt: 300, model: "prov/model" }],
-        removedRecords: [],
-        keepRecords: [{ cwd: dirA, startedAt: 300 }],
+        allRecords: [
+          { cwd: dirA, startedAt: 100 },
+          { cwd: dirA, startedAt: 300, model: "prov/model" },
+        ],
+        keepRecords: [
+          { cwd: dirA, startedAt: 100 },
+          { cwd: dirA, startedAt: 300 },
+        ],
       });
 
       const entries = readAgentHistory();
@@ -187,8 +260,14 @@ describe("agent history", () => {
         syncAgentHistory({
           snapshotTime: 500,
           onlineRecords: [{ cwd: dirA, startedAt: 100 }],
-          removedRecords: [],
-          keepRecords: [{ cwd: dirA, startedAt: 100 }],
+          allRecords: [
+            { cwd: dirA, startedAt: 100 },
+            { cwd: dirB, startedAt: 200 },
+          ],
+          keepRecords: [
+            { cwd: dirA, startedAt: 100 },
+            { cwd: dirB, startedAt: 200 },
+          ],
         });
       } finally {
         clock.mockRestore();
@@ -208,8 +287,8 @@ describe("agent history", () => {
       syncAgentHistory({
         snapshotTime: 500,
         onlineRecords: [],
-        removedRecords: [{ cwd: dirA, startedAt: 404 }], // no such entry
-        keepRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 100 }],
+        keepRecords: [{ cwd: dirA, startedAt: 100 }],
       });
 
       expect(fs.statSync(agentHistoryPath()).mtimeMs).toBe(before);
@@ -223,9 +302,9 @@ describe("agent history", () => {
       ]);
 
       syncAgentHistory({
-        snapshotTime: 500,
+        snapshotTime: 2000, // after every fixture lastSeenAt: none is concurrent
         onlineRecords: [],
-        removedRecords: [{ cwd: dirA, startedAt: 100 }],
+        allRecords: [{ cwd: dirA, startedAt: 100 }, { cwd: dirA, startedAt: 200, model: "prov/model" }],
         keepRecords: [{ cwd: dirA, startedAt: 200, model: "prov/model" }],
       });
 
@@ -247,14 +326,20 @@ describe("agent history", () => {
       syncAgentHistory({
         snapshotTime: 500,
         onlineRecords: [{ cwd: dirA, startedAt: 100 }],
-        removedRecords: [],
-        keepRecords: [{ cwd: dirA, startedAt: 100 }, { cwd: dirA, startedAt: 200 }],
+        allRecords: [
+          { cwd: dirA, startedAt: 100 },
+          { cwd: dirA, startedAt: 200 },
+        ],
+        keepRecords: [
+          { cwd: dirA, startedAt: 100 },
+          { cwd: dirA, startedAt: 200 },
+        ],
       });
 
       expect(readAgentHistory()).toHaveLength(2);
     });
 
-    it("drops a pruned record's entry unless a surviving record shares its key", () => {
+    it("keeps a pruned record's entry for its pass, then drops it when no record backs it", () => {
       const dirA = liveCwd("a");
       const dirB = liveCwd("b");
       writeLines(agentHistoryPath(), [
@@ -262,39 +347,95 @@ describe("agent history", () => {
         { cwd: dirB, startedAt: 100, lastSeenAt: 8 }, // sole owner, pruned
       ]);
 
+      // Pass one: both records are still in the registry snapshot (dirB is
+      // pruned by it), so both entries survive the pruning pass.
       syncAgentHistory({
         snapshotTime: 500,
         onlineRecords: [],
-        removedRecords: [
+        allRecords: [
           { cwd: dirA, startedAt: 100 },
           { cwd: dirB, startedAt: 100 },
         ],
         keepRecords: [{ cwd: dirA, startedAt: 100 }], // same-ms sibling
       });
 
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirA, startedAt: 100, lastSeenAt: 7 },
+        { cwd: dirB, startedAt: 100, lastSeenAt: 8 },
+      ]);
+
+      // Pass two: no record matches the dirB entry anymore, so it drops as
+      // an orphan while the survivor-backed entry stays.
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 100 }],
+        keepRecords: [{ cwd: dirA, startedAt: 100 }],
+      });
+
       expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 100, lastSeenAt: 7 }]);
     });
 
-    it("never touches entries started after the snapshot time", () => {
+    it("does not compact a cwd containing a post-snapshot entry", () => {
       const dirA = liveCwd("a");
       writeLines(agentHistoryPath(), [
-        { cwd: dirA, startedAt: 100, lastSeenAt: 1 }, // old offline lead
-        { cwd: dirA, startedAt: 900, lastSeenAt: 2 }, // registered during the probe
+        { cwd: dirA, startedAt: 100, lastSeenAt: 1 },
+        { cwd: dirA, startedAt: 900, lastSeenAt: 900 }, // registered during the probe
       ]);
 
       syncAgentHistory({
         snapshotTime: 500,
         onlineRecords: [],
-        removedRecords: [{ cwd: dirA, startedAt: 100 }],
+        allRecords: [{ cwd: dirA, startedAt: 100 }],
         keepRecords: [{ cwd: dirA, startedAt: 100 }],
       });
 
-      // The fresh entry blocks compaction of its cwd, and the old entry is
-      // not dropped either: the rebuild keeps both untouched... except the
-      // orphan check, which does not apply (dirA exists).
+      // The post-snapshot entry blocks compaction of its cwd, and nothing
+      // is dropped: both entries survive untouched.
       expect(readAgentHistory()).toEqual([
         { cwd: dirA, startedAt: 100, lastSeenAt: 1 },
-        { cwd: dirA, startedAt: 900, lastSeenAt: 2 },
+        { cwd: dirA, startedAt: 900, lastSeenAt: 900 },
+      ]);
+    });
+
+    it("does not drop a removed record's entry that is post-snapshot", () => {
+      const dirA = liveCwd("a");
+      writeLines(agentHistoryPath(), [
+        { cwd: dirA, startedAt: 900, lastSeenAt: 900 }, // written during the probe
+      ]);
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 900 }],
+        keepRecords: [],
+      });
+
+      expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 900, lastSeenAt: 900 }]);
+    });
+
+    it("does not collapse an entry written after the snapshot with startedAt before it", () => {
+      const dirA = liveCwd("a");
+      writeLines(agentHistoryPath(), [
+        { cwd: dirA, startedAt: 100, lastSeenAt: 1 }, // old offline record
+        // Registered mid-probe: startedAt was stamped at session start,
+        // before the snapshot read, but the history write (and therefore
+        // lastSeenAt) landed after it.
+        { cwd: dirA, startedAt: 300, lastSeenAt: 600 },
+      ]);
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 100 }],
+        keepRecords: [{ cwd: dirA, startedAt: 100 }],
+      });
+
+      // The startedAt-based guard alone would collapse this cwd; the
+      // lastSeenAt guard must keep both entries.
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirA, startedAt: 100, lastSeenAt: 1 },
+        { cwd: dirA, startedAt: 300, lastSeenAt: 600 },
       ]);
     });
 
@@ -307,9 +448,126 @@ describe("agent history", () => {
       ]);
       fs.rmSync(dirB, { recursive: true, force: true });
 
-      syncAgentHistory({ snapshotTime: 500, onlineRecords: [], removedRecords: [], keepRecords: [] });
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 100 }],
+        keepRecords: [{ cwd: dirA, startedAt: 100 }],
+      });
 
       expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 100, lastSeenAt: 1 }]);
+    });
+
+    it("drops a legacy orphan entry in a cwd that has an online lead", () => {
+      const dirC = liveCwd("c");
+      writeLines(agentHistoryPath(), [
+        { cwd: dirC, startedAt: 250, lastSeenAt: 5 }, // no record ever backs this entry
+        { cwd: dirC, startedAt: 300, lastSeenAt: 9 },
+      ]);
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [{ cwd: dirC, startedAt: 300 }],
+        allRecords: [{ cwd: dirC, startedAt: 300 }],
+        keepRecords: [{ cwd: dirC, startedAt: 300 }],
+      });
+
+      // The orphan dies even though its cwd never compacts: the online
+      // lead's entry is stamped and the stale entry matches no record.
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirC, startedAt: 300, lastSeenAt: expect.any(Number) },
+      ]);
+    });
+
+    it("emits the keeper for an offline cwd whose surviving record has no entry", () => {
+      const dirA = liveCwd("a");
+      writeLines(agentHistoryPath(), [
+        { cwd: dirA, startedAt: 100, lastSeenAt: 55 }, // pruned this pass
+        { cwd: dirA, startedAt: 200, lastSeenAt: 400 }, // pruned this pass
+      ]);
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [
+          { cwd: dirA, startedAt: 100 },
+          { cwd: dirA, startedAt: 200 },
+          { cwd: dirA, startedAt: 300, model: "prov/model" },
+        ],
+        keepRecords: [{ cwd: dirA, startedAt: 300, model: "prov/model" }],
+      });
+
+      // The survivor (300) has no history entry, so Step 1 must self-heal
+      // it: the keeper is emitted rather than dropped with the pruned
+      // siblings, and it inherits the pruned entries' max lastSeenAt.
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirA, startedAt: 300, model: "prov/model", lastSeenAt: 400 },
+      ]);
+    });
+
+    it("folds a pruned entry's recency into the survivor after compaction is blocked", () => {
+      const dirA = liveCwd("a");
+      writeLines(agentHistoryPath(), [
+        { cwd: dirA, startedAt: 100, lastSeenAt: 1200 }, // lead, pruned in pass one
+        { cwd: dirA, startedAt: 300, lastSeenAt: 900 }, // stale survivor worker
+        { cwd: dirA, startedAt: 1300, lastSeenAt: 1310 }, // session registered during the probe
+      ]);
+
+      // Pass one: the probe-registered entry (post-snapshot) blocks
+      // compaction. The pruned lead's record is still in the snapshot, so
+      // its entry must survive instead of dying with its record: it holds
+      // the directory's recent recency.
+      syncAgentHistory({
+        snapshotTime: 1250,
+        onlineRecords: [],
+        allRecords: [
+          { cwd: dirA, startedAt: 100 },
+          { cwd: dirA, startedAt: 300 },
+        ],
+        keepRecords: [{ cwd: dirA, startedAt: 300 }],
+      });
+
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirA, startedAt: 100, lastSeenAt: 1200 },
+        { cwd: dirA, startedAt: 300, lastSeenAt: 900 },
+        { cwd: dirA, startedAt: 1300, lastSeenAt: 1310 },
+      ]);
+
+      // The probe-registered session closes: its entry is removed exactly
+      // the way removeAgent removes it (no sibling shares its key).
+      removeFromAgentHistory(dirA, 1300);
+
+      // Pass two (fresh snapshot, only the worker survives): the cwd now
+      // compacts, and the keeper inherits the pruned lead's 1200 recency
+      // instead of the survivor's stale 900, so the directory's history
+      // does not sort as if never seen.
+      syncAgentHistory({
+        snapshotTime: 2000,
+        onlineRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 300 }],
+        keepRecords: [{ cwd: dirA, startedAt: 300 }],
+      });
+
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirA, startedAt: 300, lastSeenAt: 1200 },
+      ]);
+    });
+
+    it("self-heals a surviving record into an empty history file", () => {
+      const dirA = liveCwd("a");
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [{ cwd: dirA, startedAt: 300, model: "prov/model" }],
+        keepRecords: [{ cwd: dirA, startedAt: 300, model: "prov/model" }],
+      });
+
+      // An offline record has not been seen after it started, so its
+      // self-healed entry carries its start time as the recency floor.
+      expect(readAgentHistory()).toEqual([
+        { cwd: dirA, startedAt: 300, model: "prov/model", lastSeenAt: 300 },
+      ]);
     });
   });
 });

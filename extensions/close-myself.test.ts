@@ -74,6 +74,9 @@ describe("close_myself registration", () => {
 
   it("does not register close_myself for the interactive lead session", () => {
     vi.stubEnv("PI_AGENT_NAME", "");
+    // A teammate session's PI_AGENT_TYPE can leak into the test worker, so
+    // stub it instead of relying on it being unset.
+    vi.stubEnv("PI_AGENT_TYPE", "");
 
     const tools = registerExtensionForCurrentEnv();
 
