@@ -13,6 +13,7 @@ import {
 import { isAgentBusy } from "./runstate";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 import { isPidAlive } from "./pid";
+import { LockHeldError } from "./filelock";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const ID_LENGTH = 8;
@@ -68,7 +69,7 @@ export function ensureRegistryDir(): void {
  * @param rec - Agent record to persist
  * @throws Error when the record cannot be written
  */
-function writeAgentRecordFile(rec: AgentRecord): void {
+function writeAgentRecordOnly(rec: AgentRecord): void {
   const file = agentRecordPath(rec.id);
   ensureRegistryDir();
   const dir = path.dirname(file);
@@ -84,20 +85,28 @@ function writeAgentRecordFile(rec: AgentRecord): void {
  * This is the full-registration path called from `session_start`; metadata
  * patches must go through {@link updateAgentRecord} instead, which persists
  * the record without refreshing `lastSeenAt`, so an offline agent that gets
- * patched (a pane id, an adoption) never reads as recently seen.
+ * patched (a pane id, an adoption) never reads as recently seen. On
+ * history-lock contention the record is still written and the history stamp
+ * is skipped; the next list pass upserts the missing entry.
  *
  * @param rec - Agent record to persist
  * @throws Error when the record cannot be written
  */
 export function writeAgentRecord(rec: AgentRecord): void {
-  writeAgentRecordFile(rec);
-  upsertAgentHistory(rec);
+  writeAgentRecordOnly(rec);
+  try {
+    upsertAgentHistory(rec);
+  } catch (error) {
+    if (!(error instanceof LockHeldError)) throw error;
+    // Another process holds the history lock. The record file is written;
+    // the next list pass upserts the missing entry for this surviving record.
+  }
 }
 
 /**
  * Patch an existing agent record and persist the updated version.
  *
- * Writes through {@link writeAgentRecordFile}, so the record file changes
+ * Writes through {@link writeAgentRecordOnly}, so the record file changes
  * but the `agents.jsonl` history does not: a metadata patch keeps the
  * record's existing `lastSeenAt` instead of stamping it as seen now.
  *
@@ -109,7 +118,7 @@ export function updateAgentRecord(id: string, patch: Partial<AgentRecord>): void
   const rec = readAgentRecord(id);
   if (!rec) throw new Error(`Agent ${id} not found`);
   const updated: AgentRecord = { ...rec, ...patch, id };
-  writeAgentRecordFile(updated);
+  writeAgentRecordOnly(updated);
 }
 
 /**
@@ -210,10 +219,11 @@ function readValidAgentRecords(): AgentRecord[] {
 
 /**
  * Read all valid agent records, trimming agents whose working directory no
- * longer exists. Load, check paths, and when a trim is needed remove every
- * dangling record file and its stale socket, then remove all their history
- * keys in one locked batch pass, then load again; otherwise the first load
- * is returned as-is.
+ * longer exists. Load, check paths, and when a trim is needed remove all
+ * their history keys in one locked batch pass, then remove every dangling
+ * record file and its stale socket, then load again; when the batch throws,
+ * the record files survive and the next load retries the trim. Otherwise
+ * the first load is returned as-is.
  *
  * @returns Array of valid agent records whose working directories exist
  */
@@ -221,17 +231,30 @@ export function readAgentRecords(): AgentRecord[] {
   const records = readValidAgentRecords();
   const stale = records.filter((rec) => !fs.existsSync(rec.cwd));
   if (stale.length === 0) return records;
-  // One batch, not one removal per stale record: the former per-record
-  // path re-read each record, rescanned the whole directory, and took the
-  // history lock once per record. No surviving record shares a stale
-  // record's (cwd, startedAt) key, because the cwd half of the key belongs
-  // to a directory that no longer exists, so the batch removal never drops
-  // a surviving record's recency.
+  // The history batch runs first: if its locked mutation throws, the record
+  // files survive and the next load retries the whole trim. One batch, not
+  // one removal per stale record: the former per-record path re-read each
+  // record, rescanned the whole directory, and took the history lock once
+  // per record. No surviving record shares a stale record's (cwd, startedAt)
+  // key, because the cwd half of the key belongs to a directory that no
+  // longer exists, so the batch removal never drops a surviving record's
+  // recency.
+  try {
+    removeHistoryEntries(stale);
+  } catch (error) {
+    if (error instanceof LockHeldError) {
+      // Another process holds the history lock. Skip the trim for this load
+      // and return the cwd-filtered records; the next load retries the trim.
+      // Propagating here would reject every inbound message, strand the run
+      // hold, and fail the spawn path, none of which is a lock problem.
+      return records.filter((rec) => fs.existsSync(rec.cwd));
+    }
+    throw error;
+  }
   for (const rec of stale) {
     removeAgentRecordFile(rec.id);
     removeStaleSocket(rec.id);
   }
-  removeHistoryEntries(stale);
   return readValidAgentRecords();
 }
 
@@ -274,6 +297,9 @@ export function removeAgentRecordFile(id: string): void {
  * key: parallel spawns in one cwd can land in the same millisecond, and
  * deleting the shared entry would strip a live sibling of its recency. A
  * missing or malformed record leaves nothing to remove from the history.
+ * When another process holds the history lock, the entry is left for the
+ * next list pass to drop instead of failing the removal, so shutdown never
+ * stalls on the lock.
  *
  * @param id - Agent ID
  */
@@ -284,7 +310,17 @@ export function removeAgentRecord(id: string): void {
   const siblingSharesKey = readValidAgentRecords().some(
     (other) => other.cwd === rec.cwd && other.startedAt === rec.startedAt,
   );
-  if (!siblingSharesKey) removeFromAgentHistory(rec.cwd, rec.startedAt);
+  if (!siblingSharesKey) {
+    try {
+      removeFromAgentHistory(rec.cwd, rec.startedAt);
+    } catch (error) {
+      if (!(error instanceof LockHeldError)) throw error;
+      // Another process holds the history lock. The record file is already
+      // gone, so the next list pass drops the orphaned entry. Teardown must
+      // not stop here: skipping the history delete is safe, leaving the
+      // agent running and invisible is not.
+    }
+  }
 }
 
 /**
@@ -413,7 +449,8 @@ export function removeStaleSocket(id: string): void {
  * registry, compact fully offline cwds while preserving directory recency,
  * drop dead-directory orphans), deletes every removed record file along
  * with its stale socket, and returns the survivors paired with their
- * statuses, in registry read order.
+ * statuses, in registry read order. On history-lock contention this pass
+ * skips the sync and leaves it for the next pass.
  *
  * @param statusOf - Status function; overridden in tests for determinism
  * @returns One `{record, status}` entry per surviving agent
@@ -439,12 +476,19 @@ export async function pruneAndList(
   // and drop entries whose cwd directory is gone. Entries with lastSeenAt
   // or startedAt after snapshotTime are left alone: they were written by
   // sessions that registered while the probes were awaited.
-  syncAgentHistory({
-    snapshotTime,
-    onlineRecords: records.filter((rec) => statuses.get(rec.id) !== AgentStatus.Offline),
-    allRecords: records,
-    keepRecords: keep,
-  });
+  try {
+    syncAgentHistory({
+      snapshotTime,
+      onlineRecords: records.filter((rec) => statuses.get(rec.id) !== AgentStatus.Offline),
+      allRecords: records,
+      keepRecords: keep,
+    });
+  } catch (error) {
+    if (!(error instanceof LockHeldError)) throw error;
+    // Another process holds the history lock. Skip this pass's stamp and
+    // compaction; the next pass retries. Pruning below still runs, and the
+    // next sync drops the removed records' orphaned entries.
+  }
 
   for (const id of remove) {
     removeAgentRecordFile(id);

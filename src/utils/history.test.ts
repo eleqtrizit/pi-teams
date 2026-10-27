@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentKind } from "./models";
 import {
-  compareHistoryEntries,
   computeHistoryKeepers,
   readAgentHistory,
   removeFromAgentHistory,
@@ -88,19 +87,6 @@ describe("pure history stages", () => {
     ]);
   });
 
-  it("compares history by cwd then startedAt", () => {
-    const entries = [
-      { cwd: "/repo/b", startedAt: 100, lastSeenAt: 1 },
-      { cwd: "/repo/a", startedAt: 200, lastSeenAt: 1 },
-      { cwd: "/repo/a", startedAt: 100, lastSeenAt: 1 },
-    ];
-
-    expect([...entries].sort(compareHistoryEntries).map(({ cwd, startedAt }) => [cwd, startedAt])).toEqual([
-      ["/repo/a", 100],
-      ["/repo/a", 200],
-      ["/repo/b", 100],
-    ]);
-  });
 });
 
 describe("agent history", () => {
@@ -412,6 +398,40 @@ describe("agent history", () => {
       });
 
       expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 900, lastSeenAt: 900 }]);
+    });
+
+    it("keeps a same-millisecond registration entry during sync", () => {
+      const dirA = liveCwd("a");
+      // Registration in the millisecond of the snapshot: startedAt and
+      // lastSeenAt both equal snapshotTime, and the snapshot was taken
+      // before the record existed, so its key is absent from allRecords.
+      // Reviewer1's repro: strict > classified this as an orphan and the
+      // entry was deleted.
+      writeLines(agentHistoryPath(), [{ cwd: dirA, startedAt: 500, lastSeenAt: 500 }]);
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [],
+        keepRecords: [],
+      });
+
+      expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 500, lastSeenAt: 500 }]);
+    });
+
+    it("treats an entry with lastSeenAt equal to the snapshot as concurrent", () => {
+      const dirA = liveCwd("a");
+      // startedAt is well before the snapshot; only lastSeenAt equals it.
+      writeLines(agentHistoryPath(), [{ cwd: dirA, startedAt: 100, lastSeenAt: 500 }]);
+
+      syncAgentHistory({
+        snapshotTime: 500,
+        onlineRecords: [],
+        allRecords: [],
+        keepRecords: [],
+      });
+
+      expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 100, lastSeenAt: 500 }]);
     });
 
     it("does not collapse an entry written after the snapshot with startedAt before it", () => {

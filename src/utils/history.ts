@@ -31,12 +31,17 @@ export interface AgentHistoryEntry {
 /**
  * Stable join key shared by the history readers and writers.
  *
- * Paths may contain `\n`, but a cwd's final numeric component (`startedAt`,
- * serialized by JSON) cannot, so `(cwd, startedAt)` pairs never collide on
- * the concatenated key.
+ * The key is `${cwd}\n${startedAt}`. A cwd may itself contain newlines, but
+ * `startedAt` is numeric and always appended last, so splitting the key at
+ * the last newline recovers the `(cwd, startedAt)` pair unambiguously.
  */
 export function historyKey(cwd: string, startedAt: number): string {
   return `${cwd}\n${startedAt}`;
+}
+
+/** The history key for an entry or a record's key fields. */
+function keyOf(entry: { cwd: string; startedAt: number }): string {
+  return historyKey(entry.cwd, entry.startedAt);
 }
 
 /** Read every valid history entry, skipping blank or unparseable lines. */
@@ -78,6 +83,17 @@ function readHistoryEntries(): AgentHistoryEntry[] {
 }
 
 /**
+ * Order history entries by cwd, then by start time.
+ *
+ * Used for the on-disk line order and for the no-op detection in
+ * `canonicalEntryJson`, so the same set of entries always serializes to the
+ * same bytes.
+ */
+function compareHistoryEntries(a: AgentHistoryEntry, b: AgentHistoryEntry): number {
+  return a.cwd.localeCompare(b.cwd) || a.startedAt - b.startedAt;
+}
+
+/**
  * Write history entries atomically, one JSON line per entry.
  *
  * Sorts by cwd, then startedAt, so the file reads as an index of where and
@@ -86,10 +102,6 @@ function readHistoryEntries(): AgentHistoryEntry[] {
  *
  * @param entries - Deduplicated entries to persist
  */
-export function compareHistoryEntries(a: AgentHistoryEntry, b: AgentHistoryEntry): number {
-  return a.cwd.localeCompare(b.cwd) || a.startedAt - b.startedAt;
-}
-
 function writeHistoryEntries(entries: AgentHistoryEntry[]): void {
   ensurePrivateDir(registryDir());
   const sorted = [...entries].sort(compareHistoryEntries);
@@ -185,6 +197,7 @@ export function removeFromAgentHistory(cwd: string, startedAt: number): void {
  * surviving records' keys themselves: the trim pass removes only records
  * whose cwd is gone from disk, so no surviving record shares a removed key.
  *
+ * @internal
  * @param records - Key fields of the records whose entries to delete
  */
 export function removeHistoryEntries(records: ReadonlyArray<HistoryRecordKey>): void {
@@ -235,15 +248,32 @@ function groupByCwd(
   return byCwd;
 }
 
-/** Stamp online entries and self-heal missing online and surviving keys. */
+/**
+ * Build a history entry for a record, carrying the model when present.
+ *
+ * @param rec - Record key fields
+ * @param lastSeenAt - Recency stamp for the entry
+ */
+function entryFor(rec: HistoryRecordKey, lastSeenAt: number): AgentHistoryEntry {
+  return {
+    cwd: rec.cwd,
+    startedAt: rec.startedAt,
+    ...(rec.model !== undefined && { model: rec.model }),
+    lastSeenAt,
+  };
+}
+
+/**
+ * Stamp online entries and self-heal missing online and surviving keys.
+ *
+ * @internal
+ */
 export function stampOnline(
   entries: ReadonlyArray<AgentHistoryEntry>,
   onlineRecords: ReadonlyArray<HistoryRecordKey>,
   keepRecords: ReadonlyArray<HistoryRecordKey>,
   now: number,
 ): AgentHistoryEntry[] {
-  const keyOf = (entry: { cwd: string; startedAt: number }): string =>
-    historyKey(entry.cwd, entry.startedAt);
   const onlineKeys = new Set(onlineRecords.map(keyOf));
   const stamped = entries.map((entry) =>
     onlineKeys.has(keyOf(entry)) ? { ...entry, lastSeenAt: now } : entry,
@@ -253,29 +283,23 @@ export function stampOnline(
   for (const rec of onlineRecords) {
     const key = keyOf(rec);
     if (stampedKeys.has(key)) continue;
-    stamped.push({
-      cwd: rec.cwd,
-      startedAt: rec.startedAt,
-      ...(rec.model !== undefined && { model: rec.model }),
-      lastSeenAt: now,
-    });
+    stamped.push(entryFor(rec, now));
     stampedKeys.add(key);
   }
   for (const rec of keepRecords) {
     const key = keyOf(rec);
     if (stampedKeys.has(key)) continue;
-    stamped.push({
-      cwd: rec.cwd,
-      startedAt: rec.startedAt,
-      ...(rec.model !== undefined && { model: rec.model }),
-      lastSeenAt: rec.startedAt,
-    });
+    stamped.push(entryFor(rec, rec.startedAt));
     stampedKeys.add(key);
   }
   return stamped;
 }
 
-/** Compute compacted entries for fully offline cwds without concurrent records. */
+/**
+ * Compute compacted entries for fully offline cwds without concurrent records.
+ *
+ * @internal
+ */
 export function computeHistoryKeepers(
   entries: ReadonlyArray<AgentHistoryEntry>,
   onlineRecords: ReadonlyArray<HistoryRecordKey>,
@@ -308,6 +332,20 @@ export function computeHistoryKeepers(
 }
 
 /**
+ * Canonical serialized form of an entry list, for no-op detection.
+ *
+ * Both sides pass through the same sort and the same serializer, so the
+ * comparison is exact for the flat entry shape (`string`, `number`, and
+ * optional `string` fields only). A new optional field keeps this correct
+ * because both lists are serialized by the same code; a field whose JSON
+ * form is unstable (a Date, for example) would not be. The sync returns
+ * null on a match so the file's mtime is preserved.
+ */
+function canonicalEntryJson(entries: ReadonlyArray<AgentHistoryEntry>): string {
+  return JSON.stringify([...entries].sort(compareHistoryEntries));
+}
+
+/**
  * Apply one {@link HistorySyncInput} to the history file.
  *
  * Order matters inside the transaction:
@@ -336,24 +374,25 @@ export function computeHistoryKeepers(
  * Two guards keep the pass safe against records registered while the
  * socket probes were awaited (the snapshot is stale for them):
  *
- * - Entries with `lastSeenAt > snapshotTime` or `startedAt > snapshotTime`
- *   are never dropped or counted for compaction. `upsertAgentHistory`
- *   stamps `lastSeenAt` with the write time, so an entry written while the
- *   probes ran always carries a `lastSeenAt` after the snapshot read. The
- *   `startedAt` clause remains as a fallback: `startedAt` is stamped at
+ * - Entries with `lastSeenAt >= snapshotTime` or `startedAt >= snapshotTime`
+ *   are never dropped or counted for compaction. Equality counts as
+ *   concurrent: a registration landing in the same millisecond as the
+ *   snapshot is kept for this pass instead of being deleted as an orphan.
+ *   The cost is at most one extra pass of retention for an entry written
+ *   just before the snapshot in that same millisecond; `snapshotTime`
+ *   advances, so the next pass resolves it. `upsertAgentHistory` stamps
+ *   `lastSeenAt` with the write time, while `startedAt` is stamped at
  *   session start, before the record and its history entry are written, so
- *   a write landing in the same millisecond as the snapshot still reads as
- *   concurrent.
+ *   either field can equal the snapshot.
  * - A cwd containing one of those entries never compacts at all, even when
  *   every known record in it is offline.
  */
 export function syncAgentHistory(input: HistorySyncInput): void {
+  const now = Date.now();
   mutateEntries((entries) => {
-    const keyOf = (entry: { cwd: string; startedAt: number }): string =>
-      historyKey(entry.cwd, entry.startedAt);
     const concurrent = (entry: AgentHistoryEntry): boolean =>
-      entry.lastSeenAt > input.snapshotTime || entry.startedAt > input.snapshotTime;
-    const stamped = stampOnline(entries, input.onlineRecords, input.keepRecords, Date.now());
+      entry.lastSeenAt >= input.snapshotTime || entry.startedAt >= input.snapshotTime;
+    const stamped = stampOnline(entries, input.onlineRecords, input.keepRecords, now);
     const keepers = computeHistoryKeepers(
       stamped,
       input.onlineRecords,
@@ -375,8 +414,6 @@ export function syncAgentHistory(input: HistorySyncInput): void {
       }
     }
 
-    next.sort(compareHistoryEntries);
-    const current = [...entries].sort(compareHistoryEntries);
-    return JSON.stringify(next) === JSON.stringify(current) ? null : next;
+    return canonicalEntryJson(next) === canonicalEntryJson(entries) ? null : next;
   });
 }

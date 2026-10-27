@@ -21,7 +21,7 @@ import {
   writeAgentRecord,
 } from "./registry";
 import { isPidAlive } from "./pid";
-import { agentHistoryPath, agentRecordPath, agentSocketPath, registryDir } from "./paths";
+import { agentHistoryLockPath, agentHistoryPath, agentRecordPath, agentSocketPath, registryDir } from "./paths";
 
 const posixOnly = process.platform === "win32" ? it.skip : it;
 
@@ -56,6 +56,7 @@ describe("registry", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (originalRegistryDir !== undefined) {
       process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
     } else {
@@ -154,6 +155,18 @@ describe("registry", () => {
         clock.mockRestore();
       }
       expect(readAgentHistory()).toEqual([{ cwd: dirA, startedAt: 1000, lastSeenAt: 123_456 }]);
+    });
+    it("writes the record and skips the history stamp when the history lock is held", () => {
+      ensureRegistryDir();
+      fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
+      vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
+
+      const rec = lead("ab12cd34", dirA, 1000);
+      expect(() => writeAgentRecord(rec)).not.toThrow();
+      // The record file is written; the history entry is left for the next
+      // list pass to upsert.
+      expect(readAgentRecords()).toEqual([rec]);
+      expect(readAgentHistory()).toEqual([]);
     });
   });
 
@@ -333,6 +346,28 @@ describe("registry", () => {
       const entries = readAgentHistory();
       expect(entries).toHaveLength(1);
       expect(entries[0].cwd).toBe(dirA);
+    });
+
+    it("returns cwd-filtered records without throwing when the history lock is held", () => {
+      const gone = path.join(tmpDir, "gone-lock");
+      fs.mkdirSync(gone);
+      const stale = lead("ab12cd34", gone, 100);
+      const alive = lead("ef56gh78", dirA, 200);
+      writeAgentRecord(stale);
+      writeAgentRecord(alive);
+      fs.rmSync(gone, { recursive: true });
+
+      // Another process holds the history lock: a live, fresh pid.
+      ensureRegistryDir();
+      fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
+      vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
+
+      // Contention must not propagate: callers like authorizeSender would
+      // reject every message if it did.
+      expect(() => readAgentRecords()).not.toThrow();
+      expect(readAgentRecords()).toEqual([alive]);
+      // The trim was skipped, so the stale record survives for the next load.
+      expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(true);
     });
 
     it("returns the first load unchanged when every working directory exists", () => {
@@ -737,6 +772,17 @@ describe("registry", () => {
       fs.writeFileSync(agentSocketPath(id), "");
     }
 
+    it("returns survivors without throwing when the history lock is held", async () => {
+      ensureRegistryDir();
+      const rec = lead("aa000001", dirA, 300);
+      writeAgentRecord(rec);
+      fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
+      vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
+
+      const entries = await pruneAndList(async () => Promise.resolve(AgentStatus.Idling));
+      expect(entries).toEqual([{ record: rec, status: AgentStatus.Idling }]);
+    });
+
     it("removes offline records and their stale socket files, returns survivors with statuses", async () => {
       const onlineLead: AgentRecord = lead("aa000001", dirA, 300);
       const offlineWorker: AgentRecord = worker("bb000002", 400);
@@ -882,6 +928,34 @@ describe("registry", () => {
       const dirBEntries = readAgentHistory().filter((e) => e.cwd === dirB);
       expect(dirBEntries).toHaveLength(2);
       expect(dirBEntries.map((e) => e.startedAt)).toContain(lateStartedAt);
+    });
+
+    it("keeps a same-millisecond registration entry through a prune", async () => {
+      // A stale record forces readAgentRecords to run its trim.
+      const dirStale = path.join(tmpDir, "stale-ms");
+      fs.mkdirSync(dirStale);
+      writeAgentRecord(lead("aa000001", dirStale, 100));
+      fs.rmSync(dirStale, { recursive: true });
+      // A live record keeps the probe loop running so a session can register
+      // in the snapshot's millisecond.
+      writeAgentRecord(lead("bb000002", dirA, 50));
+
+      const clock = vi.spyOn(Date, "now").mockReturnValue(500);
+      try {
+        await pruneAndList(async () => {
+          // Registered between the snapshot read and the probe: startedAt
+          // and lastSeenAt both equal snapshotTime, and the key is absent
+          // from the snapshot.
+          writeAgentRecord(lead("ee000008", dirA, 500));
+          return Promise.resolve(AgentStatus.Idling);
+        });
+      } finally {
+        clock.mockRestore();
+      }
+
+      const entries = readAgentHistory();
+      expect(entries.filter((e) => e.cwd === dirA && e.startedAt === 500)).toHaveLength(1);
+      expect(entries.some((e) => e.cwd === dirStale)).toBe(false);
     });
 
     it("keeps the shared history entry when one same-key sibling is removed", () => {

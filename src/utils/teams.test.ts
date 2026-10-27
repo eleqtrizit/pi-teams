@@ -8,7 +8,7 @@ import * as terminalAdapter from "./terminal-adapter";
 import type { TerminalAdapter } from "./terminal-adapter";
 import { AgentKind, AgentRecord } from "./models";
 import { writeAgentRecord } from "./registry";
-import { agentRecordPath, agentSocketPath } from "./paths";
+import { agentHistoryLockPath, agentRecordPath, agentSocketPath } from "./paths";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "r"));
 
@@ -46,6 +46,7 @@ describe("removeAgent", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     if (originalRegistryDir !== undefined) process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
@@ -136,6 +137,24 @@ describe("removeAgent", () => {
     });
     seedRegistryRecord({ id: "wk823456", pid: 4242 });
     await removeAgent({ agentId: "wk823456", ownPid: 4242 });
+    expect(killProcessSpy).toHaveBeenCalledWith(4242, "SIGKILL");
+  });
+
+  it("completes teardown when the history lock is held", async () => {
+    seedRegistryRecord({ id: "wk923456", name: "worker-1", paneId: "pane-9", pid: 4242 });
+    // Another process holds the history lock: a live, fresh pid. The record
+    // was seeded before the lock, so the trim never runs during the write.
+    fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
+    vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
+
+    const terminal = fakeTerminal();
+    await expect(removeAgent({ agentId: "wk923456", terminal })).resolves.toBeUndefined();
+
+    // The history delete was skipped, but teardown must still run: record and
+    // socket gone, pane closed, process killed.
+    expect(fs.existsSync(agentRecordPath("wk923456"))).toBe(false);
+    expect(fs.existsSync(agentSocketPath("wk923456"))).toBe(false);
+    expect(terminal.kill).toHaveBeenCalledWith("pane-9");
     expect(killProcessSpy).toHaveBeenCalledWith(4242, "SIGKILL");
   });
 });
