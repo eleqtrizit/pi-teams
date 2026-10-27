@@ -114,7 +114,7 @@ export function agentHistoryPath(): string {
  * @returns Absolute path of the agents.jsonl lock file
  */
 export function agentHistoryLockPath(): string {
-  return path.join(registryDir(), "agents.jsonl.lock");
+  return path.join(registryDir(), "agents.jsonl.flock");
 }
 
 /**

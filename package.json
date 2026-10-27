@@ -23,6 +23,7 @@
     "README.md"
   ],
   "dependencies": {
+    "fs-native-extensions": "^1.5.2",
     "pi-taskgraph": "github:eleqtrizit/pi-tasks#main"
   },
   "peerDependencies": {

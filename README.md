@@ -244,6 +244,7 @@ All agent data is stored in the per-user registry under your home directory, so 
 ├── state/
 │   └── <id>.json            # Busy/available run state
 ├── agents.jsonl             # lastSeenAt side table, one entry per registered record
+├── agents.jsonl.flock       # Permanent lock inode guarding agents.jsonl mutations
 └── s/
     └── <id>.sock            # Unix domain socket for messaging
 ```
@@ -349,6 +350,24 @@ it migrates the settings once:
 - **pi coding agent** (https://github.com/mariozechner/pi-coding-agent)
 - **Node.js** (for extension runtime)
 - **Terminal emulator**: herdr, tmux, Zellij, iTerm2, WezTerm, or Orca
+
+The cross-process lock uses `fs-native-extensions`, a prebuilt N-API module
+that needs no compiler at install time and survives Node major-version
+upgrades. pi-teams supports macOS and glibc Linux on arm64 and x64.
+fs-native-extensions ships prebuilds for other platforms; pi-teams does not
+test or support them there. When the module cannot load, or when the
+filesystem rejects advisory locking (an NFS mount without lockd, an SMB or
+FUSE mount), pi-teams runs degraded: team features work, `lastSeenAt` history
+recording is skipped, and one warning on the first history-lock use of the
+session names the limitation.
+
+**Upgrading pi-teams across the lock-protocol boundary requires stopping
+every pi session before starting any new one.** Sessions running the old
+link-based lock and sessions running the new advisory lock do not exclude
+each other, so a mixed-version window can lose `agents.jsonl` writes. The
+leftover `agents.jsonl.lock` file from the old scheme is inert under the new
+one and safe to delete by hand once every session has stopped; it is never
+removed automatically.
 
 ## Development
 

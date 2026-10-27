@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
+import util from "node:util";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { AgentEntry } from "./agentFormat";
@@ -22,6 +23,24 @@ import {
 } from "./registry";
 import { isPidAlive } from "./pid";
 import { agentHistoryLockPath, agentHistoryPath, agentRecordPath, agentSocketPath, registryDir } from "./paths";
+import { tryLock, unlock } from "fs-native-extensions";
+import { __setNativeLockLoaderForTests } from "./filelock";
+
+/**
+ * Fds holding a real advisory lock on the history lock for the current test.
+ *
+ * Under the kernel-lock design, a planted lock file does not block anything:
+ * the open-file-description lock is the only authority. Tests that need
+ * contention hold a real lock on an open fd, released in afterEach.
+ */
+let heldLockFds: number[] = [];
+
+/** Hold the history lock for the current test via a real exclusive advisory lock. */
+function holdHistoryLock(): void {
+  const fd = fs.openSync(agentHistoryLockPath(), "a+", 0o600);
+  if (!tryLock(fd)) throw new Error("history lock already held");
+  heldLockFds.push(fd);
+}
 
 const posixOnly = process.platform === "win32" ? it.skip : it;
 
@@ -56,6 +75,16 @@ describe("registry", () => {
   });
 
   afterEach(() => {
+    for (const fd of heldLockFds) {
+      try {
+        unlock(fd);
+      } catch {
+        // Already released.
+      }
+      fs.closeSync(fd);
+    }
+    heldLockFds = [];
+    __setNativeLockLoaderForTests();
     vi.unstubAllEnvs();
     if (originalRegistryDir !== undefined) {
       process.env.PI_TEAMS_REGISTRY_DIR = originalRegistryDir;
@@ -158,7 +187,7 @@ describe("registry", () => {
     });
     it("writes the record and skips the history stamp when the history lock is held", () => {
       ensureRegistryDir();
-      fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
+      holdHistoryLock();
       vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
 
       const rec = lead("ab12cd34", dirA, 1000);
@@ -357,17 +386,163 @@ describe("registry", () => {
       writeAgentRecord(alive);
       fs.rmSync(gone, { recursive: true });
 
-      // Another process holds the history lock: a live, fresh pid.
+      // Another process holds the history lock: a real exclusive advisory lock. No
+      // env stub here, so a regression of the trim to the default 2-second
+      // wait fails the timing assertion below.
       ensureRegistryDir();
-      fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
-      vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
+      holdHistoryLock();
 
       // Contention must not propagate: callers like authorizeSender would
-      // reject every message if it did.
+      // reject every message if it did. The zero-wait try-lock also keeps
+      // the whole call fast instead of stalling the event loop.
+      const startedAt = Date.now();
       expect(() => readAgentRecords()).not.toThrow();
       expect(readAgentRecords()).toEqual([alive]);
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
       // The trim was skipped, so the stale record survives for the next load.
       expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(true);
+    });
+
+    it("keeps returning records when the native lock adapter cannot load", () => {
+      const gone = path.join(tmpDir, "gone-adapter");
+      fs.mkdirSync(gone, { recursive: true });
+      writeAgentRecord(lead("ab12cd34", gone, 100));
+      const alive = lead("ef56gh78", dirA, 200);
+      writeAgentRecord(alive);
+      // Make the stale socket exist so its removal is observable.
+      fs.mkdirSync(path.dirname(agentSocketPath("ab12cd34")), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(agentSocketPath("ab12cd34"), "", { mode: 0o600 });
+      fs.rmSync(gone, { recursive: true });
+
+      const writes: string[] = [];
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(((chunk: Uint8Array | string) => {
+          writes.push(String(chunk));
+          return true;
+        }) as typeof process.stderr.write);
+      __setNativeLockLoaderForTests(() => {
+        throw new Error("no prebuilt binary for this platform");
+      });
+      try {
+        // A missing adapter degrades to history-skip, never to a rejected
+        // load: authorizeSender reads records on every inbound message.
+        expect(() => readAgentRecords()).not.toThrow();
+        expect(readAgentRecords()).toEqual([alive]);
+        // Locking can never succeed this session, so the stale record and
+        // socket are removed now instead of leaking; the skipped history
+        // entries self-heal on the next successful syncAgentHistory pass.
+        expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(false);
+        expect(fs.existsSync(agentSocketPath("ab12cd34"))).toBe(false);
+        // One warning per process across both calls.
+        expect(writes.filter((w) => w.includes("fs-native-extensions"))).toHaveLength(1);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+
+    it("degrades to history-skip when the filesystem rejects advisory locking", () => {
+      // One test covers both consensus items for the filesystem reason: the
+      // tryLock errno is classified as skippable LockUnavailableError, and
+      // the trim removes the stale records because the history batch can
+      // never succeed on this mount.
+      const gone = path.join(tmpDir, "gone-enotsup");
+      fs.mkdirSync(gone, { recursive: true });
+      writeAgentRecord(lead("ab12cd34", gone, 100));
+      const alive = lead("ef56gh78", dirA, 200);
+      writeAgentRecord(alive);
+      // Make the stale socket exist so its removal is observable.
+      fs.mkdirSync(path.dirname(agentSocketPath("ab12cd34")), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(agentSocketPath("ab12cd34"), "", { mode: 0o600 });
+      fs.rmSync(gone, { recursive: true });
+
+      const writes: string[] = [];
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(((chunk: Uint8Array | string) => {
+          writes.push(String(chunk));
+          return true;
+        }) as typeof process.stderr.write);
+      const errnoCode = util.getSystemErrorName(-os.constants.errno.ENOTSUP);
+      const errnos: string[] = [];
+      __setNativeLockLoaderForTests(() => ({
+        tryLock: () => {
+          const error = new Error("Operation not supported") as NodeJS.ErrnoException;
+          error.code = errnoCode;
+          errnos.push(error.code);
+          throw error;
+        },
+        unlock: () => undefined,
+      }));
+
+      try {
+        // Registration and reading survive an NFS/SMB/FUSE mount that cannot
+        // lock; the history stamp is skipped, not fatal.
+        expect(() => writeAgentRecord(alive)).not.toThrow();
+        expect(() => readAgentRecords()).not.toThrow();
+        expect(readAgentRecords()).toEqual([alive]);
+        // Stale record and socket removed now: deletion eligibility comes from
+        // the missing cwd, never from lock state.
+        expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(false);
+        expect(fs.existsSync(agentSocketPath("ab12cd34"))).toBe(false);
+        // tryLock errored once per history-touching operation, none cached.
+        expect(errnos.length).toBeGreaterThanOrEqual(2);
+        // One warning per process for the FilesystemUnsupported reason.
+        expect(writes.filter((w) => w.includes("ENOTSUP"))).toHaveLength(1);
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+
+    it("degrades every entry point when the adapter throws the libuv shape for ENOLCK", async () => {
+      // The adapter maps errno through libuv's uv_err_name: ENOLCK surfaces
+      // as "Unknown system error -N", never as "ENOLCK". This test injects
+      // the exact string the real adapter emits and asserts that every
+      // history-touching entry point degrades instead of throwing.
+      const writes: string[] = [];
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(((chunk: Uint8Array | string) => {
+          writes.push(String(chunk));
+          return true;
+        }) as typeof process.stderr.write);
+      const errnoCode = util.getSystemErrorName(-os.constants.errno.ENOLCK);
+      __setNativeLockLoaderForTests(() => ({
+        tryLock: () => {
+          const error = new Error("lockd not running") as NodeJS.ErrnoException;
+          error.code = errnoCode;
+          throw error;
+        },
+        unlock: () => undefined,
+      }));
+
+      try {
+        const gone = path.join(tmpDir, "gone-enolck");
+        fs.mkdirSync(gone, { recursive: true });
+        writeAgentRecord(lead("ab12cd34", gone, 100));
+        const alive = lead("ef56gh78", dirA, 200);
+        // Make the stale socket exist so its removal is observable.
+        fs.mkdirSync(path.dirname(agentSocketPath("ab12cd34")), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(agentSocketPath("ab12cd34"), "", { mode: 0o600 });
+        fs.rmSync(gone, { recursive: true });
+
+        // Registration, the read-path trim, the list pass, and teardown all
+        // skip history work instead of rejecting.
+        expect(() => writeAgentRecord(alive)).not.toThrow();
+        expect(() => readAgentRecords()).not.toThrow();
+        expect(readAgentRecords()).toEqual([alive]);
+        await expect(pruneAndList(async () => AgentStatus.Idling)).resolves.toHaveLength(1);
+        expect(() => removeAgentRecord("ef56gh78")).not.toThrow();
+        // The stale record and its socket were removed by the trim even
+        // though the history batch was skipped.
+        expect(fs.existsSync(agentRecordPath("ab12cd34"))).toBe(false);
+        expect(fs.existsSync(agentSocketPath("ab12cd34"))).toBe(false);
+        // One warning per process for the FilesystemUnsupported reason,
+        // naming the canonical errno.
+        expect(writes.filter((w) => w.includes("ENOLCK"))).toHaveLength(1);
+      } finally {
+        stderrSpy.mockRestore();
+      }
     });
 
     it("returns the first load unchanged when every working directory exists", () => {
@@ -776,7 +951,7 @@ describe("registry", () => {
       ensureRegistryDir();
       const rec = lead("aa000001", dirA, 300);
       writeAgentRecord(rec);
-      fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
+      holdHistoryLock();
       vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
 
       const entries = await pruneAndList(async () => Promise.resolve(AgentStatus.Idling));

@@ -9,6 +9,7 @@ import type { TerminalAdapter } from "./terminal-adapter";
 import { AgentKind, AgentRecord } from "./models";
 import { writeAgentRecord } from "./registry";
 import { agentHistoryLockPath, agentRecordPath, agentSocketPath } from "./paths";
+import { tryLock, unlock } from "fs-native-extensions";
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "r"));
 
@@ -142,19 +143,30 @@ describe("removeAgent", () => {
 
   it("completes teardown when the history lock is held", async () => {
     seedRegistryRecord({ id: "wk923456", name: "worker-1", paneId: "pane-9", pid: 4242 });
-    // Another process holds the history lock: a live, fresh pid. The record
-    // was seeded before the lock, so the trim never runs during the write.
-    fs.writeFileSync(agentHistoryLockPath(), `${process.pid}:held`, { mode: 0o600 });
-    vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "40");
+    // Another process holds the history lock: a real exclusive advisory
+    // lock on a held-open fd. No env stub: the zero-wait history delete is
+    // asserted by the wall-time bound below, so a regression to the default
+    // 2-second wait fails this test instead of being masked.
+    const fd = fs.openSync(agentHistoryLockPath(), "a+", 0o600);
+    if (!tryLock(fd)) throw new Error("history lock already held");
 
-    const terminal = fakeTerminal();
-    await expect(removeAgent({ agentId: "wk923456", terminal })).resolves.toBeUndefined();
+    try {
+      const terminal = fakeTerminal();
+      const startedAt = Date.now();
+      await expect(removeAgent({ agentId: "wk923456", terminal })).resolves.toBeUndefined();
+      // The history delete was a zero-wait try-lock that skipped; teardown
+      // itself must stay fast instead of stalling on the held lock.
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
 
-    // The history delete was skipped, but teardown must still run: record and
-    // socket gone, pane closed, process killed.
-    expect(fs.existsSync(agentRecordPath("wk923456"))).toBe(false);
-    expect(fs.existsSync(agentSocketPath("wk923456"))).toBe(false);
-    expect(terminal.kill).toHaveBeenCalledWith("pane-9");
-    expect(killProcessSpy).toHaveBeenCalledWith(4242, "SIGKILL");
+      // The history delete was skipped, but teardown must still run: record
+      // and socket gone, pane closed, process killed.
+      expect(fs.existsSync(agentRecordPath("wk923456"))).toBe(false);
+      expect(fs.existsSync(agentSocketPath("wk923456"))).toBe(false);
+      expect(terminal.kill).toHaveBeenCalledWith("pane-9");
+      expect(killProcessSpy).toHaveBeenCalledWith(4242, "SIGKILL");
+    } finally {
+      unlock(fd);
+      fs.closeSync(fd);
+    }
   });
 });

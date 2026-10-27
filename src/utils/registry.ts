@@ -13,7 +13,11 @@ import {
 import { isAgentBusy } from "./runstate";
 import { PROBE_TIMEOUT_MS, ensurePrivateDir, isSocketListening } from "./transport";
 import { isPidAlive } from "./pid";
-import { LockHeldError } from "./filelock";
+import {
+  isLockSkippable,
+  LockHeldError,
+  LockUnavailableError,
+} from "./filelock";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const ID_LENGTH = 8;
@@ -95,11 +99,13 @@ function writeAgentRecordOnly(rec: AgentRecord): void {
 export function writeAgentRecord(rec: AgentRecord): void {
   writeAgentRecordOnly(rec);
   try {
-    upsertAgentHistory(rec);
+    // Zero wait: registration must not stall on a suspended lock holder;
+    // the next list pass upserts the entry for this surviving record.
+    upsertAgentHistory(rec, { waitMs: 0 });
   } catch (error) {
-    if (!(error instanceof LockHeldError)) throw error;
-    // Another process holds the history lock. The record file is written;
-    // the next list pass upserts the missing entry for this surviving record.
+    if (!isLockSkippable(error)) throw error;
+    // The lock is held or unavailable. The record file is written; the
+    // next list pass upserts the missing entry for this surviving record.
   }
 }
 
@@ -219,43 +225,63 @@ function readValidAgentRecords(): AgentRecord[] {
 
 /**
  * Read all valid agent records, trimming agents whose working directory no
- * longer exists. Load, check paths, and when a trim is needed remove all
- * their history keys in one locked batch pass, then remove every dangling
- * record file and its stale socket, then load again; when the batch throws,
- * the record files survive and the next load retries the trim. Otherwise
- * the first load is returned as-is.
+ * longer exists.
  *
- * @returns Array of valid agent records whose working directories exist
+ * A single scan partitions the loaded records into live and stale; the
+ * caller receives the live snapshot. A cwd that disappears after the scan is
+ * the race every snapshot reader has: that record is returned by this call
+ * and trimmed by the next load. When stale records exist, their history keys
+ * are removed in one locked batch pass first, then their record files and
+ * sockets. On transient contention (`LockHeldError`) the whole trim is
+ * skipped and retried by the next load. When locking cannot run
+ * (`LockUnavailableError`: the adapter is missing or the mount currently
+ * refuses advisory locks), the record files and sockets are removed anyway -
+ * deletion eligibility comes from the missing cwd, never from lock state -
+ * and the skipped history entries self-heal on the next successful sync.
+ *
+ * @returns Live snapshot: records whose working directories existed at the scan
  */
 export function readAgentRecords(): AgentRecord[] {
   const records = readValidAgentRecords();
-  const stale = records.filter((rec) => !fs.existsSync(rec.cwd));
+  const live: AgentRecord[] = [];
+  const stale: AgentRecord[] = [];
+  for (const rec of records) {
+    (fs.existsSync(rec.cwd) ? live : stale).push(rec);
+  }
   if (stale.length === 0) return records;
-  // The history batch runs first: if its locked mutation throws, the record
-  // files survive and the next load retries the whole trim. One batch, not
-  // one removal per stale record: the former per-record path re-read each
+  // The history batch runs first when it can: if contention skips it, the
+  // record files survive and the next load retries the whole trim. One batch,
+  // not one removal per stale record: the former per-record path re-read each
   // record, rescanned the whole directory, and took the history lock once
   // per record. No surviving record shares a stale record's (cwd, startedAt)
   // key, because the cwd half of the key belongs to a directory that no
   // longer exists, so the batch removal never drops a surviving record's
-  // recency.
+  // recency. The wait is zero: this is a hot read path (message
+  // authorization, the run hold, list_agents), so a held lock skips the trim
+  // instead of stalling every inbound message for up to the full wait.
   try {
-    removeHistoryEntries(stale);
+    removeHistoryEntries(stale, { waitMs: 0 });
   } catch (error) {
     if (error instanceof LockHeldError) {
-      // Another process holds the history lock. Skip the trim for this load
-      // and return the cwd-filtered records; the next load retries the trim.
-      // Propagating here would reject every inbound message, strand the run
-      // hold, and fail the spawn path, none of which is a lock problem.
-      return records.filter((rec) => fs.existsSync(rec.cwd));
+      // Transient contention: return the live snapshot; the next load
+      // retries the trim. Propagating here would reject every inbound
+      // message, strand the run hold, and fail the spawn path, none of which
+      // is a lock problem.
+      return live;
     }
-    throw error;
+    if (!(error instanceof LockUnavailableError)) throw error;
+    // Locking cannot run here (the adapter failed to load, or this mount
+    // currently refuses advisory locks). Waiting for a history-first retry
+    // would leak the stale records and sockets, and every later load would
+    // re-stat them, so remove them now; any history entries left behind are
+    // dropped by the next successful syncAgentHistory pass on both grounds
+    // (gone cwd, no matching record).
   }
   for (const rec of stale) {
     removeAgentRecordFile(rec.id);
     removeStaleSocket(rec.id);
   }
-  return readValidAgentRecords();
+  return live;
 }
 
 /**
@@ -312,9 +338,16 @@ export function removeAgentRecord(id: string): void {
   );
   if (!siblingSharesKey) {
     try {
-      removeFromAgentHistory(rec.cwd, rec.startedAt);
+      removeFromAgentHistory(
+        rec.cwd,
+        rec.startedAt,
+        // Zero wait: teardown must not stall on a suspended lock holder, and
+        // close_all_workers must not block N times the full wait; the next
+        // sync drops the orphaned entry.
+        { waitMs: 0 },
+      );
     } catch (error) {
-      if (!(error instanceof LockHeldError)) throw error;
+      if (!isLockSkippable(error)) throw error;
       // Another process holds the history lock. The record file is already
       // gone, so the next list pass drops the orphaned entry. Teardown must
       // not stop here: skipping the history delete is safe, leaving the
@@ -476,6 +509,11 @@ export async function pruneAndList(
   // and drop entries whose cwd directory is gone. Entries with lastSeenAt
   // or startedAt after snapshotTime are left alone: they were written by
   // sessions that registered while the probes were awaited.
+  //
+  // This transaction keeps the default (clamped) wait on purpose:
+  // list_agents is user-initiated, unlike the self-healing hot paths, so it
+  // is worth waiting out ordinary contention to keep the side table
+  // accurate.
   try {
     syncAgentHistory({
       snapshotTime,
@@ -484,10 +522,26 @@ export async function pruneAndList(
       keepRecords: keep,
     });
   } catch (error) {
-    if (!(error instanceof LockHeldError)) throw error;
-    // Another process holds the history lock. Skip this pass's stamp and
-    // compaction; the next pass retries. Pruning below still runs, and the
-    // next sync drops the removed records' orphaned entries.
+    if (error instanceof LockHeldError) {
+      // Transient contention: return keep WITHOUT unlinking the removed
+      // records. Their entries are protected only by their keys staying in
+      // allRecords of this pass's snapshot; unlink the record files now and
+      // the next pass sees those keys gone, an entry whose cwd cannot
+      // compact (a concurrent registration in it) is dropped as an orphan,
+      // and the directory's newest lastSeenAt is lost for peer sorting.
+      // Keeping the records makes the next pass retry both the sync and the
+      // prune. This closes the contention case; orphaning across passes
+      // under concurrent-then-closed registrations remains the compaction
+      // design's documented tradeoff.
+      return keep.map((rec) => ({
+        record: rec,
+        status: statuses.get(rec.id) ?? AgentStatus.Offline,
+      }));
+    }
+    if (!(error instanceof LockUnavailableError)) throw error;
+    // Locking cannot run here (adapter missing, or the mount currently
+    // refuses locks): prune now. The records would otherwise leak forever,
+    // and the skipped history entries self-heal on the next successful sync.
   }
 
   for (const id of remove) {

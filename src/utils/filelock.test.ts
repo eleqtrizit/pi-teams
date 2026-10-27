@@ -2,11 +2,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { performance } from "node:perf_hooks";
+import util from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LockHeldError, withLockFile } from "./filelock";
+import {
+  isLockSkippable,
+  LockHeldError,
+  LockUnavailableError,
+  LockUnavailableReason,
+  withLockFile,
+  __setNativeLockLoaderForTests,
+} from "./filelock";
 
 let tmpDir: string;
 let lockPath: string;
+/** Holder children still alive; killed in afterEach so a ready-wait failure never leaks one. */
+let spawnedChildren: ReturnType<typeof spawn>[] = [];
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-filelock-test-"));
@@ -14,93 +25,125 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setNativeLockLoaderForTests();
+  for (const child of spawnedChildren) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already exited.
+    }
+  }
+  spawnedChildren = [];
   vi.unstubAllEnvs();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-/** Backdate a lock file to test whether elapsed time alone affects ownership. */
-function ageLock(lockPath: string, ageMs: number): void {
-  const past = new Date(Date.now() - ageMs);
-  fs.utimesSync(lockPath, past, past);
-}
+/** Reusable zeroed waiter for the ready-file poll; Atomics.wait never mutates it. */
+const POLL_WAITER = new Int32Array(new SharedArrayBuffer(4));
 
-/** Plant a lock file with the given content and optional age. */
-function plantLock(lockPath: string, content: string, ageMs = 0): void {
-  fs.writeFileSync(lockPath, content, { mode: 0o600 });
-  if (ageMs > 0) ageLock(lockPath, ageMs);
+/** Spawn a child that acquires the lock, signals a ready file, and sleeps. */
+function spawnHolder(lockPath: string, readyFile: string, killSignal?: "SIGKILL" | "SIGSTOP") {
+  const stderrFile = path.join(tmpDir, `holder-${Date.now()}.stderr`);
+  const stderrFd = fs.openSync(stderrFile, "a");
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const fs=require("fs");const {tryLock}=require("fs-native-extensions");
+       const fd=fs.openSync(${JSON.stringify(lockPath)},"a+",0o600);
+       if(!tryLock(fd)) process.exit(3);
+       fs.ftruncateSync(fd,0);
+       fs.writeFileSync(fd,process.pid+"\\n");
+       fs.writeFileSync(${JSON.stringify(readyFile)},"1");
+       setTimeout(()=>{},60000);`,
+    ],
+    { stdio: ["ignore", "ignore", stderrFd] },
+  );
+  spawnedChildren.push(child);
+  // The child holds its own copy of the descriptor; the parent's side is
+  // not needed after spawn and would leak through the test's lifetime.
+  fs.closeSync(stderrFd);
+  // Wait until the child provably holds the lock.
+  const deadline = Date.now() + 10_000;
+  while (!fs.existsSync(readyFile)) {
+    if (Date.now() > deadline) {
+      // Name the cause: a generic timeout hides a child that crashed on
+      // startup (a missing addon, a bad script) behind a 10-second stall.
+      const stderr = fs.readFileSync(stderrFile, "utf8").slice(-2_000);
+      throw new Error(`holder child never acquired the lock; stderr tail: ${stderr}`);
+    }
+    Atomics.wait(POLL_WAITER, 0, 0, 10);
+  }
+  if (killSignal !== undefined) process.kill(child.pid as number, killSignal);
+  return child;
 }
 
 describe("withLockFile", () => {
   it("runs the critical section and releases the lock", () => {
     const result = withLockFile(lockPath, () => 42);
     expect(result).toBe(42);
-    expect(fs.existsSync(lockPath)).toBe(false);
+    // The inode is permanent: it stays behind so the flock identity of the
+    // path never changes between acquisitions.
+    expect(fs.existsSync(lockPath)).toBe(true);
+    // The released lock is immediately acquirable again.
+    expect(withLockFile(lockPath, () => "again")).toBe("again");
   });
 
-  it("records the holder pid and nonce while held", () => {
+  it("records the holder pid while held", () => {
     withLockFile(lockPath, () => {
-      const [pid, nonce] = fs.readFileSync(lockPath, "utf8").split(":");
-      expect(pid).toBe(String(process.pid));
-      expect(nonce).toMatch(/^[0-9a-f]{16}$/);
+      expect(fs.readFileSync(lockPath, "utf8")).toBe(`${process.pid}\n`);
     });
   });
 
   it("creates the parent directory when missing", () => {
     const nested = path.join(tmpDir, "a", "b", "test.lock");
     withLockFile(nested, () => undefined);
-    expect(fs.existsSync(nested)).toBe(false); // released, but the dir was made
+    expect(fs.existsSync(nested)).toBe(true);
     expect(fs.existsSync(path.dirname(nested))).toBe(true);
   });
 
-  it("steals a lock held by a dead pid", async () => {
-    // Spawn and fully reap a child, so its pid is provably gone. A killed
-    // but unreaped child stays a zombie, and zombies still answer kill(0).
-    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
-    const pid = child.pid as number;
-    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    plantLock(lockPath, `${pid}:deadbeef`);
+  it("never takes the lock from a live holder, regardless of file age", () => {
+    withLockFile(lockPath, () => {
+      // Age used to make a live holder's lock stealable; with the kernel
+      // lock, content and mtime carry no authority at all.
+      const past = new Date(Date.now() - 31_000);
+      fs.utimesSync(lockPath, past, past);
 
-    const result = withLockFile(lockPath, () => "ok");
-    expect(result).toBe("ok");
-    expect(fs.existsSync(lockPath)).toBe(false);
+      expect(() =>
+        withLockFile(lockPath, () => "unexpected", { waitMs: 100 }),
+      ).toThrow(`Lock is held by pid ${process.pid} (last recorded holder): ${lockPath}`);
+    });
   });
 
-  it("does not steal a live holder's lock younger than the cap", () => {
+  it("does not authorize access from file content", () => {
+    // A corrupt or stale content string cannot grant or deny the lock: the
+    // kernel flock is the only authority. No holder holds the flock, so the
+    // acquisition succeeds whatever the file says.
+    fs.writeFileSync(lockPath, "1corrupt", { mode: 0o600 });
+    expect(withLockFile(lockPath, () => "ok")).toBe("ok");
+  });
+
+  it("reports another process's pid when the wait runs out", () => {
+    // Hold in a real child process so the pid in the message is foreign.
+    const readyFile = path.join(tmpDir, "ready");
+    const child = spawnHolder(lockPath, readyFile, undefined);
     vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "100");
-    plantLock(lockPath, `${process.pid}:aaaa`, 3_000);
-
-    expect(() => withLockFile(lockPath, () => "unexpected")).toThrow(
-      `Lock is held by live pid ${process.pid}: ${lockPath}`,
-    );
+    let message = "";
+    try {
+      withLockFile(lockPath, () => "unexpected");
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe(`Lock is held by pid ${child.pid} (last recorded holder): ${lockPath}`);
+    expect(message).not.toContain("undefined");
   });
 
-  it("steals a live holder's lock older than the cap", () => {
-    // A lock older than the cap is leaked: release was skipped, so no active
-    // holder exists even though the pid is still alive.
-    plantLock(lockPath, `${process.pid}:aaaa`, 31_000);
-
-    const result = withLockFile(lockPath, () => "ok");
-    expect(result).toBe("ok");
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  it("steals an old unreadable lock after the timeout", () => {
-    // A corrupt pid file is untrusted content, not a live holder: the
-    // timeout steals it so waiters always make progress.
-    plantLock(lockPath, "not-a-pid", 3_000);
-
-    const result = withLockFile(lockPath, () => "ok");
-    expect(result).toBe("ok");
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  it("does not steal a fresh unreadable lock before the timeout", () => {
-    vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "100");
-    plantLock(lockPath, "not-a-pid");
-
-    expect(() => withLockFile(lockPath, () => "unexpected")).toThrow(
-      `Lock is held by an unknown holder: ${lockPath}`,
-    );
+  it("throws at once from a try-lock when the lock is held", () => {
+    const readyFile = path.join(tmpDir, "ready");
+    spawnHolder(lockPath, readyFile, undefined);
+    const startedAt = performance.now();
+    expect(() => withLockFile(lockPath, () => "unexpected", { waitMs: 0 })).toThrow(LockHeldError);
+    expect(performance.now() - startedAt).toBeLessThan(50);
   });
 
   it("uses the default wait when the override is malformed", () => {
@@ -108,22 +151,151 @@ describe("withLockFile", () => {
     // it, so the call uses the default wait instead of a shortened one the
     // operator did not ask for.
     vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "50abc");
-    plantLock(lockPath, `${process.pid}:held`);
-
+    const readyFile = path.join(tmpDir, "ready");
+    spawnHolder(lockPath, readyFile, undefined);
     const startedAt = Date.now();
     expect(() => withLockFile(lockPath, () => "unexpected")).toThrow(LockHeldError);
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500);
-    fs.rmSync(lockPath, { force: true });
+  }, 10_000);
+
+  it("acquires immediately once a SIGKILLed holder's descriptor closes", () => {
+    const readyFile = path.join(tmpDir, "ready");
+    spawnHolder(lockPath, readyFile, "SIGKILL");
+    // No reap wait: the pid may linger as a zombie, which is exactly the
+    // pid-reuse class of staleness. The flock releases with the descriptor,
+    // so the next acquire succeeds without consulting any pid.
+    const startedAt = Date.now();
+    expect(withLockFile(lockPath, () => "recovered")).toBe("recovered");
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
-  it("does not delete a lock that was stolen from us mid-critical-section", () => {
-    withLockFile(lockPath, () => {
-      // Simulate a steal: the file no longer carries our nonce.
-      fs.writeFileSync(lockPath, "424242:someoneelse", { mode: 0o600 });
+  it("keeps the lock exclusive while a SIGSTOPped holder stays alive", () => {
+    const readyFile = path.join(tmpDir, "ready");
+    const child = spawnHolder(lockPath, readyFile, "SIGSTOP");
+    vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "150");
+    const startedAt = Date.now();
+    expect(() => withLockFile(lockPath, () => "unexpected")).toThrow(LockHeldError);
+    // A suspended holder keeps exclusivity: the contender waits out its
+    // whole limit instead of stealing.
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(140);
+    // Resume the suspended child; afterEach kills every survivor.
+    process.kill(child.pid as number, "SIGCONT");
+  });
+
+  it("releases the kernel lock when the critical section throws", () => {
+    expect(() =>
+      withLockFile(lockPath, () => {
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(withLockFile(lockPath, () => "acquired")).toBe("acquired");
+  });
+
+  it("classifies an unsupported filesystem as LockUnavailableError and never runs the section", () => {
+    const writes: string[] = [];
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: Uint8Array | string) => {
+        writes.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    const errnos: string[] = [];
+    // The adapter maps errno through libuv's uv_err_name, which renders
+    // ENOLCK as "Unknown system error -N" on macOS and Linux. Only an
+    // injection built with getSystemErrorName proves the classification
+    // matches what the real adapter throws.
+    const errnoCode = util.getSystemErrorName(-os.constants.errno.ENOLCK);
+    __setNativeLockLoaderForTests(() => ({
+      tryLock: () => {
+        const error = new Error("lockd not running on this mount") as NodeJS.ErrnoException;
+        error.code = errnoCode;
+        errnos.push(error.code);
+        throw error;
+      },
+      unlock: () => undefined,
+    }));
+    try {
+      let sectionRan = 0;
+      let caught: unknown;
+      try {
+        withLockFile(lockPath, () => {
+          sectionRan += 1;
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(LockUnavailableError);
+      expect((caught as LockUnavailableError).reason).toBe(
+        LockUnavailableReason.FilesystemUnsupported,
+      );
+      // Never cached (NFS can recover) and never run unlocked.
+      expect(() =>
+        withLockFile(lockPath, () => {
+          sectionRan += 1;
+        }),
+      ).toThrow(LockUnavailableError);
+      expect(sectionRan).toBe(0);
+      expect(errnos).toEqual([errnoCode, errnoCode]);
+      // One warning for the FilesystemUnsupported reason, naming the
+      // canonical errno rather than the raw libuv string.
+      const locked = writes.filter((w) => w.includes("ENOLCK"));
+      expect(locked).toHaveLength(1);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("propagates a descriptor bug from tryLock raw instead of classifying it", () => {
+    __setNativeLockLoaderForTests(() => ({
+      tryLock: () => {
+        const error = new Error("bad file descriptor") as NodeJS.ErrnoException;
+        error.code = "EBADF";
+        throw error;
+      },
+      unlock: () => undefined,
+    }));
+    let caught: unknown;
+    try {
+      withLockFile(lockPath, () => "never");
+    } catch (error) {
+      caught = error;
+    }
+    // Our own bugs must fail fast: not skippable, not wrapped.
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as NodeJS.ErrnoException).code).toBe("EBADF");
+    expect(caught).not.toBeInstanceOf(LockUnavailableError);
+    expect(isLockSkippable(caught)).toBe(false);
+  });
+
+  it("throws LockUnavailableError and warns exactly once when the adapter cannot load", () => {
+    const writes: string[] = [];
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: Uint8Array | string) => {
+        writes.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    __setNativeLockLoaderForTests(() => {
+      throw new Error("no prebuilt binary for this platform");
     });
-    // Our release saw a foreign nonce and left the file alone.
-    expect(fs.readFileSync(lockPath, "utf8")).toBe("424242:someoneelse");
-    fs.rmSync(lockPath, { force: true });
+    try {
+      let sectionRan = 0;
+      expect(() =>
+        withLockFile(lockPath, () => {
+          sectionRan += 1;
+        }),
+      ).toThrow(LockUnavailableError);
+      expect(() =>
+        withLockFile(lockPath, () => {
+          sectionRan += 1;
+        }),
+      ).toThrow(LockUnavailableError);
+      // No lock, no critical section; one warning per process, not per call.
+      expect(sectionRan).toBe(0);
+      expect(writes.filter((w) => w.includes("fs-native-extensions"))).toHaveLength(1);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 
   it("returns the same value from the last call when used sequentially", () => {
@@ -131,120 +303,11 @@ describe("withLockFile", () => {
     expect(results).toEqual([1, 2, 3]);
   });
 
-  // ── Deterministic interleavings ─────────────────────────────────────────
-  // The steal protocol must survive a successor appearing between inspection
-  // and replacement, and two stealers racing the same stale lock. Both are
-  // unschedulable from the outside, so the LockHooks seam fires the successor
-  // or the second stealer at the exact syscall boundary.
+  // ── Real cross-process exclusion ────────────────────────────────────────
+  // Ownership bugs only reproduce with real processes racing each other, so
+  // spawn real vitest children through the dedicated test/filelock-child
+  // config. The exact counter proves mutual exclusion end to end.
 
-  it("aborts the steal when a fresh holder appears before the rename", () => {
-    vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "120");
-    plantLock(lockPath, "not-a-pid", 3_000);
-    const freshContent = `${process.pid}:freshholder`;
-    let criticalRuns = 0;
-    let injected = false;
-
-    expect(() =>
-      withLockFile(
-        lockPath,
-        () => {
-          criticalRuns += 1;
-        },
-        {
-          afterStaleInspection: () => {
-            if (injected) return;
-            injected = true;
-            // A successor acquires and holds the lock after our inspection.
-            fs.writeFileSync(lockPath, freshContent, { mode: 0o600 });
-          },
-        },
-      ),
-    ).toThrow(`Lock is held by live pid ${process.pid}: ${lockPath}`);
-
-    // The stealer re-verified under the claim, saw the live successor, and
-    // never entered the critical section or clobbered the fresh lock.
-    expect(criticalRuns).toBe(0);
-    expect(fs.readFileSync(lockPath, "utf8")).toBe(freshContent);
-    fs.rmSync(lockPath, { force: true });
-  });
-
-  it("keeps the lock path present and unacquirable through a steal", () => {
-    plantLock(lockPath, "not-a-pid", 3_000);
-    const present: boolean[] = [];
-
-    withLockFile(
-      lockPath,
-      () => {
-        present.push(fs.existsSync(lockPath));
-      },
-      {
-        afterStaleInspection: () => present.push(fs.existsSync(lockPath)),
-        beforeStealRename: () => {
-          present.push(fs.existsSync(lockPath));
-          // The reviewer's reproduction: a third process must not be able to
-          // link its own lock while a takeover is in flight. The path still
-          // exists, so the link fails and no third holder enters.
-          const probe = `${lockPath}.probe`;
-          fs.writeFileSync(probe, `${process.pid}:probe`, { mode: 0o600 });
-          expect(() => fs.linkSync(probe, lockPath)).toThrow(/EEXIST/);
-          fs.rmSync(probe, { force: true });
-        },
-      },
-    );
-
-    // Inspected, re-verified, and held: the path is present at every step, so
-    // no successor can link its own lock during a takeover.
-    expect(present).toEqual([true, true, true]);
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  it("lets only one stealer take over a stale lock at a time", () => {
-    vi.stubEnv("PI_TEAMS_LOCK_WAIT_TIMEOUT_MS", "120");
-    plantLock(lockPath, "not-a-pid", 3_000);
-    const runs: string[] = [];
-    let nested = false;
-
-    const result = withLockFile(
-      lockPath,
-      () => {
-        runs.push("A");
-        return "A";
-      },
-      {
-        beforeStealRename: () => {
-          if (nested) return;
-          nested = true;
-          // A holds the exclusive claim here. A second stealer must see the
-          // live claim and wait out its own limit instead of stealing.
-          expect(() =>
-            withLockFile(lockPath, () => {
-              runs.push("B");
-              return "B";
-            }),
-          ).toThrow(LockHeldError);
-        },
-      },
-    );
-
-    expect(result).toBe("A");
-    expect(runs).toEqual(["A"]);
-  });
-
-  it("reclaims a steal claim left behind by a dead claimer", () => {
-    plantLock(lockPath, "not-a-pid", 3_000);
-    // A stealer died after creating its claim; the unparseable claim target
-    // has no live owner, so the next stealer reclaims it and proceeds.
-    fs.symlinkSync("not-a-pid", `${lockPath}.steal`);
-
-    const result = withLockFile(lockPath, () => "ok");
-    expect(result).toBe("ok");
-    expect(fs.existsSync(lockPath)).toBe(false);
-    expect(fs.existsSync(`${lockPath}.steal`)).toBe(false);
-  });
-
-  // The lock's ownership bugs (stolen-release deletion, stale-steal TOCTOU)
-  // only reproduce with real processes racing each other, so spawn real
-  // vitest children through the dedicated test/filelock-child config.
   const contentionTest = process.platform === "win32" ? it.skip : it;
   contentionTest(
     "serializes competing processes: every increment lands exactly once",
@@ -254,6 +317,11 @@ describe("withLockFile", () => {
       const counterFile = path.join(tmpDir, "counter");
       const childLock = path.join(tmpDir, "contend.lock");
       fs.writeFileSync(counterFile, "");
+      // Stale content with no lock behind it: the kernel lock ignores it
+      // and the first acquirer takes the lock at once. Planting it here
+      // gives this claim real contention - three children racing from the
+      // same pre-planted lock - instead of a token single racer.
+      fs.writeFileSync(childLock, "999999:preplanted", { mode: 0o600 });
 
       const vitestBin = path.join(process.cwd(), "node_modules", ".bin", "vitest");
       const childArgs = [
@@ -275,6 +343,9 @@ describe("withLockFile", () => {
             },
             stdio: ["ignore", "ignore", "pipe"],
           });
+          // Tracked so a failed test never leaks a running child past
+          // afterEach's cleanup.
+          spawnedChildren.push(child);
           let stderr = "";
           child.stderr?.on("data", (chunk) => (stderr += String(chunk)));
           child.once("error", reject);
@@ -282,76 +353,13 @@ describe("withLockFile", () => {
         }),
       );
       const results = await Promise.all(procs);
-      for (const { code } of results) {
-        expect(code).toBe(0);
+      for (const { code, stderr } of results) {
+        expect(code, stderr).toBe(0);
       }
 
-      expect(fs.readFileSync(counterFile, "utf8").trim()).toBe(
-        String(children * iterations),
-      );
-      expect(fs.existsSync(childLock)).toBe(false);
-    },
-    120_000,
-  );
-
-  // Pre-planted dead-pid takeover. A true interleaving (a steal landing
-  // between one contender's inspection and replacement) is not schedulable
-  // from the outside; that path is covered deterministically above through the
-  // LockHooks seam. This test fixes the ordering instead: a dead-pid lock is
-  // planted, then a racer child and the parent contend for it. Exactly one
-  // steals the dead lock; the other waits on the now-live holder. The exact
-  // counter proves mutual exclusion end to end across real processes.
-  contentionTest(
-    "steals a pre-planted dead-pid lock while a racer contends",
-    async () => {
-      const iterations = 50;
-      const counterFile = path.join(tmpDir, "counter");
-      const takeoverLock = path.join(tmpDir, "takeover.lock");
-      fs.writeFileSync(counterFile, "");
-
-      // Spawn and fully reap a child, so its pid is provably dead.
-      const dead = spawn(process.execPath, ["-e", "process.exit(0)"]);
-      await new Promise<void>((resolve) => dead.once("exit", () => resolve()));
-      plantLock(takeoverLock, `${dead.pid}:deadbeef`);
-
-      const vitestBin = path.join(process.cwd(), "node_modules", ".bin", "vitest");
-      const childArgs = [
-        vitestBin,
-        "run",
-        "--config",
-        "test/filelock-child.config.ts",
-        "test/filelock-child.test.ts",
-      ];
-      const racer = new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
-        const child = spawn(process.execPath, childArgs, {
-          env: {
-            ...process.env,
-            COUNTER_FILE: counterFile,
-            LOCK_FILE: takeoverLock,
-            ITERATIONS: String(iterations),
-          },
-          stdio: ["ignore", "ignore", "pipe"],
-        });
-        let stderr = "";
-        child.stderr?.on("data", (chunk) => (stderr += String(chunk)));
-        child.once("error", reject);
-        child.once("exit", (code) => resolve({ code, stderr }));
-      });
-
-      const parent = (async () => {
-        for (let i = 0; i < iterations; i++) {
-          withLockFile(takeoverLock, () => {
-            const value = Number(fs.readFileSync(counterFile, "utf8").trim() || "0");
-            fs.writeFileSync(counterFile, String(value + 1));
-          });
-        }
-      })();
-
-      const [racerResult] = await Promise.all([racer, parent]);
-      expect(racerResult.code).toBe(0);
-
-      expect(fs.readFileSync(counterFile, "utf8").trim()).toBe(String(2 * iterations));
-      expect(fs.existsSync(takeoverLock)).toBe(false);
+      expect(fs.readFileSync(counterFile, "utf8").trim()).toBe(String(children * iterations));
+      // The lock inode persists; a later acquisition still succeeds.
+      expect(fs.existsSync(childLock)).toBe(true);
     },
     120_000,
   );

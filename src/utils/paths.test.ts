@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   AGENT_ID_PATTERN,
+  agentHistoryLockPath,
+  agentHistoryPath,
   agentRecordPath,
   agentRecordsDir,
   agentSocketPath,
@@ -98,5 +100,12 @@ describe("agentSocketPath", () => {
 
   it("rejects an invalid id", () => {
     expect(() => agentSocketPath("../x")).toThrow(/Invalid agent ID/);
+  });
+});
+
+describe("history paths", () => {
+  it("pins the history file and its lock file names", () => {
+    expect(agentHistoryPath()).toBe(path.join(registryDir(), "agents.jsonl"));
+    expect(agentHistoryLockPath()).toBe(path.join(registryDir(), "agents.jsonl.flock"));
   });
 });

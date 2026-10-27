@@ -4,7 +4,7 @@ import path from "node:path";
 import { AgentRecord } from "./models";
 import { agentHistoryLockPath, agentHistoryPath, registryDir } from "./paths";
 import { ensurePrivateDir } from "./transport";
-import { withLockFile } from "./filelock";
+import { withLockFile, type LockOptions } from "./filelock";
 
 /**
  * `lastSeenAt` side table for registered agent records, keyed by
@@ -112,8 +112,15 @@ function writeHistoryEntries(entries: AgentHistoryEntry[]): void {
     path.dirname(file),
     `.tmp-agents-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.jsonl`,
   );
-  fs.writeFileSync(tmp, body, { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, body, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally {
+    // A failed write or rename must not leave the temp file behind. After a
+    // successful rename the path is gone and this is a no-op; it must not
+    // mask the original error.
+    fs.rmSync(tmp, { force: true });
+  }
 }
 
 /**
@@ -126,12 +133,16 @@ function writeHistoryEntries(entries: AgentHistoryEntry[]): void {
  */
 function mutateEntries(
   apply: (entries: AgentHistoryEntry[]) => AgentHistoryEntry[] | null,
+  options: LockOptions = {},
 ): void {
-  ensurePrivateDir(registryDir());
-  withLockFile(agentHistoryLockPath(), () => {
-    const next = apply(readHistoryEntries());
-    if (next !== null) writeHistoryEntries(next);
-  });
+  withLockFile(
+    agentHistoryLockPath(),
+    () => {
+      const next = apply(readHistoryEntries());
+      if (next !== null) writeHistoryEntries(next);
+    },
+    options,
+  );
 }
 
 /**
@@ -154,18 +165,21 @@ export function readAgentHistory(): AgentHistoryEntry[] {
  *
  * @param rec - Agent record to record in the history
  */
-export function upsertAgentHistory(rec: AgentRecord): void {
+export function upsertAgentHistory(rec: AgentRecord, options: LockOptions = {}): void {
   const key = historyKey(rec.cwd, rec.startedAt);
-  mutateEntries((entries) => {
-    const others = entries.filter((e) => historyKey(e.cwd, e.startedAt) !== key);
-    others.push({
-      cwd: rec.cwd,
-      startedAt: rec.startedAt,
-      ...(rec.model !== undefined && { model: rec.model }),
-      lastSeenAt: Date.now(),
-    });
-    return others;
-  });
+  mutateEntries(
+    (entries) => {
+      const others = entries.filter((e) => historyKey(e.cwd, e.startedAt) !== key);
+      others.push({
+        cwd: rec.cwd,
+        startedAt: rec.startedAt,
+        ...(rec.model !== undefined && { model: rec.model }),
+        lastSeenAt: Date.now(),
+      });
+      return others;
+    },
+    options,
+  );
 }
 
 /**
@@ -180,12 +194,15 @@ export function upsertAgentHistory(rec: AgentRecord): void {
  * @param cwd - Working directory of the removed record
  * @param startedAt - Start timestamp of the removed record
  */
-export function removeFromAgentHistory(cwd: string, startedAt: number): void {
+export function removeFromAgentHistory(cwd: string, startedAt: number, options: LockOptions = {}): void {
   const key = historyKey(cwd, startedAt);
-  mutateEntries((entries) => {
-    const kept = entries.filter((e) => historyKey(e.cwd, e.startedAt) !== key);
-    return kept.length !== entries.length ? kept : null;
-  });
+  mutateEntries(
+    (entries) => {
+      const kept = entries.filter((e) => historyKey(e.cwd, e.startedAt) !== key);
+      return kept.length !== entries.length ? kept : null;
+    },
+    options,
+  );
 }
 
 /**
@@ -199,14 +216,26 @@ export function removeFromAgentHistory(cwd: string, startedAt: number): void {
  *
  * @internal
  * @param records - Key fields of the records whose entries to delete
+ * @param options - Lock wait options; a zero `waitMs` makes the call a
+ *   try-lock that throws {@link LockHeldError} (contention), or
+ *   {@link LockUnavailableError} when the adapter failed to load
+ *   (AdapterMissing) or the filesystem rejects advisory locking
+ *   (FilesystemUnsupported), instead of blocking; callers skip history
+ *   work on either
  */
-export function removeHistoryEntries(records: ReadonlyArray<HistoryRecordKey>): void {
+export function removeHistoryEntries(
+  records: ReadonlyArray<HistoryRecordKey>,
+  options: LockOptions = {},
+): void {
   const keys = new Set(records.map((rec) => historyKey(rec.cwd, rec.startedAt)));
   if (keys.size === 0) return;
-  mutateEntries((entries) => {
-    const kept = entries.filter((e) => !keys.has(historyKey(e.cwd, e.startedAt)));
-    return kept.length !== entries.length ? kept : null;
-  });
+  mutateEntries(
+    (entries) => {
+      const kept = entries.filter((e) => !keys.has(historyKey(e.cwd, e.startedAt)));
+      return kept.length !== entries.length ? kept : null;
+    },
+    options,
+  );
 }
 
 /** One record's history identity, the three fields the side table tracks. */
@@ -352,7 +381,8 @@ function canonicalEntryJson(entries: ReadonlyArray<AgentHistoryEntry>): string {
  *
  * 1. Stamp and self-heal online keys. A missing entry for an online record
  *    is created (upserted) rather than skipped, so an entry lost anywhere
- *    (a stolen write, a past race) is restored on the next list pass. A
+ *    (an entry lost by an earlier version's race, a crash mid-write) is
+ *    restored on the next list pass. A
  *    missing entry for a surviving offline record is created with
  *    `lastSeenAt = startedAt` (a session is never seen before it starts),
  *    which also guarantees Step 3 meets an entry for every keeper key.
@@ -388,8 +418,11 @@ function canonicalEntryJson(entries: ReadonlyArray<AgentHistoryEntry>): string {
  *   every known record in it is offline.
  */
 export function syncAgentHistory(input: HistorySyncInput): void {
-  const now = Date.now();
   mutateEntries((entries) => {
+    // Inside the lock: a `now` captured before acquisition could be older
+    // than a lastSeenAt written by another process while this call waited,
+    // and stampOnline would move the entry's recency backward.
+    const now = Date.now();
     const concurrent = (entry: AgentHistoryEntry): boolean =>
       entry.lastSeenAt >= input.snapshotTime || entry.startedAt >= input.snapshotTime;
     const stamped = stampOnline(entries, input.onlineRecords, input.keepRecords, now);

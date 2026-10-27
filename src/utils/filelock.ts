@@ -1,12 +1,10 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { isPidAlive } from "./pid";
+import { performance } from "node:perf_hooks";
+import util from "node:util";
+import { ensurePrivateDir } from "./transport";
 
-/** Elapsed time before a lock with an unreadable holder can be treated as stale. */
-const STEAL_TIMEOUT_MS = 2_000;
-/** Elapsed time after which a live holder's lock is treated as leaked and stealable. */
-const LIVE_HOLDER_CAP_MS = 30_000;
 /** Default maximum wait for a live holder before {@link LockHeldError} throws. */
 const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 2_000;
 /** Environment override for the wait limit, in milliseconds. */
@@ -14,275 +12,462 @@ const LOCK_WAIT_TIMEOUT_ENV = "PI_TEAMS_LOCK_WAIT_TIMEOUT_MS";
 /** Interval between acquisition attempts while another process holds the lock. */
 const RETRY_TICK_MS = 10;
 
-/** The holder pid and per-acquisition nonce recorded in a lock file. */
-interface LockInfo {
-  /** Holder pid, or undefined when the content is missing or unparseable. */
-  pid: number | undefined;
-  /** Per-acquisition nonce, or undefined when the content is unparseable. */
-  nonce: string | undefined;
-  /** Last modification time in milliseconds; used for age-based staleness. */
-  mtimeMs: number;
+/**
+ * Supported-platform sentence shared by the load-failure error and warning.
+ *
+ * The adapter package ships prebuilds for more targets (Windows, Android);
+ * pi-teams tests and supports only these.
+ */
+const PLATFORM_SUPPORT =
+  "pi-teams supports macOS and glibc Linux on arm64 and x64. " +
+  "fs-native-extensions ships prebuilds for other platforms; " +
+  "pi-teams does not test or support them there.";
+
+/** The subset of the native lock API that {@link withLockFile} uses. */
+interface NativeLockApi {
+  /** Try to take an exclusive advisory lock; `false` means it is held. */
+  tryLock: (fd: number) => boolean;
+  /** Release the lock taken by `tryLock` on this descriptor. */
+  unlock: (fd: number) => void;
 }
 
 /**
- * Interleaving hooks used by tests to force a specific syscall ordering.
+ * Why cross-process locking cannot run.
  *
- * Production callers omit them. They exist so a test can inject a successor
- * lock or a second stealer at an otherwise unschedulable moment, turning the
- * race into a deterministic assertion.
+ * Both reasons share one recovery contract at the caller: skip history work
+ * and self-heal later. They differ in remedy and in persistence.
+ */
+export enum LockUnavailableReason {
+  /** The adapter module cannot load: no prebuild, or a broken install. */
+  AdapterMissing = "adapter-missing",
+  /** The filesystem cannot provide advisory locking (NFS, SMB, some FUSE). */
+  FilesystemUnsupported = "filesystem-unsupported",
+}
+
+/**
+ * Error raised when cross-process locking cannot run: the adapter cannot
+ * load ({@link LockUnavailableReason.AdapterMissing}) or the filesystem
+ * rejects advisory locks ({@link LockUnavailableReason.FilesystemUnsupported}).
+ *
+ * Distinct from {@link LockHeldError} on purpose: contention is a transient
+ * condition a caller can retry or skip, while lock unavailability is an
+ * environment fault that persists until the user acts on the remedy in the
+ * message. Self-healing callers catch both and skip history work, keeping
+ * messaging and teardown alive; the one-time warning from the loader or the
+ * acquire loop is the visible signal.
+ */
+export class LockUnavailableError extends Error {
+  /** Which unavailability case this is; selects the remedy in the message. */
+  readonly reason: LockUnavailableReason;
+
+  constructor(reason: LockUnavailableReason, message: string, options: { cause: Error }) {
+    super(message, options);
+    this.name = "LockUnavailableError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Kernel errnos that mean "this filesystem cannot provide advisory
+ * locking", not a programmer error: ENOLCK (NFS without lockd), ENOTSUP and
+ * EOPNOTSUPP (SMB, some FUSE), ENOSYS (the operation is not implemented).
+ * Everything else - EBADF, EINVAL, EIO, EPERM - can signal our own bug and
+ * must propagate raw so it fails fast.
+ *
+ * The adapter maps errno through libuv's `uv_err_name`, which has no entry
+ * for ENOLCK or EOPNOTSUPP: those surface as "Unknown system error -N", not
+ * as their symbolic names. The map is therefore keyed by every shape the
+ * adapter can emit - the symbolic name plus `getSystemErrorName`'s rendering
+ * - and maps back to the canonical POSIX name so messages read "ENOLCK".
+ *
+ * First entry wins: on Linux EOPNOTSUPP and ENOTSUP share errno 95, so both
+ * resolve to the ENOTSUP canonical name.
+ */
+const UNSUPPORTED_LOCK_CODES: ReadonlyMap<string, string> = (() => {
+  const names = ["ENOLCK", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"] as const;
+  const map = new Map<string, string>();
+  for (const name of names) {
+    map.set(name, name);
+    const num = os.constants.errno[name];
+    if (typeof num === "number" && num > 0) {
+      // What libuv actually prints for this errno on this platform.
+      const emitted = util.getSystemErrorName(-num);
+      if (!map.has(emitted)) map.set(emitted, name);
+      // The literal libuv fallback, in case a future version changes
+      // getSystemErrorName's rendering for unknown codes.
+      const literal = `Unknown system error -${num}`;
+      if (!map.has(literal)) map.set(literal, name);
+    }
+  }
+  return map;
+})();
+
+/**
+ * Classify an error thrown by `tryLock` as a filesystem-unable-to-lock
+ * condition, by its `code` (never its message text).
+ *
+ * @returns The emitted code and its canonical POSIX name, or undefined when
+ *   the error is not an unsupported-lock errno
+ */
+function classifyUnsupportedLockError(error: unknown): { code: string; canonical: string } | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (typeof code !== "string") return undefined;
+  const canonical = UNSUPPORTED_LOCK_CODES.get(code);
+  return canonical === undefined ? undefined : { code, canonical };
+}
+
+/**
+ * The native lock API, loaded on first use instead of at module load.
+ *
+ * A load failure must not take down the whole pi-teams extension (a static
+ * import would break messaging along with locking), so the module loads
+ * lazily and failures surface as {@link LockUnavailableError} at the first
+ * lock use, with one warning written to stderr per process per reason.
  *
  * @internal
  */
-export interface LockHooks {
-  /** Called after a stale lock is inspected and before the steal claim is taken. */
-  afterStaleInspection?: (lockPath: string) => void;
-  /** Called after the claim is won and staleness re-verified, before the rename. */
-  beforeStealRename?: (lockPath: string) => void;
+let nativeLock: NativeLockApi | undefined;
+
+/**
+ * Cached adapter-load failure, so later calls throw without retrying the
+ * loader. Only module loads are cached: a filesystem rejection (ENOLCK and
+ * friends) can be transient or path-specific and is never cached.
+ */
+let adapterLoadFailure: Error | undefined;
+
+/** The active adapter loader; replaced by tests to force failures. */
+let nativeLockLoader: () => NativeLockApi = loadNativeLockFromModule;
+
+/** Reasons already warned about in this process; each warns once. */
+const warnedReasons = new Set<LockUnavailableReason>();
+
+/**
+ * Load the native lock adapter from its module.
+ *
+ * @returns The adapter's `tryLock`/`unlock` pair
+ * @throws Whatever the module load throws (no prebuilt binary, broken install)
+ */
+function loadNativeLockFromModule(): NativeLockApi {
+  // `require` through the compiled module path: this file is CommonJS (the
+  // package has no "type": "module"), so `require` resolves the addon
+  // relative to the package, not the caller's working directory.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const adapter = require("fs-native-extensions") as NativeLockApi;
+  if (typeof adapter.tryLock !== "function" || typeof adapter.unlock !== "function") {
+    throw new Error("fs-native-extensions does not expose tryLock/unlock");
+  }
+  return adapter;
 }
+
+/**
+ * Write a reason's one-time warning to stderr, in every session mode.
+ *
+ * stderr, not ctx.ui.notify: it reaches noninteractive `pi -p` sessions and
+ * runtime-first-use alike.
+ */
+function warnOnce(reason: LockUnavailableReason, message: string): void {
+  if (warnedReasons.has(reason)) return;
+  warnedReasons.add(reason);
+  process.stderr.write(message);
+}
+
+/**
+ * Resolve the native lock adapter, caching success and load failure alike.
+ *
+ * @returns The adapter's `tryLock`/`unlock` pair
+ * @throws LockUnavailableError when the adapter cannot load
+ */
+function resolveNativeLock(): NativeLockApi {
+  if (nativeLock !== undefined) return nativeLock;
+  if (adapterLoadFailure !== undefined) throw adapterUnavailableError(adapterLoadFailure);
+  try {
+    nativeLock = nativeLockLoader();
+    return nativeLock;
+  } catch (error) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    adapterLoadFailure = cause;
+    warnOnce(LockUnavailableReason.AdapterMissing, LOAD_FAILURE_WARNING);
+    throw adapterUnavailableError(cause);
+  }
+}
+
+/** Build the AdapterMissing error for a loader failure. */
+function adapterUnavailableError(cause: Error): LockUnavailableError {
+  return new LockUnavailableError(
+    LockUnavailableReason.AdapterMissing,
+    `pi-teams cannot load its native lock adapter (fs-native-extensions) on ` +
+      `${process.platform}-${process.arch}, so cross-process history locking ` +
+      `is unavailable. ${PLATFORM_SUPPORT} If this platform is supported, ` +
+      `reinstall the pi-teams package (npm install) to restore a broken ` +
+      `install; on unsupported platforms, history recording stays disabled. ` +
+      `Original error: ${cause.message}`,
+    { cause },
+  );
+}
+
+/** Warning shown on first history-lock use when the adapter fails to load. */
+const LOAD_FAILURE_WARNING =
+  `pi-teams warning: the fs-native-extensions module failed to load on ` +
+  `${process.platform}-${process.arch}; history recording is disabled for ` +
+  `this session. ${PLATFORM_SUPPORT} Reinstall the pi-teams package ` +
+  `(npm install) if this platform is supported.\n`;
+
+/**
+ * Build the FilesystemUnsupported error for a rejected `tryLock`.
+ *
+ * Operation-aware: it names the lock path and the errno, never module
+ * loading, because the adapter loaded fine and the mount refused the lock.
+ */
+function filesystemUnsupportedError(
+  lockPath: string,
+  cause: NodeJS.ErrnoException,
+  canonical: string,
+): LockUnavailableError {
+  return new LockUnavailableError(
+    LockUnavailableReason.FilesystemUnsupported,
+    `pi-teams cannot take the advisory lock on ${lockPath}: the filesystem ` +
+      `rejected it with ${canonical} (no advisory locking support, for ` +
+      `example NFS without lockd or an SMB/FUSE mount). History locking is ` +
+      `skipped while the filesystem refuses locks.`,
+    { cause },
+  );
+}
+
+/** One-time warning text for a rejected `tryLock`. */
+function filesystemUnsupportedWarning(lockPath: string, canonical: string): string {
+  return (
+    `pi-teams warning: the filesystem rejected the advisory lock on ` +
+    `${lockPath} with ${canonical}; history recording is disabled while ` +
+    `this mount refuses locks.\n`
+  );
+}
+
+/**
+ * Replace the adapter loader for tests; `undefined` restores the default.
+ * The injected loader runs lazily on the next lock use, so a throwing loader
+ * persists until it is cleared. Clearing also resets the cached failure and
+ * the once-per-reason warning state, so each test can assert the warning
+ * independently.
+ *
+ * @internal
+ */
+export function __setNativeLockLoaderForTests(loader?: () => NativeLockApi): void {
+  nativeLockLoader = loader ?? loadNativeLockFromModule;
+  nativeLock = undefined;
+  adapterLoadFailure = undefined;
+  warnedReasons.clear();
+}
+
+/**
+ * Whether an error means a caller can safely skip history work and
+ * self-heal later: transient contention ({@link LockHeldError}) or
+ * unavailable locking ({@link LockUnavailableError}). Anything else is a
+ * real fault and must propagate.
+ *
+ * @param error - The error caught around history mutations
+ * @returns true when skipping history work is the documented recovery
+ */
+export function isLockSkippable(error: unknown): boolean {
+  return error instanceof LockHeldError || error instanceof LockUnavailableError;
+}
+
+/** Options for {@link withLockFile}. */
+export interface LockOptions {
+  /**
+   * Maximum wait for a live holder, in milliseconds. `0` makes the call a
+   * single try-lock: the caller gets {@link LockHeldError} at once instead
+   * of waiting, for hot paths whose work self-heals on a later pass.
+   * Defaults to `PI_TEAMS_LOCK_WAIT_TIMEOUT_MS` or 2 seconds.
+   */
+  waitMs?: number;
+}
+
+/** Upper bound for the configurable wait; above it the default applies. */
+const MAX_LOCK_WAIT_TIMEOUT_MS = 30_000;
 
 /**
  * Resolve the maximum wait for a live lock holder, in milliseconds.
  *
  * The environment variable is read on each call so tests can stub a short
- * limit instead of blocking for seconds per assertion. Unset, non-numeric,
- * or non-positive values fall back to the default.
+ * limit instead of blocking for seconds per assertion. It accepts a positive
+ * integer up to {@link MAX_LOCK_WAIT_TIMEOUT_MS}: unset, zero, non-numeric,
+ * non-positive, or oversized values fall back to the default, so a typo
+ * cannot freeze the event loop for minutes per contended call. (A zero wait
+ * is still available to code through `options.waitMs: 0`, the in-code
+ * try-lock; the environment variable cannot select it.)
  */
 function lockWaitTimeoutMs(): number {
   const raw = process.env[LOCK_WAIT_TIMEOUT_ENV];
   const parsed = raw === undefined ? NaN : Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_LOCK_WAIT_TIMEOUT_MS;
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_LOCK_WAIT_TIMEOUT_MS) {
+    return DEFAULT_LOCK_WAIT_TIMEOUT_MS;
+  }
+  return parsed;
 }
 
-/** Error raised when a live or unknown holder keeps a lock past the wait limit. */
+/** Error raised when a live holder keeps a lock past the wait limit. */
 export class LockHeldError extends Error {
   constructor(lockPath: string, holderPid?: number) {
     super(
       holderPid === undefined
-        ? `Lock is held by an unknown holder: ${lockPath}`
-        : `Lock is held by live pid ${holderPid}: ${lockPath}`,
+        ? `Lock is held by another process: ${lockPath}`
+        : `Lock is held by pid ${holderPid} (last recorded holder): ${lockPath}`,
     );
     this.name = "LockHeldError";
   }
 }
 
 /**
+ * Reusable zeroed waiter for {@link sleepSync}.
+ *
+ * `Atomics.wait` never mutates the buffer, so one allocation serves every
+ * 10ms poll tick for the process lifetime.
+ */
+const SLEEP_WAITER = new Int32Array(new SharedArrayBuffer(4));
+
+/**
  * Sleep synchronously without spinning.
  *
- * `Atomics.wait` on a fresh zeroed buffer never wakes early, and Node allows
- * it on the main thread (this is how `child_process.execSync` blocks too).
+ * `Atomics.wait` on a zeroed buffer never wakes early, and Node allows it on
+ * the main thread (this is how `child_process.execSync` blocks too).
  */
 function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/** Parse a lock file's `pid:nonce` content; either part is undefined when unparseable. */
-function parseLockContent(raw: string): { pid: number | undefined; nonce: string | undefined } {
-  const trimmed = raw.trim();
-  const separator = trimmed.indexOf(":");
-  const pidPart = separator === -1 ? trimmed : trimmed.slice(0, separator);
-  const noncePart = separator === -1 ? "" : trimmed.slice(separator + 1);
-  const pid = Number.parseInt(pidPart, 10);
-  return {
-    pid: Number.isFinite(pid) && pid > 0 ? pid : undefined,
-    nonce: noncePart.length > 0 ? noncePart : undefined,
-  };
+  Atomics.wait(SLEEP_WAITER, 0, 0, ms);
 }
 
 /**
- * Read a lock's holder pid, nonce, and mtime.
+ * Parse the holder pid recorded in a lock file, for diagnostics only.
  *
- * Returns undefined only when the lock path is absent. When the path exists
- * but its content is unreadable, the pid and nonce are undefined so the
- * caller can apply the unreadable-holder timeout.
+ * The lock's authority is the kernel advisory lock, never this file's
+ * content, so a strict grammar is enough: a positive decimal integer within
+ * the OS pid bound. Anything else (including partial numbers like
+ * `1corrupt`) yields undefined instead of a misleading pid.
  */
-function readLockInfo(lockPath: string): LockInfo | undefined {
-  let mtimeMs: number;
-  try {
-    mtimeMs = fs.statSync(lockPath).mtimeMs;
-  } catch {
-    return undefined;
-  }
-  try {
-    const { pid, nonce } = parseLockContent(fs.readFileSync(lockPath, "utf8"));
-    return { pid, nonce, mtimeMs };
-  } catch {
-    return { pid: undefined, nonce: undefined, mtimeMs };
-  }
+function parseHolderPid(raw: string): number | undefined {
+  const pid = raw.trim();
+  if (!/^[1-9]\d{0,9}$/.test(pid)) return undefined;
+  const parsed = Number(pid);
+  return parsed <= 0x7fffffff ? parsed : undefined;
 }
 
-/** Read the holder pid recorded in a lock file, if any. */
-function readLockPid(lockPath: string): number | undefined {
-  return readLockInfo(lockPath)?.pid;
-}
-
-/** Read the pid recorded in a steal-claim symlink, if any. */
-function readClaimPid(claimPath: string): number | undefined {
+/** Read the pid recorded in a lock file, for the LockHeldError message. */
+function readHolderPid(lockPath: string): number | undefined {
   try {
-    return parseLockContent(fs.readlinkSync(claimPath)).pid;
+    return parseHolderPid(fs.readFileSync(lockPath, "utf8"));
   } catch {
     return undefined;
   }
 }
 
 /**
- * Whether an inspected lock can be taken over.
+ * Run `fn` while holding an exclusive advisory kernel lock on `lockPath`.
  *
- * A dead holder is stealable at once. A lock whose content is missing or
- * unparseable is untrusted content, not a live holder, so it is stealable
- * after {@link STEAL_TIMEOUT_MS}. A live holder is stealable only once the
- * lock is older than {@link LIVE_HOLDER_CAP_MS}, which recovers locks leaked
- * by a crashed release or a reused pid without racing a short critical
- * section.
- */
-function isStaleLock(info: LockInfo, now: number): boolean {
-  if (info.pid === undefined) return now - info.mtimeMs >= STEAL_TIMEOUT_MS;
-  if (!isPidAlive(info.pid)) return true;
-  return now - info.mtimeMs >= LIVE_HOLDER_CAP_MS;
-}
-
-/** A unique scratch name under the lock's directory. */
-function scratchName(lockPath: string, tag: string): string {
-  return `${lockPath}.${tag}.${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-}
-
-/** The steal-claim path for a lock; derived from the full lock path so locks never collide. */
-function claimName(lockPath: string): string {
-  return `${lockPath}.steal`;
-}
-
-/**
- * Take over a stale lock by replacing it atomically, without ever freeing the
- * lock path.
+ * The lock lives on a permanent inode: the file is created once and never
+ * unlinked or renamed, so the path's identity is stable and the kernel
+ * arbitrates every contender. On macOS the adapter uses `flock(2)` and on
+ * Linux `fcntl(F_OFD_SETLK)`; both are open-file-description locks, so they
+ * exclude across processes, release automatically when the holder's
+ * descriptor closes (a crash, SIGKILL), and stay held across SIGSTOP. A
+ * reused pid holds no descriptor of the dead process, so there is no steal
+ * path, no age cap, and no pid identity check. A holder that stays alive but
+ * stops progressing keeps exclusive access: contenders receive
+ * {@link LockHeldError} at the wait limit rather than taking the lock from a
+ * live process, because no userland check before a final write can fence an
+ * arbitrarily suspended writer.
  *
- * A stale lock is replaced with a scratch file that carries our `pid:nonce`
- * through `renameSync`, which atomically overwrites the lock path. Because the
- * path never disappears, a concurrent acquirer's `linkSync` always sees EEXIST
- * and no third process can enter while a takeover is in flight. Steals are
- * single-winner: only the holder of the exclusive symlink claim performs the
- * rename, and it re-verifies staleness under the claim before doing so. A
- * claim left by a dead stealer is reclaimed.
- *
- * Residual window: the claim fences stealers against each other, but a live
- * holder whose lock passed {@link LIVE_HOLDER_CAP_MS} can still release in the
- * single syscall between the re-verification and the rename. That is the
- * price of recovering a genuinely leaked lock; critical sections are
- * milliseconds and the cap is orders of magnitude larger, so the window is not
- * reachable by an active holder in normal operation.
- *
- * @param lockPath - Lock file path
- * @param content - Our `pid:nonce` lock content
- * @param nonce - Our nonce, used to confirm we still own the path after the rename
- * @param hooks - Test-only interleaving hooks
- * @returns true when the lock path now carries our nonce
- */
-function stealStaleLock(lockPath: string, content: string, nonce: string, hooks: LockHooks): boolean {
-  const observed = readLockInfo(lockPath);
-  if (observed === undefined || !isStaleLock(observed, Date.now())) return false;
-  hooks.afterStaleInspection?.(lockPath);
-
-  const claim = claimName(lockPath);
-  try {
-    fs.symlinkSync(content, claim);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      const claimerPid = readClaimPid(claim);
-      if (claimerPid === undefined || !isPidAlive(claimerPid)) {
-        fs.rmSync(claim, { force: true });
-      }
-      return false;
-    }
-    throw error;
-  }
-
-  try {
-    const current = readLockInfo(lockPath);
-    if (current === undefined || !isStaleLock(current, Date.now())) return false;
-    hooks.beforeStealRename?.(lockPath);
-    const scratch = scratchName(lockPath, "takeover");
-    try {
-      fs.writeFileSync(scratch, content, { mode: 0o600 });
-      fs.renameSync(scratch, lockPath);
-    } finally {
-      fs.rmSync(scratch, { force: true });
-    }
-    return readLockInfo(lockPath)?.nonce === nonce;
-  } finally {
-    fs.rmSync(claim, { force: true });
-  }
-}
-
-/** Run `fn` while holding the lock, and release only our own lock. */
-function runHoldingLock<T>(lockPath: string, nonce: string, fn: () => T): T {
-  try {
-    return fn();
-  } finally {
-    // A steal may have replaced the file while we ran. Deleting it must not
-    // clobber the successor's lock, so release only the lock whose nonce is
-    // ours. Release is not atomic against a rename-over steal, but that steal
-    // only targets a lock older than LIVE_HOLDER_CAP_MS, so an active holder's
-    // millisecond release never races it in normal operation.
-    if (readLockInfo(lockPath)?.nonce === nonce) {
-      fs.rmSync(lockPath, { force: true });
-    }
-  }
-}
-
-/**
- * Run `fn` while holding the lock file at `lockPath`.
- *
- * Acquisition writes `pid:nonce` to a unique scratch file, then hard-links the
- * scratch onto the lock path: `link` fails with EEXIST when the lock exists,
- * so exactly one process wins, and the lock file always carries its owner from
- * its first visible moment (there is no window where the lock exists but its
- * owner is unknown). Release removes the lock only when its nonce matches
- * ours, so a lock taken over by another process is never clobbered.
- *
- * If another process holds the lock, the caller sleeps in short ticks and
- * steals it when the recorded holder pid is dead (immediately), the content is
- * unparseable (after {@link STEAL_TIMEOUT_MS}), or a live holder's lock is
- * older than {@link LIVE_HOLDER_CAP_MS}. A steal replaces the lock path
- * atomically through a single-winner claim, so the path never becomes free and
- * a third process can never enter while a takeover is in flight. Once the wait
- * limit (2 seconds by default, or `PI_TEAMS_LOCK_WAIT_TIMEOUT_MS`) is
- * reached, the call throws {@link LockHeldError}, naming the live holder pid
- * when the lock file is readable. The wait blocks the calling thread with
- * `Atomics.wait`, so callers whose work self-heals on a later pass should
- * catch {@link LockHeldError} and skip instead of holding the event loop.
+ * On success the holder pid is written to the file for diagnostics only
+ * (`LockHeldError` messages); the content never authorizes access. If
+ * another process holds the lock, the caller sleeps in short ticks until the
+ * deadline measured with `performance.now()`. The wait blocks the calling
+ * thread with `Atomics.wait`, so callers whose work self-heals on a later
+ * pass should pass `{ waitMs: 0 }` or catch {@link LockHeldError} and skip
+ * instead of holding the event loop.
  *
  * Not reentrant: `fn` must not acquire the same lock path again.
  *
- * @param lockPath - Lock file path; its parent directory is created 0700 if missing
+ * @param lockPath - Lock file path; its parent directory is ensured 0700
  * @param fn - Critical section; its return value is passed through
- * @param hooks - Test-only interleaving hooks; omit in production
+ * @param options - See {@link LockOptions}
  * @returns Whatever `fn` returns
- * @throws LockHeldError when a live or unknown holder keeps the lock past the wait limit
+ * @throws LockHeldError when a live holder keeps the lock past the wait limit
+ * @throws LockUnavailableError when the adapter cannot load, or the
+ *   filesystem rejects advisory locking (ENOLCK, ENOTSUP, EOPNOTSUPP, ENOSYS)
  */
-export function withLockFile<T>(lockPath: string, fn: () => T, hooks: LockHooks = {}): T {
-  const dir = path.dirname(lockPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+export function withLockFile<T>(lockPath: string, fn: () => T, options: LockOptions = {}): T {
+  // Resolve the adapter first: when a previous load failure is cached, this
+  // throws before any directory or lock-file work, so hot paths pay nothing
+  // but the throw.
+  const lock = resolveNativeLock();
 
-  const waitTimeoutMs = lockWaitTimeoutMs();
-  const waitStartedAt = Date.now();
-  const nonce = crypto.randomBytes(8).toString("hex");
-  const content = `${process.pid}:${nonce}`;
+  // Reuse the registry's directory contract: created 0700, rejected when it
+  // is a symlink or owned by another uid (ensurePrivateDir no-ops on
+  // Windows, so create the directory there directly).
+  if (process.platform === "win32") {
+    if (!fs.existsSync(path.dirname(lockPath))) {
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+    }
+  } else {
+    ensurePrivateDir(path.dirname(lockPath));
+  }
 
-  for (;;) {
-    const scratch = scratchName(lockPath, "tmp");
-    fs.writeFileSync(scratch, content, { mode: 0o600 });
-    let acquired = false;
+  // A non-finite or negative wait would make the deadline NaN, which no
+  // comparison ever satisfies; fall back to the configured default.
+  const waitMs =
+    options.waitMs !== undefined && Number.isFinite(options.waitMs) && options.waitMs >= 0
+      ? options.waitMs
+      : lockWaitTimeoutMs();
+  const fd = fs.openSync(lockPath, "a+", 0o600);
+  // True once tryLock succeeds; the release path unlocks only then, so a
+  // failed attempt never makes a stray unlock syscall. Unlocking an unheld
+  // descriptor is harmless (locks belong to the open file description), but
+  // the acquired flag keeps the release honest.
+  let acquired = false;
+  try {
+    // Measured from after the adapter load and the open: the first call's
+    // module dlopen must not come out of the caller's wait budget.
+    const deadline = performance.now() + waitMs;
+    for (;;) {
+      try {
+        if (lock.tryLock(fd)) {
+          acquired = true;
+          break;
+        }
+      } catch (error) {
+        const classified = classifyUnsupportedLockError(error);
+        if (classified !== undefined) {
+          warnOnce(
+            LockUnavailableReason.FilesystemUnsupported,
+            filesystemUnsupportedWarning(lockPath, classified.canonical),
+          );
+          throw filesystemUnsupportedError(lockPath, error as NodeJS.ErrnoException, classified.canonical);
+        }
+        throw error;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        throw new LockHeldError(lockPath, readHolderPid(lockPath));
+      }
+      // Never sleep past the deadline: a short budget must not overshoot by
+      // a full tick.
+      sleepSync(Math.min(RETRY_TICK_MS, Math.ceil(remaining)));
+    }
     try {
-      fs.linkSync(scratch, lockPath);
-      acquired = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    } finally {
-      fs.rmSync(scratch, { force: true });
+      fs.ftruncateSync(fd, 0);
+      fs.writeFileSync(fd, `${process.pid}\n`);
+    } catch {
+      // Diagnostics only: an unwritable holder pid degrades the error
+      // message, never the lock.
     }
-    if (!acquired) acquired = stealStaleLock(lockPath, content, nonce, hooks);
-    if (acquired) return runHoldingLock(lockPath, nonce, fn);
-    if (Date.now() - waitStartedAt >= waitTimeoutMs) {
-      throw new LockHeldError(lockPath, readLockPid(lockPath));
+    return fn();
+  } finally {
+    if (acquired) {
+      try {
+        lock.unlock(fd);
+      } catch {
+        // The kernel releases the lock at close regardless.
+      }
     }
-    sleepSync(RETRY_TICK_MS);
+    fs.closeSync(fd);
   }
 }
