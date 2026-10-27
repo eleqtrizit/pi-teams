@@ -203,17 +203,16 @@ async function assertFresh(
   if (expectedHash !== currentHash) {
     let detail =
       `Rejected: ${path} changed since it was last read ` +
-      `(expected file_hash ${expectedHash}, current is ${currentHash}). ` +
+      `(expected file_hash ${expectedHash}). ` +
       "Read the file again, then retry with the fresh hash.";
     if (includeContent) {
       const lines = bytes.toString("utf8").split("\n").length;
       if (lines <= 100) {
-        detail += `\n\nCurrent contents of ${path}:\n${bytes.toString("utf8")}`;
+        detail += `\n\nCurrent contents of ${path} (current file_hash: ${currentHash}):\n${bytes.toString("utf8")}`;
       } else {
         detail +=
-          `\n\nYou're trying to overwrite a file of ${lines} lines (current file_hash: ${currentHash}). ` +
-          "Recommendation: Re-read the file to understand what you're overwriting. " +
-          "If you accept the current contents, you can retry write with this file_hash.";
+          `\n\nYou're trying to overwrite a file of ${lines} lines. ` +
+          "Recommendation: Re-read the file to understand what you're overwriting.";
       }
     }
     throw new Error(detail);

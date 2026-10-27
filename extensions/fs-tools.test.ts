@@ -252,7 +252,7 @@ describe("amend", () => {
       { cwd },
     ).catch((e: Error) => e.message);
     expect(error).toContain("changed since it was last read");
-    expect(error).toContain(`Current contents of ${file}:`);
+    expect(error).toContain(`Current contents of ${file} (current file_hash:`);
     expect(error).toContain("hello");
     // The file must be untouched.
     expect(readFileSync(file, "utf-8")).toBe("hello");
@@ -274,8 +274,8 @@ describe("amend", () => {
       undefined,
       { cwd },
     ).catch((e: Error) => e.message);
-    expect(error).toContain("You're trying to overwrite a file of 101 lines (");
-    expect(error).toMatch(/current file_hash: [0-9a-f]{8}/);
+    expect(error).toContain("You're trying to overwrite a file of 101 lines.");
+    expect(error).not.toMatch(/current file_hash: [0-9a-f]{8}/);
     expect(error).toContain("Re-read the file to understand what you're overwriting.");
     expect(error).not.toContain("Current contents of");
     expect(readFileSync(file, "utf-8")).toContain("line 100");
