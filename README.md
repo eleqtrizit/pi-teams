@@ -127,6 +127,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 ### 🖥️ Terminal Integration
 
 - **herdr** - Every agent opens in its own tab with `herdr tab create`
+- **Orca** - Every agent opens in its own worktree tab with `orca terminal create`
 - **tmux** - Pane-based spawning with `tmux split-window`
 - **Zellij** - Pane-based spawning with `zellij run`
 - **iTerm2** - macOS native with AppleScript window/pane management
@@ -163,6 +164,7 @@ pi-teams automatically detects and integrates with your terminal environment:
 | Terminal    | Detection                | Pane Management          | Window Support |
 | ----------- | ------------------------ | ------------------------ | -------------- |
 | **herdr**   | `HERDR_ENV=1` and `HERDR_PANE_ID` | `herdr tab create` | ✅ (tabs) |
+| **Orca**    | `TERM_PROGRAM=Orca`      | `orca terminal create`   | ✅             |
 | **tmux**    | `TMUX` env var           | `tmux split-window`      | ❌             |
 | **Zellij**  | `ZELLIJ` env var         | `zellij run`             | ❌             |
 | **iTerm2**  | `TERM_PROGRAM=iTerm.app` | AppleScript splits       | ✅             |
@@ -367,6 +369,7 @@ pi-teams/
 │   │   ├── zellij-adapter.ts        # Zellij implementation
 │   │   ├── iterm2-adapter.ts        # iTerm2 implementation
 │   │   ├── herdr-adapter.ts         # herdr implementation
+│   │   ├── orca-adapter.ts          # Orca implementation
 │   │   └── wezterm-adapter.ts       # WezTerm implementation
 │   └── utils/
 │       ├── teams.ts                 # Shared removal path
