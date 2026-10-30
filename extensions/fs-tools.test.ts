@@ -237,6 +237,33 @@ describe("amend", () => {
     expect(readFileSync(file, "utf-8")).toBe("world");
   });
 
+  it("completes a rejected edit that was missing path, via amend", async () => {
+    const { cwd, file, hash } = makeWorkspace();
+    // Rejected edit: missing path and fileHash. The partial must be stored so
+    // amend can complete it with just those fields.
+    const rejectError = await executeOf("edit")(
+      "t",
+      { description: "swap greeting", oldText: "hello", newText: "world" },
+      undefined,
+      undefined,
+      { cwd },
+    ).catch((e: Error) => e.message);
+    expect(rejectError).toContain("Missing: path, fileHash");
+
+    const result = (await executeOf("amend")(
+      "t",
+      { tool: "edit", fields: { path: file, fileHash: hash } },
+      undefined,
+      undefined,
+      { cwd },
+    )) as { content: { type: string; text: string }[] };
+    const text = result.content
+      .map((part) => (part as { text?: string }).text ?? "")
+      .join("\n");
+    expect(readFileSync(file, "utf-8")).toBe("world");
+    expect(text).toMatch(/file_hash: [0-9a-f]{8}/);
+  });
+
   it("rejects a stale-hash write with the full current contents in the error", async () => {
     const { cwd, file } = makeWorkspace();
     const error = await executeOf("write")(

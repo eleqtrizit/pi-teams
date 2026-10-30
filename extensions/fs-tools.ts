@@ -53,10 +53,12 @@ const EditParams = Type.Object({
         "functions/classes/imports/top-level symbols touched. Fill this in FIRST, before path and the diff.",
     }),
   ),
-  path: Type.String({
-    description:
-      "Path to the single file to edit (relative or absolute). Second parameter, after description.",
-  }),
+  path: Type.Optional(
+    Type.String({
+      description:
+        "Path to the single file to edit (relative or absolute). Second parameter, after description.",
+    }),
+  ),
   oldText: Type.String({
     description:
       "Exact text to replace. Must match one unique region of the original file byte-for-byte, including " +
@@ -81,11 +83,13 @@ const WriteParams = Type.Object({
         "Fill this in FIRST, before path.",
     }),
   ),
-  path: Type.String({
-    description:
-      "Path to the file to write (relative or absolute). Parent directories are created. " +
-      "Second parameter, after description.",
-  }),
+  path: Type.Optional(
+    Type.String({
+      description:
+        "Path to the file to write (relative or absolute). Parent directories are created. " +
+        "Second parameter, after description.",
+    }),
+  ),
   fileHash: Type.Optional(
     Type.String({
       description:
