@@ -62,6 +62,8 @@ export function classifyModel(modelId: string): "frontier" | "oss" {
 export interface GetModelsResult {
   oss: string[];
   frontier: string[];
+  /** Set when flavored models are configured and drove the result. */
+  flavors?: FlavoredModelsResult;
 }
 
 const FLAVOR_KEYS: readonly FlavorKey[] = ["orchestrator", "worker", "swarm"];
@@ -93,10 +95,27 @@ export function runFlavorMigration(): { text: string; failed: boolean } | undefi
   }
 }
 
+/** Union of the three flavor lists, deduplicated and order-preserving. */
+function flavorUnion(flavors: FlavoredModelsResult): string[] {
+  const seen = new Set<string>();
+  const union: string[] = [];
+  for (const model of [...flavors.orchestrator, ...flavors.worker, ...flavors.swarm]) {
+    if (!seen.has(model)) {
+      seen.add(model);
+      union.push(model);
+    }
+  }
+  return union;
+}
+
 export function executeGetModels(): {
   content: { type: "text"; text: string }[];
   details: GetModelsResult;
 } {
+  const flavors = flavoredModels.readFlavoredModels();
+  if (flavorUnion(flavors).length > 0) {
+    return executeGetFlavoredModels(flavors);
+  }
   const models = flavoredModels.readEnabledModels();
   const oss = models.filter((model) => classifyModel(model) === "oss");
   const frontier = models.filter((model) => classifyModel(model) === "frontier");
@@ -127,11 +146,11 @@ function buildSettingsListTheme(theme: {
   };
 }
 
-function executeGetFlavoredModels(migrationNotice?: string): {
+function executeGetFlavoredModels(flavors: FlavoredModelsResult): {
   content: { type: "text"; text: string }[];
-  details: FlavoredModelsResult;
+  details: GetModelsResult;
 } {
-  const flavors = flavoredModels.readFlavoredModels();
+  const union = flavorUnion(flavors);
   const sections = FLAVOR_KEYS.flatMap((flavor) => {
     const items = flavors[flavor];
     return [
@@ -141,15 +160,12 @@ function executeGetFlavoredModels(migrationNotice?: string): {
     ];
   });
   return {
-    content: [
-      {
-        type: "text",
-        text: migrationNotice
-          ? `${migrationNotice}\n\n${sections.join("\n")}`
-          : sections.join("\n"),
-      },
-    ],
-    details: flavors,
+    content: [{ type: "text", text: sections.join("\n") }],
+    details: {
+      oss: union.filter((model) => classifyModel(model) === "oss"),
+      frontier: union.filter((model) => classifyModel(model) === "frontier"),
+      flavors,
+    },
   };
 }
 
@@ -288,8 +304,9 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
     label: "Spawn Teammate",
     description:
       "Spawn a new teammate/worker/subagent in a terminal pane or separate window.\n\n" +
-      "Model selection: before spawning, call get_flavored_models to see the " +
-      "configured orchestrator/worker/swarm model lists. Pick from the worker " +
+      "Model selection: before spawning, call get_models to see the " +
+      "configured orchestrator/worker/swarm model lists (it falls back to " +
+      "OSS/frontier lists when no flavors are set). Pick from the worker " +
       "list for coding. Pick from the orchestrator list only for a " +
       "teammate/worker/subagent " +
       "that plans or coordinates other work. Never pick from the swarm list " +
@@ -312,7 +329,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
           Type.String({
             description:
               "Fully-qualified provider/model. Omit to follow the " +
-              "get_flavored_models guidance (flavor-matched, provider-diverse, " +
+              "get_models guidance (flavor-matched, provider-diverse, " +
               "falling back to the team lead's model).",
           }),
         ),
@@ -351,7 +368,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
     label: "Spawn Read-Only Worker",
     description:
       "Spawn a read-only teammate/worker/subagent agent that can only read, grep, find, and ls files. No bash, write, or edit access. Despite being read-only, the teammate/worker/subagent can still use messaging tools (send_message) to communicate with the team lead, and it can close itself with close_myself.\n\n" +
-      "Model selection: before spawning, call get_flavored_models and pick a " +
+      "Model selection: before spawning, call get_models and pick a " +
       "model from the swarm list. If the swarm list is empty, pick from the " +
       "worker list. If that is empty too, spawn the same model as yours (the " +
       "team lead's). Prefer spreading teammates/workers/subagents across different providers " +
@@ -370,7 +387,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
           Type.String({
             description:
               "Fully-qualified provider/model, e.g. from the " +
-              "get_flavored_models lists. Omit to use the team lead's model.",
+              "get_models lists. Omit to use the team lead's model.",
           }),
         ),
       }),
@@ -486,37 +503,37 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
     },
   });
 
-  pi.registerTool({
-    name: "get_flavored_models",
-    label: "Get Flavored Models",
-    description:
-      "Read flavor-categorized models from pi settings.json and return three " +
-      "lists: orchestrator (orchestrating, planning, coordinating), worker " +
-      "(coding), and swarm (read-only information gathering).",
-    parameters: asPiToolSchema(Type.Object({})) as any,
-    async execute() {
-      try {
-        const notice = deps.getPendingMigrationNotice();
-        deps.setPendingMigrationNotice(undefined);
-        return executeGetFlavoredModels(notice);
-      } catch (error) {
-        throw new Error(`Failed to read flavored models: ${error}`);
+  const runGetModels = async () => {
+    try {
+      const notice = deps.getPendingMigrationNotice();
+      deps.setPendingMigrationNotice(undefined);
+      const result = executeGetModels();
+      if (notice) {
+        result.content[0].text = `${notice}\n\n${result.content[0].text}`;
       }
-    },
-    renderCall(_args: any, theme: any): any {
-      const text = new Text("", 0, 0);
-      text.setText(theme.fg("toolTitle", theme.bold("get_flavored_models")));
+      return result;
+    } catch (error) {
+      throw new Error(`Failed to read enabled models: ${error}`);
+    }
+  };
+  const getModelsDescription =
+    "Read model lists from pi settings.json. When flavored models are " +
+    "configured, return three flavor lists: orchestrator (orchestrating, " +
+    "planning, coordinating), worker (coding), and swarm (read-only " +
+    "information gathering). Otherwise, return two lists: OSS (models not " +
+    'containing "gpt" or "claude", e.g. Qwen, DeepSeek, Nemotron) and ' +
+    'frontier (models containing "gpt" or "claude", e.g. GPT-5.x, Claude ' +
+    "Sonnet).";
+  const renderGetModelsResult = (result: any, _options: { expanded: boolean }, theme: any): any => {
+    const text = new Text("", 0, 0);
+    const details = result.details as GetModelsResult | undefined;
+    if (!details) {
+      text.setText(theme.fg("error", "[no result]"));
       return text;
-    },
-    renderResult(result: any, _options: { expanded: boolean }, theme: any): any {
-      const text = new Text("", 0, 0);
-      const details = result.details as FlavoredModelsResult | undefined;
-      if (!details) {
-        text.setText(theme.fg("error", "[no result]"));
-        return text;
-      }
+    }
+    if (details.flavors) {
       const lines = FLAVOR_KEYS.flatMap((key) => {
-        const items = details[key];
+        const items = details.flavors![key];
         const color = FLAVOR_COLOR[key];
         const modelLines =
           items.length > 0
@@ -530,60 +547,61 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       });
       text.setText(lines.join("\n"));
       return text;
+    }
+    const ossList =
+      details.oss.length > 0
+        ? details.oss
+            .map((model) => `  ${theme.fg("success", "\u25CF")} ${model}`)
+            .join("\n")
+        : theme.fg("dim", "  (none)");
+    const frontierList =
+      details.frontier.length > 0
+        ? details.frontier
+            .map((model) => `  ${theme.fg("accent", "\u25C6")} ${model}`)
+            .join("\n")
+        : theme.fg("dim", "  (none)");
+    text.setText(
+      [
+        theme.fg("toolTitle", theme.bold("OSS Models")),
+        ossList,
+        "",
+        theme.fg("toolTitle", theme.bold("Frontier Models")),
+        frontierList,
+      ].join("\n"),
+    );
+    return text;
+  };
+
+  // Backwards-compatible alias: identical behavior to get_models. Remove once
+  // prompts and skills no longer reference it.
+  pi.registerTool({
+    name: "get_flavored_models",
+    label: "Get Flavored Models",
+    description:
+      "Alias for get_models. Returns the orchestrator/worker/swarm lists " +
+      "when flavored models are configured, otherwise the OSS/frontier lists.",
+    parameters: asPiToolSchema(Type.Object({})) as any,
+    execute: runGetModels,
+    renderCall(_args: any, theme: any): any {
+      const text = new Text("", 0, 0);
+      text.setText(theme.fg("toolTitle", theme.bold("get_flavored_models")));
+      return text;
     },
+    renderResult: renderGetModelsResult,
   });
 
   pi.registerTool({
     name: "get_models",
     label: "Get Models",
-    description:
-      "Read enabled models from pi settings.json and return two lists: " +
-      'OSS (models not containing "gpt" or "claude", e.g. Qwen, DeepSeek, ' +
-      'Nemotron) and frontier (models containing "gpt" or "claude", e.g. ' +
-      "GPT-5.x, Claude Sonnet).",
+    description: getModelsDescription,
     parameters: asPiToolSchema(Type.Object({})) as any,
-    async execute() {
-      try {
-        return executeGetModels();
-      } catch (error) {
-        throw new Error(`Failed to read enabled models: ${error}`);
-      }
-    },
+    execute: runGetModels,
     renderCall(_args: any, theme: any): any {
       const text = new Text("", 0, 0);
       text.setText(theme.fg("toolTitle", theme.bold("get_models")));
       return text;
     },
-    renderResult(result: any, _options: { expanded: boolean }, theme: any): any {
-      const text = new Text("", 0, 0);
-      const details = result.details as GetModelsResult | undefined;
-      if (!details) {
-        text.setText(theme.fg("error", "[no result]"));
-        return text;
-      }
-      const ossList =
-        details.oss.length > 0
-          ? details.oss
-              .map((model) => `  ${theme.fg("success", "\u25CF")} ${model}`)
-              .join("\n")
-          : theme.fg("dim", "  (none)");
-      const frontierList =
-        details.frontier.length > 0
-          ? details.frontier
-              .map((model) => `  ${theme.fg("accent", "\u25C6")} ${model}`)
-              .join("\n")
-          : theme.fg("dim", "  (none)");
-      text.setText(
-        [
-          theme.fg("toolTitle", theme.bold("OSS Models")),
-          ossList,
-          "",
-          theme.fg("toolTitle", theme.bold("Frontier Models")),
-          frontierList,
-        ].join("\n"),
-      );
-      return text;
-    },
+    renderResult: renderGetModelsResult,
   });
 
   pi.registerCommand("flavored-models", {

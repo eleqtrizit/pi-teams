@@ -79,8 +79,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 
 ### Model Categorization
 
-- **`get_models`** - Read enabled models from pi settings.json, split into OSS and frontier (GPT/Claude) lists
-- **`get_flavored_models`** - Read the orchestrator, worker, and swarm model lists from pi settings.json
+- **`get_models`** - Read model lists from pi settings.json. When flavored models are configured, it returns the orchestrator, worker, and swarm lists; otherwise it splits the enabled models into OSS and frontier (GPT/Claude) lists
 - **`/flavored-models`** - Interactive command to assign each enabled model to a flavor
 
 ### Messaging System
@@ -298,7 +297,7 @@ resolve_model(model_name="claude-3.5")
 When flavor lists are configured, the team lead uses them to choose models
 when spawning teammates:
 
-1. Before spawning, the lead calls `get_flavored_models` to read the lists
+1. Before spawning, the lead calls `get_models` to read the lists
 2. It picks a model whose flavor matches the task:
    - `spawn_teammate` uses the `worker` list. It uses the `orchestrator` list
      only for a teammate that plans or coordinates other work.
@@ -340,7 +339,7 @@ it migrates the settings once:
 - The migration appends to existing lists, removes duplicates, deletes the old
   keys, and writes `settings.json` atomically.
 - The session shows a warning that names the moved models. The next
-  `get_flavored_models` call repeats the warning for the model.
+  `get_models` call repeats the warning for the model.
 - No models move to `swarm`. Assign them with `/flavored-models`.
 - Review your prompts and skills that mention high, med, or fast models, and
   update them.

@@ -11,7 +11,7 @@ Use the tasks from the task list. Divide them among a team of workers and run th
 
 Requires the pi-tasks task tools (`task_create`, `get_batch_of_tasks`, ...). If they are not available, tell the user to install the pi-tasks extension and stop.
 
-Spawn one worker per ready task, as many workers as there are ready tasks. Omit the `model` argument when spawning so `spawn_teammate` clones your own model for each worker. If you want provider-diverse models instead, run `get_flavored_models` and pick from the worker list.
+Spawn one worker per ready task, as many workers as there are ready tasks. Omit the `model` argument when spawning so `spawn_teammate` clones your own model for each worker. If you want provider-diverse models instead, run `get_models` and pick from the worker list.
 
 Workers are agents of flavor class "worker".
 

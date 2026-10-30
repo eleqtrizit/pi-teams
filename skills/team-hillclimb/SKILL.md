@@ -37,7 +37,7 @@ Defaults, unless the user overrides them:
 
 Model diversity raises the chance of success. Different models propose different ideas, and the diversity lowers the homogenizing effect of peer communication.
 
-1. Call `get_flavored_models`.
+1. Call `get_models`.
 2. If the orchestrator or worker lists are not empty, then build the pool from both lists. Coding workers come from the worker list, and orchestrator models add stronger planners to the mix.
 3. If both lists are empty, then call `get_models` and build the pool from the scoped models. Pick a variety across providers and model families, OSS and frontier both.
 4. Assign models round-robin across workers so that no two workers in a round share a model when the pool allows it. Prefer spreading across providers.

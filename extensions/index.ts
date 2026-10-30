@@ -319,7 +319,7 @@ export default function (pi: ExtensionAPI) {
   let isAgentRunning = false;
   /** Replies this agent owes to senders that requested one with `expectReply`. */
   const obligations = new ObligationTracker();
-  /** Migration warning shown to the model on its next get_flavored_models call */
+  /** Migration warning shown to the model on its next get_models call */
   let pendingMigrationNotice: string | undefined;
   // Captured from the first context that carries a model registry, so the
   // Increments once a follow-up message has actually reached the agent's

@@ -35,7 +35,12 @@ describe("executeGetModels", () => {
     vi.restoreAllMocks();
   });
 
-  it("partitions enabled models into oss and frontier lists", () => {
+  it("partitions enabled models into oss and frontier lists when no flavors are set", () => {
+    vi.spyOn(flavoredModels, "readFlavoredModels").mockReturnValue({
+      orchestrator: [],
+      worker: [],
+      swarm: [],
+    });
     vi.spyOn(flavoredModels, "readEnabledModels").mockReturnValue([
       "openai-codex/gpt-5.5",
       "bighank/Qwen35Coder-35B-NoThinking",
@@ -53,12 +58,39 @@ describe("executeGetModels", () => {
   });
 
   it("renders (none) placeholders for an empty list", () => {
+    vi.spyOn(flavoredModels, "readFlavoredModels").mockReturnValue({
+      orchestrator: [],
+      worker: [],
+      swarm: [],
+    });
     vi.spyOn(flavoredModels, "readEnabledModels").mockReturnValue([]);
 
     const result = executeGetModels();
 
     expect(result.details).toEqual({ oss: [], frontier: [] });
     expect(result.content[0].text).toContain("(none)");
+  });
+
+  it("renders flavor lists and ignores enabledModels when flavors are configured", () => {
+    const flavors = {
+      orchestrator: ["anthropic/claude-sonnet-4.5"],
+      worker: ["bighank/Qwen35Coder-35B-NoThinking"],
+      swarm: ["openai-codex/gpt-5.5"],
+    };
+    vi.spyOn(flavoredModels, "readFlavoredModels").mockReturnValue(flavors);
+    const readEnabled = vi.spyOn(flavoredModels, "readEnabledModels");
+
+    const result = executeGetModels();
+
+    expect(result.details).toEqual({
+      oss: ["bighank/Qwen35Coder-35B-NoThinking"],
+      frontier: ["anthropic/claude-sonnet-4.5", "openai-codex/gpt-5.5"],
+      flavors,
+    });
+    expect(result.content[0].text).toContain("## Orchestrator (planning, coordinating) Models");
+    expect(result.content[0].text).toContain("## Worker (coding) Models");
+    expect(result.content[0].text).not.toContain("## OSS Models");
+    expect(readEnabled).not.toHaveBeenCalled();
   });
 });
 
