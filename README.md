@@ -4,9 +4,7 @@
 
 > **Note:** This repository is a fork of [burggraf/pi-teams](https://github.com/burggraf/pi-teams). Many credits to him!
 
-Orchestrate teams of AI agents that work together on complex coding tasks. pi-teams enables you to spawn specialized agents, coordinate communication, and automate workflows with hooks.
-
-![pi-teams in action](https://raw.githubusercontent.com/eleqtrizit/pi-teams/main/pi-team-in-action.png)
+Orchestrate teams of AI agents that work together on complex coding tasks. pi-teams enables you to spawn specialized agents, coordinate communication, and automate workflows with hooks.  Works with Claude Code and Pi.
 
 ## Quickstart
 
@@ -14,7 +12,7 @@ Orchestrate teams of AI agents that work together on complex coding tasks. pi-te
 pi install https://github.com/eleqtrizit/pi-teams
 ```
 
-Goes well with Pi-Tasks:
+Goes well with Pi-Tasks!:
 
 ```bash
 pi install https://github.com/eleqtrizit/pi-tasks
@@ -28,7 +26,9 @@ claude plugin marketplace add eleqtrizit/pi-teams
 claude plugin install pi-teams@pi-teams
 ```
 
-Run these in a shell, not inside a Claude session. If `claude` is a shell alias that adds options (such as `--dangerously-skip-permissions`), run them as `command claude plugin ...`. Then start a new Claude Code session: the `/pi-teams` command shows the connection, and Claude can call `list_agents`. Details are in [Use pi-teams from Claude Code](#use-pi-teams-from-claude-code).
+Run these in a shell, not inside a Claude session. 
+
+Then start a new Claude Code session: the `/pi-teams` command shows the connection, and Claude can call `list_agents`. Details are in [Use pi-teams from Claude Code](#use-pi-teams-from-claude-code).
 
 ## Use pi-teams from Claude Code
 
@@ -65,7 +65,7 @@ pi-teams models                           model lists from pi settings
 
 Output is JSON on stdout (`list` prints text unless `--json`). Exit codes: 1 failed, 2 recipient unreachable, 3 version check failed.
 
-## Quick Start
+## How to Spawn Agents
 
 Use simple phrasing in the chat window to spawn workers and communicate:
 
