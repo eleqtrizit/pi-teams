@@ -20,6 +20,16 @@ Goes well with Pi-Tasks:
 pi install https://github.com/eleqtrizit/pi-tasks
 ```
 
+To use pi-teams from Claude Code too, install the CLI and the Claude Code mod, then start `pi` once so it writes `~/.pi/agent/pi-teams/version.txt`:
+
+```bash
+npm i -g @eleqtrizit/pi-teams-cli
+claude plugin marketplace add eleqtrizit/pi-teams
+claude plugin install pi-teams@pi-teams
+```
+
+Run these in a shell, not inside a Claude session. If `claude` is a shell alias that adds options (such as `--dangerously-skip-permissions`), run them as `command claude plugin ...`. Then start a new Claude Code session: the `/pi-teams` command shows the connection, and Claude can call `list_agents`. Details are in [Use pi-teams from Claude Code](#use-pi-teams-from-claude-code).
+
 ## Use pi-teams from Claude Code
 
 A Claude Code session can join the same agent network as a lead: it spawns pi workers, messages them and other leads, and is woken when they reply, the way pi leads are. Three pieces, installed separately:
