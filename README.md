@@ -20,6 +20,41 @@ Goes well with Pi-Tasks:
 pi install https://github.com/eleqtrizit/pi-tasks
 ```
 
+## Use pi-teams from Claude Code
+
+A Claude Code session can join the same agent network as a lead: it spawns pi workers, messages them and other leads, and is woken when they reply, the way pi leads are. Three pieces, installed separately:
+
+```bash
+pi install https://github.com/eleqtrizit/pi-teams     # the pi extension (above)
+npm i -g @eleqtrizit/pi-teams-cli                      # the pi-teams command
+claude plugin marketplace add eleqtrizit/pi-teams      # then:
+claude plugin install pi-teams@pi-teams                # the Claude Code mod
+```
+
+Start pi once after installing or upgrading the extension. It records its version in `~/.pi/agent/pi-teams/version.txt`, and the CLI refuses to run when that file is missing or names a newer version than the CLI. Upgrade the CLI with the same `npm i -g` command.
+
+The mod (`claude-mod/`) starts `pi-teams listen` when a session starts. That registers the session as a lead labelled `Claude Code in <cwd>`, and each message it receives is submitted as a new turn, so a worker's report wakes Claude. The model gets these tools, named as in pi: `send_message`, `list_agents`, `get_models`, `spawn_teammate`, `spawn_readonly_worker`, `spawn_team_lead`, `close_worker` and `close_all_workers`, plus a `/pi-teams` command that shows the connection. A skill, `pi-teams:network`, tells Claude how to delegate.
+
+Workers are spawned through the terminal adapter detected from the environment Claude Code runs in (tmux, iTerm2, and the others above), so run Claude Code inside one of those terminals to spawn workers. `spawn_team_lead` works anywhere.
+
+Mod options (`/config`, or `pluginConfigs` in settings): `cli_path` (default `pi-teams`) and `client_name` (default `Claude Code`).
+
+### The `pi-teams` command
+
+```
+pi-teams version                          CLI and protocol versions
+pi-teams listen [--cwd D] [--client N]    register as a lead; print each inbound message as a JSON line
+pi-teams list --as ID [--online-only] [--json]
+pi-teams send --as ID <recipient> --subject S [--expect-reply] [--summary T] [--body B]   (body from --body or stdin)
+pi-teams spawn --as ID --name N --model provider/model [--readonly] [--thinking L] [--cwd D] [--window]
+pi-teams spawn-lead --folder D [--model provider/model] [--window] [--as ID]
+pi-teams close --as ID (<id|name> | --all)
+pi-teams state --as ID busy|idle          publish run state for list_agents
+pi-teams models                           model lists from pi settings
+```
+
+Output is JSON on stdout (`list` prints text unless `--json`). Exit codes: 1 failed, 2 recipient unreachable, 3 version check failed.
+
 ## Quick Start
 
 Use simple phrasing in the chat window to spawn workers and communicate:
@@ -242,6 +277,7 @@ All agent data is stored in the per-user registry under your home directory, so 
 │   └── <id>.json            # Agent registry record
 ├── state/
 │   └── <id>.json            # Busy/available run state
+├── version.txt              # pi extension version, written at session_start; the CLI checks it
 ├── agents.jsonl             # lastSeenAt side table, one entry per registered record
 ├── agents.jsonl.flock       # Permanent lock inode guarding agents.jsonl mutations
 └── s/
@@ -379,7 +415,13 @@ pi-teams/
 │   ├── lead-tools.ts         # Lead-only tool registrations
 │   ├── shared-tools.ts       # Shared and worker tool registrations
 │   └── agents-tools.ts       # list_agents and spawn_team_lead registrations
+├── cli/                      # npm package @eleqtrizit/pi-teams-cli (bundle built from src/cli.ts)
+├── claude-mod/               # Claude Code mod: tools, listener, wake-up (see "Use pi-teams from Claude Code")
+├── scripts/
+│   ├── build-cli.mjs         # bundles src/cli.ts into cli/pi-teams.cjs
+│   └── publish-cli.sh        # builds and publishes the CLI package
 ├── src/
+│   ├── cli.ts                # the pi-teams command
 │   ├── adapters/
 │   │   ├── terminal-adapter.ts      # Interface definition
 │   │   ├── terminal-registry.ts     # Adapter detection/registry
@@ -390,6 +432,9 @@ pi-teams/
 │   │   ├── orca-adapter.ts          # Orca implementation
 │   │   └── wezterm-adapter.ts       # WezTerm implementation
 │   └── utils/
+│       ├── launch.ts                # Worker and lead launch, shared by the extension and the CLI
+│       ├── agentList.ts             # Visible, ordered agent list shared by list_agents and the CLI
+│       ├── version.ts              # Package version and the version.txt check
 │       ├── teams.ts                 # Shared removal path
 │       ├── transport.ts             # Unix socket listener and acknowledged send
 │       ├── messaging.ts             # Send and broadcast
@@ -405,8 +450,20 @@ pi-teams/
 ### Running Tests
 
 ```bash
-npm test
+npm test                      # extension, CLI and shared code (vitest)
+npm run build:cli             # rebuild cli/pi-teams.cjs
+cd claude-mod && command claude plugin test   # the Claude Code mod, against the real engine
 ```
+
+`command claude` skips a shell alias that puts options before `plugin`, which `claude plugin test` rejects.
+
+### Publishing the CLI
+
+```bash
+scripts/publish-cli.sh        # builds, then npm publish --access public from cli/
+```
+
+The CLI package version follows the root `package.json`; the build script syncs it. Publishing needs an npm login with rights to the `@eleqtrizit` scope.
 
 ### Adding New Terminal Support
 

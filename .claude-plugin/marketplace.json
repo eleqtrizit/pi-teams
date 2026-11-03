@@ -1,0 +1,12 @@
+{
+  "name": "pi-teams",
+  "description": "Claude Code mods for the pi-teams agent network",
+  "owner": { "name": "eleqtrizit" },
+  "plugins": [
+    {
+      "name": "pi-teams",
+      "source": "./claude-mod",
+      "description": "Join a pi-teams agent network from Claude Code: spawn pi workers, message them and other leads, and be woken when they reply."
+    }
+  ]
+}

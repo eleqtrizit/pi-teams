@@ -3,3 +3,4 @@ node_modules
 .pi
 dist
 *.log
+cli/pi-teams.cjs

@@ -6,20 +6,12 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { AgentEntry } from "../src/utils/agentFormat";
-import { formatAgentLine, sortAgentLines } from "../src/utils/agentFormat";
-import { historyKey, readAgentHistory } from "../src/utils/history";
-import { AgentStatus, type AgentRecord } from "../src/utils/models";
-import { generateAgentId, pruneAndList } from "../src/utils/registry";
-import {
-  buildLeadCommand,
-  buildLeadEnv,
-  resolveLeadFolder,
-  resolveSpawnModel,
-} from "../src/utils/spawn";
+import { formatAgentLine } from "../src/utils/agentFormat";
+import { listVisibleAgents } from "../src/utils/agentList";
+import type { AgentRecord } from "../src/utils/models";
+import { launchLead } from "../src/utils/launch";
+import { resolveLeadFolder, resolveSpawnModel } from "../src/utils/spawn";
 import type { TerminalAdapter } from "../src/utils/terminal-adapter";
-import { waitForListener } from "../src/utils/transport";
-import { visibleTo } from "../src/utils/visibility";
 
 /** Session state required by the agent tools registration. */
 export interface AgentToolDeps {
@@ -40,9 +32,6 @@ export interface AgentToolDeps {
    */
   getLastSeenAt?: () => ReadonlyMap<string, number>;
 }
-
-/** Time spawn_team_lead waits for the new lead's socket, mirroring worker spawns. */
-const LEAD_LISTEN_TIMEOUT_MS = 30_000;
 
 function asPiToolSchema<TSchemaLike>(schema: TSchemaLike): TSchemaLike {
   return schema as TSchemaLike;
@@ -97,52 +86,10 @@ export function registerAgentTools(
         );
       }
 
-      const entries = await pruneAndList();
-      const entryById = new Map(
-        entries.map((entry) => [entry.record.id, entry]),
-      );
-      const visibleRecords = visibleTo(
-        self,
-        entries.map((entry) => entry.record),
-      );
-
-      // visibleTo appends the viewer when it is missing from the registry.
-      // Self is always shown Idling, even when a liveness probe raced the call.
-      const onlineOnly = params.onlineOnly === true;
-      const visibleEntries: AgentEntry[] = visibleRecords
-        .map((record) => {
-          if (record.id === self.id) {
-            return { record, status: AgentStatus.Idling };
-          }
-          return (
-            entryById.get(record.id) ?? { record, status: AgentStatus.Offline }
-          );
-        })
-        .filter((entry) => !onlineOnly || entry.status !== AgentStatus.Offline);
-
-      // Online agents are online right now; offline ones order by the last
-      // time they were seen online (history lastSeenAt, startedAt fallback).
-      const now = Date.now();
-      const lastSeenAt =
-        deps.getLastSeenAt?.() ??
-        new Map(
-          readAgentHistory().map((entry) => [
-            historyKey(entry.cwd, entry.startedAt),
-            entry.lastSeenAt,
-          ]),
-        );
-      const lastOnlineAt = new Map<string, number>();
-      for (const entry of visibleEntries) {
-        const rec = entry.record;
-        lastOnlineAt.set(
-          rec.id,
-          entry.status === AgentStatus.Offline
-            ? (lastSeenAt.get(historyKey(rec.cwd, rec.startedAt)) ?? rec.startedAt)
-            : now,
-        );
-      }
-
-      const ordered = sortAgentLines(visibleEntries, self.cwd, lastOnlineAt);
+      const ordered = await listVisibleAgents(self, {
+        onlineOnly: params.onlineOnly === true,
+        lastSeenAt: deps.getLastSeenAt?.(),
+      });
       const text = ordered
         .map((entry) => formatAgentLine(entry.record, entry.status, self.id))
         .join("\n");
@@ -204,46 +151,26 @@ export function registerAgentTools(
         }
         const folder = resolveLeadFolder(params.folder);
         const model = resolveSpawnModel(ctx, params.model);
-        const useSeparateWindow = params.separate_window ?? false;
-        if (useSeparateWindow && !terminal.supportsWindows()) {
-          throw new Error(
-            `Separate windows mode is not supported in ${terminal.name}.`,
-          );
-        }
-
-        const id = generateAgentId();
-        const name = `pi-lead-${id}`;
-        const env = buildLeadEnv(process.env, id);
-        const command = buildLeadCommand(model);
-
-        // The spawner does not own the new lead: no member record, no seeded
-        // state, no roll-back path. A failed launch surfaces the adapter error.
-        let terminalId = "";
-        try {
-          terminalId = useSeparateWindow
-            ? terminal.spawnWindow({ name, cwd: folder, command, env })
-            : terminal.spawn({ name, cwd: folder, command, env });
-        } catch (e) {
-          throw new Error(
-            `Failed to spawn ${terminal.name} ${useSeparateWindow ? "window" : "pane"}: ${e}`,
-          );
-        }
-
-        const listening = await waitForListener(id, LEAD_LISTEN_TIMEOUT_MS);
-        const status = listening ? "Idling" : "started but not listening yet";
+        const launched = await launchLead({
+          terminal,
+          folder,
+          model,
+          separateWindow: params.separate_window ?? false,
+        });
+        const status = launched.listening ? "Idling" : "started but not listening yet";
         return {
           content: [
             {
               type: "text",
-              text: `Pi Agent in ${folder}: ${id}: ${status}`,
+              text: `Pi Agent in ${launched.cwd}: ${launched.id}: ${status}`,
             },
           ],
           details: {
-            id,
-            cwd: folder,
-            terminalId,
-            isWindow: useSeparateWindow,
-            listening,
+            id: launched.id,
+            cwd: launched.cwd,
+            terminalId: launched.terminalId,
+            isWindow: launched.isWindow,
+            listening: launched.listening,
           },
         };
       },

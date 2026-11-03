@@ -6,10 +6,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Iterm2Adapter } from "../adapters/iterm2-adapter";
 import { shQuote, type TerminalAdapter } from "./terminal-adapter";
-import { getAvailableModels } from "./modelSearch";
+import { getAvailableModels, type ModelRegistryLike } from "./modelSearch";
 import * as paths from "./paths";
 import type { AgentRecord } from "./models";
 
@@ -55,6 +54,16 @@ export const READONLY_WORKER_TOOLS = [
 ] as const;
 
 /**
+ * The slice of pi's extension context that model resolution reads. Declared
+ * structurally so this module, and the `pi-teams` CLI that imports it, never
+ * depend on pi's types; pi's `ExtensionContext` satisfies it.
+ */
+export interface ModelContextLike {
+  model?: { provider: string; id: string };
+  modelRegistry: ModelRegistryLike;
+}
+
+/**
  * Resolve the worker's model from raw spawn input.
  *
  * An undefined request or one matching "default" falls back to the team-lead's
@@ -68,7 +77,7 @@ export const READONLY_WORKER_TOOLS = [
  */
 
 export function resolveSpawnModel(
-  ctx: ExtensionContext,
+  ctx: ModelContextLike,
   modelRequest: string | undefined,
 ): string {
   const defaultModel = ctx.model
@@ -118,7 +127,21 @@ export function resolveSpawnModel(
  * @returns The quoted pi binary invocation
  */
 export function piBinaryCommand(): string {
+  if (piBinaryOverride) return piBinaryOverride;
   return process.argv[1] ? `node ${shQuote(process.argv[1])}` : "pi";
+}
+
+let piBinaryOverride: string | undefined;
+
+/**
+ * Pin the pi launch command. The `pi-teams` CLI is not pi, so its own
+ * `process.argv[1]` would launch the CLI instead of a worker; it pins the
+ * bare `pi` command on PATH. Pass undefined to restore the default.
+ *
+ * @param command - A shell-ready launch command such as `pi`
+ */
+export function setPiBinaryCommand(command: string | undefined): void {
+  piBinaryOverride = command;
 }
 
 /**

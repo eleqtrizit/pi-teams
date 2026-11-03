@@ -98,6 +98,16 @@ describe("agent presence registration", () => {
     expect(fs.existsSync(recordDir)).toBe(false);
   });
 
+  it("records the extension version for the CLI at session_start, even without registering", async () => {
+    vi.stubEnv("PI_AGENT_TYPE", "lead");
+
+    const { handlers } = loadExtension();
+    await handlers.get("session_start")({}, { ui, hasUI: false, cwd: "/tmp/pi-teams-test" });
+
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "../package.json"), "utf8"));
+    expect(fs.readFileSync(path.join(tmpDir, "version.txt"), "utf8").trim()).toBe(pkg.version);
+  });
+
   it("writes a worker record with leadId and name", async () => {
     vi.stubEnv("PI_AGENT_NAME", "worker-1");
     vi.stubEnv("PI_AGENT_TYPE", "teammate");

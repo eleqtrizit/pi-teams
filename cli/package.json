@@ -1,0 +1,26 @@
+{
+  "name": "@eleqtrizit/pi-teams-cli",
+  "version": "0.8.8",
+  "description": "Command-line access to the pi-teams agent network, for clients that are not pi (such as Claude Code).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eleqtrizit/pi-teams.git"
+  },
+  "bin": {
+    "pi-teams": "pi-teams.cjs"
+  },
+  "files": [
+    "pi-teams.cjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../scripts/build-cli.mjs"
+  },
+  "dependencies": {
+    "fs-native-extensions": "^1.5.2"
+  }
+}

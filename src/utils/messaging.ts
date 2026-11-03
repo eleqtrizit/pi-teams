@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AgentKind, AgentRecord, TeamMessage } from "./models";
+import { agentTitle } from "./agentFormat";
 import { AGENT_ID_PATTERN } from "./paths";
 import { readAgentRecords } from "./registry";
 import { RecipientUnreachableError, sendToAgent } from "./transport";
@@ -61,15 +62,15 @@ export const LEAD_ALIAS = "lead";
 /**
  * Human-readable sender label for message headers.
  *
- * Leads render as `Pi Agent in <cwd>`; workers render as
+ * Leads render as `Pi Agent in <cwd>` (or `<client> in <cwd>` for a lead
+ * registered by a non-pi client); workers render as
  * `Worker <name ?? id> in <cwd>`, matching the {@link formatAgentLine} shapes.
  *
  * @param rec - The sending agent's registry record.
  * @returns The label used as the message `fromLabel`.
  */
 export function agentLabel(rec: AgentRecord): string {
-  const who = rec.kind === AgentKind.Lead ? "Pi Agent" : `Worker ${rec.name ?? rec.id}`;
-  return `${who} in ${rec.cwd}`;
+  return `${agentTitle(rec)} in ${rec.cwd}`;
 }
 
 /** Result of a registry broadcast with delivery status per recipient. */

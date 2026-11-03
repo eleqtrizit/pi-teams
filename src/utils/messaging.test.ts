@@ -75,6 +75,10 @@ describe("registry messaging", () => {
       expect(agentLabel(leadA)).toBe("Pi Agent in /w/a");
     });
 
+    it("labels a lead registered by a non-pi client with the client name", () => {
+      expect(agentLabel({ ...leadA, client: "Claude Code" })).toBe("Claude Code in /w/a");
+    });
+
     it("labels a named worker by name and directory", () => {
       expect(agentLabel(alice)).toBe("Worker alice in /w/a");
     });

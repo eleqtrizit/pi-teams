@@ -22,6 +22,15 @@ const worker = (overrides: Partial<AgentRecord> = {}): AgentRecord => ({
   ...overrides,
 });
 
+describe("formatAgentLine with a client lead", () => {
+  it("renders the client name in place of Pi Agent", () => {
+    const rec = { ...lead(), client: "Claude Code" };
+    expect(formatAgentLine(rec, AgentStatus.Idling, "zzzz9999")).toBe(
+      `Claude Code in ${rec.cwd}: ${rec.id}: Idling`,
+    );
+  });
+});
+
 describe("formatAgentLine", () => {
   it("renders an available lead", () => {
     expect(formatAgentLine(lead(), AgentStatus.Idling, "zzzz9999")).toBe(

@@ -16,6 +16,18 @@ export interface AgentEntry {
 }
 
 /**
+ * Display title of an agent: `Worker <name ?? id>` for workers, the record's
+ * `client` for a lead registered by a non-pi client, else `Pi Agent`.
+ *
+ * @param rec - The agent registry record.
+ * @returns The title that precedes ` in <cwd>` in labels and list lines.
+ */
+export function agentTitle(rec: AgentRecord): string {
+  if (rec.kind !== AgentKind.Lead) return `Worker ${rec.name ?? rec.id}`;
+  return rec.client ?? "Pi Agent";
+}
+
+/**
  * Render one agent as a human-readable line.
  *
  * The lead shape is `Pi Agent in <cwd>: <id>: <status>`; workers render
@@ -32,10 +44,7 @@ export function formatAgentLine(
   status: AgentStatus,
   selfId: string,
 ): string {
-  const who =
-    rec.kind === AgentKind.Lead
-      ? "Pi Agent"
-      : `Worker ${rec.name ?? rec.id}`;
+  const who = agentTitle(rec);
   const self = rec.id === selfId ? " (you)" : "";
   return `${who} in ${rec.cwd}: ${rec.id}: ${status}${self}`;
 }

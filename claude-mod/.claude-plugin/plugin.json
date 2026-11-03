@@ -1,0 +1,22 @@
+{
+  "name": "pi-teams",
+  "version": "0.8.8",
+  "description": "Join a pi-teams agent network from Claude Code: spawn pi workers, message them and other leads, and be woken when they reply.",
+  "author": { "name": "eleqtrizit" },
+  "repository": "https://github.com/eleqtrizit/pi-teams",
+  "license": "MIT",
+  "userConfig": {
+    "cli_path": {
+      "type": "string",
+      "title": "pi-teams CLI",
+      "description": "Command that runs the pi-teams CLI. Install it with: npm i -g @eleqtrizit/pi-teams-cli",
+      "default": "pi-teams"
+    },
+    "client_name": {
+      "type": "string",
+      "title": "Name shown to other agents",
+      "description": "How this session is labelled in message headers and list_agents.",
+      "default": "Claude Code"
+    }
+  }
+}

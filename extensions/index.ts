@@ -24,14 +24,9 @@ import * as paths from "../src/utils/paths";
 import {
   type MessageListener,
   startListener,
-  waitForListener,
 } from "../src/utils/transport";
-import {
-  buildWorkerCommand,
-  spawnWorkerProcess,
-  resolveSpawnModel,
-  resolveSpawnDirectory,
-} from "../src/utils/spawn";
+import { resolveSpawnModel, resolveSpawnDirectory } from "../src/utils/spawn";
+import { launchWorker } from "../src/utils/launch";
 import {
   registerLeadTools,
   runFlavorMigration,
@@ -46,10 +41,10 @@ import {
   ensureRegistryDir,
   writeAgentRecord,
   readAgentRecords,
-  updateAgentRecord,
   adoptOrphanedWorkers,
 } from "../src/utils/registry";
 import { isPidAlive } from "../src/utils/pid";
+import { writeVersionFile } from "../src/utils/version";
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
@@ -134,9 +129,6 @@ export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
 
 /** Delay before a follow-up that failed to queue is flushed again while no run is active. */
 const FOLLOW_UP_RETRY_MS = 2000;
-
-/** Longest time a spawn tool waits for a new worker to start listening. */
-const WORKER_LISTEN_TIMEOUT_MS = 30_000;
 
 export class FollowUpMessageQueue {
   private messages: string[] = [];
@@ -240,74 +232,19 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     goals: SpawnWorkerGoals,
   ): Promise<SpawnedWorker> {
-    const safeName = paths.sanitizeName(goals.name);
+    paths.sanitizeName(goals.name);
     if (!terminal) {
       throw new Error("No terminal adapter detected.");
     }
-    const cwd = resolveSpawnDirectory(goals.cwd);
+    resolveSpawnDirectory(goals.cwd);
     const model = resolveSpawnModel(ctx, goals.modelRequest);
-    const useSeparateWindow =
-      !goals.readonlyWorker && (goals.separateWindow ?? false);
-    if (useSeparateWindow && !terminal.supportsWindows()) {
-      throw new Error(
-        `Separate windows mode is not supported in ${terminal.name}.`,
-      );
-    }
-
-    const { piCmd, agentType } = buildWorkerCommand(goals, model);
-    const ownWorkers = readAgentRecords().filter(
-      (record) => record.leadId === agentId,
-    );
-    if (ownWorkers.some((record) => record.name === safeName)) {
-      throw new Error(
-        `A worker named "${safeName}" already exists under this lead.`,
-      );
-    }
-    const workerId = generateAgentId();
-    const env = { ...process.env } as Record<string, string | undefined>;
-    env.PI_AGENT_NAME = safeName;
-    env.PI_AGENT_TYPE = agentType;
-    env.PI_AGENT_ID = workerId;
-    env.PI_LEAD_ID = agentId;
-
-    let terminalId: string;
-    try {
-      terminalId = spawnWorkerProcess(terminal, {
-        name: safeName,
-        cwd,
-        piCmd,
-        env: Object.fromEntries(
-          Object.entries(env).filter(
-            (entry): entry is [string, string] => entry[1] !== undefined,
-          ),
-        ),
-        agents: ownWorkers,
-        useSeparateWindow,
-        readonlyWorker: goals.readonlyWorker,
-      });
-    } catch (e) {
-      throw new Error(
-        `Failed to spawn ${terminal.name} ${useSeparateWindow ? "window" : "pane"}: ${e}`,
-      );
-    }
-
-    const listening = await waitForListener(workerId, WORKER_LISTEN_TIMEOUT_MS);
-    // shortcut: a worker that boots after the wait keeps no terminal ids, so close_worker
-    // kills its pid but leaves the pane open; pass the ids via env if that matters.
-    if (listening) {
-      updateAgentRecord(
-        workerId,
-        useSeparateWindow ? { windowId: terminalId } : { paneId: terminalId },
-      );
-    }
-
-    return {
-      agentId: workerId,
-      terminalId,
-      isWindow: useSeparateWindow,
+    return launchWorker({
+      terminal,
+      leadId: agentId,
+      leadCwd: process.cwd(),
+      goals,
       model,
-      listening,
-    };
+    });
   }
 
   const terminal = getTerminalAdapter();
@@ -486,6 +423,11 @@ export default function (pi: ExtensionAPI) {
       }
     }
     pendingInboxNotifications.clear();
+    try {
+      writeVersionFile();
+    } catch {
+      // The version file only guards the CLI; a write failure must not stop the session.
+    }
     const shouldSkipRegistration = isLead && !ctx.hasUI && !idWasPreassigned;
     if (!shouldSkipRegistration) {
       selfRecord = {

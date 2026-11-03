@@ -39,6 +39,12 @@ export interface AgentRecord {
   windowId?: string;
   /** Epoch milliseconds at registration. */
   startedAt: number;
+  /**
+   * Display name of a non-pi client that registered itself as this lead,
+   * for example "Claude Code". Absent for pi sessions. Shown in message
+   * labels and `list_agents` lines in place of "Pi Agent".
+   */
+  client?: string;
 }
 
 /**
