@@ -21,10 +21,7 @@ import {
 import { removeRunState, writeRunState } from "../src/utils/runstate";
 import { TeamMessage } from "../src/utils/models";
 import * as paths from "../src/utils/paths";
-import {
-  type MessageListener,
-  startListener,
-} from "../src/utils/transport";
+import { type MessageListener, startListener } from "../src/utils/transport";
 import { resolveSpawnModel, resolveSpawnDirectory } from "../src/utils/spawn";
 import { launchWorker } from "../src/utils/launch";
 import {
@@ -118,6 +115,9 @@ export function buildPeerLeadPrompt(self: { id: string; cwd: string }): string {
     `You are Pi Agent in ${self.cwd} (id ${self.id}).`,
     "Other Pi agents (peer leads) can run in other directories. Run list_agents to see them with their ids and status. Statuses mean: Idling = alive and settled, no run in progress; Busy = mid-run, it may be doing work or waiting on its own workers; Offline = not running, its socket accepts nothing.",
     'When work belongs to another directory, or you need help: if no agent there is Idling, call spawn_team_lead(folder="<dir>"); then send_message(recipient="<id>", ...).',
+    "When the user asks to spawn an agent for another directory, always spawn a team lead with spawn_team_lead, never a teammate; teammates are for your own directory only.",
+    "The spawn tools run through the extension, not your sandboxed read and bash tools. A directory that returns 'Operation not permitted' when you list it can still be a spawn target, so when the user asks you to spawn an agent there, call spawn_team_lead right away. Do not refuse and do not ask the user to /sandbox-unlock just to spawn.",
+    "Spawn a peer lead with spawn_team_lead when the work belongs to a different directory and needs an independent agent that runs its own sessions and coordinates its own workers; you cannot close it, so delegate there only for peer-directory work. For work in your own directory, spawn teammates with spawn_teammate (coding) or spawn_readonly_worker (research) instead: they join your team, you own them, and you close them with close_all_workers when they are done.",
     "Set expectReply=true on send_message when you assign a task or ask a question; set it to false for replies, reports, and acknowledgments. A message showing 'Reply expected: yes' must be answered with send_message.",
     "Replies arrive automatically as user messages. Never poll, sleep, or wait in a loop.",
     "You can message peer leads and your own workers only. Other leads' workers are not visible to you.",

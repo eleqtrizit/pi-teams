@@ -12,6 +12,7 @@ const NON_INTERACTIVE_MARKER = "Non-interactive session:";
 const PEER_BLOCK_MARKERS = [
   "Other Pi agents (peer leads)",
   "You are Pi Agent in",
+  "Spawn a peer lead with spawn_team_lead",
 ];
 
 /**
@@ -54,6 +55,13 @@ describe("buildPeerLeadPrompt", () => {
     expect(prompt).toContain("expectReply=true");
     expect(prompt).toContain("make-tasks");
     expect(prompt).toContain("implement-tasks");
+    expect(prompt).toContain(
+      "always spawn a team lead with spawn_team_lead, never a teammate",
+    );
+    expect(prompt).toContain("not your sandboxed read and bash tools");
+    expect(prompt).toContain(
+      "Do not refuse and do not ask the user to /sandbox-unlock",
+    );
   });
 });
 
