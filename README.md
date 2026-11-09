@@ -30,6 +30,8 @@ Run these in a shell, not inside a Claude session.
 
 Then start a new Claude Code session: the `/pi-teams` command shows the connection, and Claude can call `list_agents`. Details are in [Use pi-teams from Claude Code](#use-pi-teams-from-claude-code).
 
+Just tell Claude `Use pi-teams <provider>/<model> to do the work.` or just `Use pi-teams to do the work` if the default model is the one you like.
+
 ## Use pi-teams from Claude Code
 
 A Claude Code session can join the same agent network as a lead: it spawns pi workers, messages them and other leads, and is woken when they reply, the way pi leads are. Three pieces, installed separately:
