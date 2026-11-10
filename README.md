@@ -173,6 +173,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 ### 🖥️ Terminal Integration
 
 - **herdr** - Every agent opens in its own tab with `herdr tab create`
+- **herdr-core** (herdr-app) - Every agent gets its own herdr-core terminal with `hc run`, visible as a tab in the app window
 - **Orca** - Every agent opens in its own worktree tab with `orca terminal create`
 - **tmux** - Pane-based spawning with `tmux split-window`
 - **Zellij** - Pane-based spawning with `zellij run`
@@ -201,6 +202,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
   - **iTerm2**: Escape sequences via AppleScript
   - **WezTerm**: CLI `set-window-title` command
   - **herdr**: `herdr tab rename` on the session's own tab
+  - **herdr-core**: `herdr-app do tab.rename` on the tab showing the terminal
   - **tmux/Zellij**: Pane titles within session
 
 ## Terminal Integration Details
@@ -209,6 +211,7 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 | Terminal    | Detection                | Pane Management          | Window Support |
 | ----------- | ------------------------ | ------------------------ | -------------- |
+| **herdr-core** | `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` | `hc run --bg` | ✅ (app tabs) |
 | **herdr**   | `HERDR_ENV=1` and `HERDR_PANE_ID` | `herdr tab create` | ✅ (tabs) |
 | **Orca**    | `TERM_PROGRAM=Orca`      | `orca terminal create`   | ✅             |
 | **tmux**    | `TMUX` env var           | `tmux split-window`      | ❌             |
@@ -218,18 +221,27 @@ pi-teams automatically detects and integrates with your terminal environment:
 
 ### Detection Priority Order
 
-1. **herdr** - if `HERDR_ENV=1` and `HERDR_PANE_ID` are set; herdr wins because it is the innermost multiplexer
-2. **Orca** - if `TERM_PROGRAM=Orca`
-3. **tmux** - if `TMUX` env is set
-4. **Zellij** - if `ZELLIJ` env is set and not in tmux
-5. **iTerm2** - if `TERM_PROGRAM=iTerm.app` and not in tmux/zellij
-6. **WezTerm** - if `WEZTERM_PANE` env is set and not in tmux/zellij
+1. **herdr-core** - if `HC_TERMINAL_ID` and `HC_TERMINAL_SOCKET` are set; herdr-app panes carry both HC_* and HERDR_* vars, so the core layer wins
+2. **herdr** - if `HERDR_ENV=1` and `HERDR_PANE_ID` are set; herdr beats the terminals below because it runs inside them
+3. **Orca** - if `TERM_PROGRAM=Orca`
+4. **tmux** - if `TMUX` env is set
+5. **Zellij** - if `ZELLIJ` env is set and not in tmux
+6. **iTerm2** - if `TERM_PROGRAM=iTerm.app` and not in tmux/zellij
+7. **WezTerm** - if `WEZTERM_PANE` env is set and not in tmux/zellij
 
 ### herdr Layout
 
 - Every spawned agent, including read-only workers, opens in a new tab in the lead's workspace
 - The tab label is the agent name; `separate_window` has no extra effect in herdr
 - Each tab runs `exec pi ...`, so the tab closes when pi exits
+
+### herdr-core Layout (herdr-app)
+
+- Every spawned agent runs in its own herdr-core terminal (`hc run --bg --rm`), labeled `herdr.space` so the herdr-app window gives it a tab in the space that shows the lead, even when another space is active
+- With no herdr-app window open, or when the lead has no pane in it, agents still spawn and run hidden in the core
+- Terminals survive a closed window; they end when the lead closes them or pi exits, and are then removed from the core
+- Each agent labels its own tab once it starts
+- PI_ identity vars ride in the command line because new terminals inherit the core's environment
 
 ### WezTerm Auto-Layout
 
@@ -396,7 +408,7 @@ it migrates the settings once:
 
 - **pi coding agent** (https://github.com/mariozechner/pi-coding-agent)
 - **Node.js** (for extension runtime)
-- **Terminal emulator**: herdr, tmux, Zellij, iTerm2, WezTerm, or Orca
+- **Terminal emulator**: herdr, herdr-core (herdr-app), tmux, Zellij, iTerm2, WezTerm, or Orca
 
 The cross-process lock uses `fs-native-extensions`, a prebuilt N-API module
 that needs no compiler at install time and survives Node major-version
@@ -441,6 +453,7 @@ pi-teams/
 │   │   ├── zellij-adapter.ts        # Zellij implementation
 │   │   ├── iterm2-adapter.ts        # iTerm2 implementation
 │   │   ├── herdr-adapter.ts         # herdr implementation
+│   │   ├── herdr-core-adapter.ts    # herdr-core (herdr-app, hc) implementation
 │   │   ├── orca-adapter.ts          # Orca implementation
 │   │   └── wezterm-adapter.ts       # WezTerm implementation
 │   └── utils/

@@ -84,7 +84,7 @@ pi-teams/
 │   ├── cli.test.ts                   # CLI tests, including the built binary
 │   ├── adapters/                     # one TerminalAdapter implementation per terminal multiplexer
 │   │   ├── terminal-registry.ts      # picks the adapter for the current environment
-│   │   ├── tmux-adapter.ts           # plus herdr-, iterm2-, zellij-, wezterm-, orca-adapter.ts
+│   │   ├── tmux-adapter.ts           # plus herdr-core-, herdr-, iterm2-, zellij-, wezterm-, orca-adapter.ts
 │   │   └── *.test.ts                 # adapter unit tests
 │   └── utils/                        # all state mutation and decision logic
 │       ├── terminal-adapter.ts       # TerminalAdapter interface that the adapters implement
