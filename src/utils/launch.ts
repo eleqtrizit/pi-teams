@@ -33,6 +33,11 @@ export interface WorkerLaunchGoals {
    * worker listens, so it starts working without a separate send_message.
    */
   initialPrompt?: string;
+  /**
+   * Session file the worker opens instead of starting empty: a fork of the
+   * lead's session, built by the pi extension. The CLI has no session to fork.
+   */
+  sessionFile?: string;
 }
 
 /** Subject line of the message that carries a worker's initial prompt. */

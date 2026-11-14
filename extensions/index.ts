@@ -6,6 +6,7 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { rmSync } from "node:fs";
 import { basename } from "node:path";
 import { getTerminalAdapter } from "../src/adapters/terminal-registry";
 import * as messaging from "../src/utils/messaging";
@@ -24,6 +25,7 @@ import * as paths from "../src/utils/paths";
 import { type MessageListener, startListener } from "../src/utils/transport";
 import { resolveSpawnModel, resolveSpawnDirectory } from "../src/utils/spawn";
 import { launchWorker } from "../src/utils/launch";
+import { assertForkFits, forkLeadSession } from "./fork-session";
 import {
   registerLeadTools,
   runFlavorMigration,
@@ -236,16 +238,54 @@ export default function (pi: ExtensionAPI) {
     if (!terminal) {
       throw new Error("No terminal adapter detected.");
     }
-    resolveSpawnDirectory(goals.cwd);
+    const workerCwd = resolveSpawnDirectory(goals.cwd);
     const model = resolveSpawnModel(ctx, goals.modelRequest);
-    return launchWorker({
-      terminal,
-      leadId: agentId,
-      leadCwd: process.cwd(),
-      goals,
-      model,
-    });
+    if (goals.forkContext) {
+      const worker = ctx.modelRegistry
+        .getAvailable()
+        .find((m) => `${m.provider}/${m.id}`.toLowerCase() === model.toLowerCase());
+      // Count before any await, so parallel spawn calls in one turn see each other.
+      const live = new Set(readAgentRecords().map((record) => record.id));
+      for (const id of forkedWorkerIds) {
+        if (!live.has(id)) forkedWorkerIds.delete(id);
+      }
+      assertForkFits(
+        ctx.getContextUsage()?.tokens,
+        worker?.contextWindow,
+        forkedWorkerIds.size + pendingForks + 1,
+      );
+    }
+    const sessionFile = goals.forkContext
+      ? forkLeadSession(ctx.sessionManager.getSessionFile(), workerCwd, {
+          workerName: paths.sanitizeName(goals.name),
+          leadId: agentId,
+          readonlyWorker: goals.readonlyWorker,
+        })
+      : undefined;
+    if (sessionFile) pendingForks++;
+    try {
+      const launched = await launchWorker({
+        terminal,
+        leadId: agentId,
+        leadCwd: process.cwd(),
+        goals: { ...goals, sessionFile },
+        model,
+      });
+      if (sessionFile && launched.listening) forkedWorkerIds.add(launched.agentId);
+      return launched;
+    } catch (e) {
+      // A fork nobody opened is a stray copy of the lead's conversation.
+      if (sessionFile) rmSync(sessionFile, { force: true });
+      throw e;
+    } finally {
+      if (sessionFile) pendingForks--;
+    }
   }
+
+  /** Forked workers of this lead that may still be alive; pruned against the registry. */
+  const forkedWorkerIds = new Set<string>();
+  /** Forked spawns that have passed the size check and not yet returned. */
+  let pendingForks = 0;
 
   const terminal = getTerminalAdapter();
   /** Socket listener that receives messages for this agent. */

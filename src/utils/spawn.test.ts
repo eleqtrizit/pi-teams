@@ -88,6 +88,14 @@ describe("buildWorkerCommand", () => {
     expect(piCmd).toMatch(/^node '.+' /);
   });
 
+  it("opens a forked session file, shell-quoted, after the other flags", () => {
+    const forked = buildWorkerCommand(
+      { readonlyWorker: true, sessionFile: "/tmp/it's a fork.jsonl" },
+      "prov/model");
+    expect(forked.piCmd).toMatch(/ --tools \S+ --session '\/tmp\/it'\\''s a fork\.jsonl'$/);
+    expect(buildWorkerCommand({ readonlyWorker: false }, "prov/model").piCmd).not.toContain("--session");
+  });
+
   it("appends thinking level only for non-readonly workers", () => {
     const withThinking = buildWorkerCommand(
       { readonlyWorker: false, thinking: "high" },

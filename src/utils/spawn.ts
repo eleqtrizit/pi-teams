@@ -158,6 +158,8 @@ export function buildWorkerCommand(
   goals: {
     readonlyWorker: boolean;
     thinking?: "off" | "minimal" | "low" | "medium" | "high";
+    /** Session file the worker opens instead of starting empty (a fork of the lead's). */
+    sessionFile?: string;
   },
   chosenModel: string,
 ): { piCmd: string; agentType: "teammate" | "readonly-worker" } {
@@ -172,6 +174,9 @@ export function buildWorkerCommand(
   }
   if (goals.readonlyWorker) {
     piCmd = `${piCmd} --tools ${READONLY_WORKER_TOOLS.join(",")}`;
+  }
+  if (goals.sessionFile) {
+    piCmd = `${piCmd} --session ${shQuote(goals.sessionFile)}`;
   }
   return { piCmd, agentType };
 }

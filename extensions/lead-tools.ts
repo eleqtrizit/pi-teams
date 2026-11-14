@@ -32,6 +32,8 @@ export interface SpawnWorkerGoals {
   separateWindow?: boolean;
   readonlyWorker: boolean;
   initialPrompt?: string;
+  /** Start the worker from a fork of the lead's session. */
+  forkContext?: boolean;
 }
 
 export interface SpawnedWorker {
@@ -280,6 +282,20 @@ const INITIAL_PROMPT_DESCRIPTION =
   'them all, and send the task once with send_message(recipient="all"). ' +
   "Make it self-contained: the goal, the files involved, and what done looks like.";
 
+/** Usage rule for fork_context, shared by both worker spawn tools. */
+const FORK_CONTEXT_DESCRIPTION =
+  "Start the worker from a copy of your current conversation, so it already " +
+  "knows what you have read and worked out and does not rediscover it. The " +
+  "worker is told it is now your worker and waits for its task; still give " +
+  "it one, but the task can refer to what you already know. Use it when the " +
+  "task depends on your discoveries. Omit it for a task that is " +
+  "self-contained, or when your context is long: every forked worker pays " +
+  "for your whole context on each of its turns. The spawn is refused, with " +
+  "the token counts, when your context would fill more than half of the " +
+  "worker model's context window. The limit tightens with each forked " +
+  "worker you have alive: a third of the window for the third, a quarter " +
+  "for the fourth, and so on, so one fork may be allowed and the next refused.";
+
 /** Register the tools and command available to a team-lead session. */
 export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
   pi.registerTool({
@@ -340,7 +356,8 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       "If you pass a model explicitly, it must be fully qualified as " +
       "provider/model. Use resolve_model first if you only know a model name.\n\n" +
       "The worker starts idle unless you pass initial_prompt, which is only " +
-      "for a task no other agent shares.",
+      "for a task no other agent shares. It starts with an empty context " +
+      "unless you pass fork_context.",
     parameters: asPiToolSchema(
       Type.Object({
         name: Type.String(),
@@ -362,6 +379,9 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high"])),
         separate_window: Type.Optional(Type.Boolean({ default: false })),
         initial_prompt: Type.Optional(Type.String({ description: INITIAL_PROMPT_DESCRIPTION })),
+        fork_context: Type.Optional(
+          Type.Boolean({ default: false, description: FORK_CONTEXT_DESCRIPTION }),
+        ),
       }),
     ) as any,
     async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
@@ -373,6 +393,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         separateWindow: params.separate_window,
         readonlyWorker: false,
         initialPrompt: params.initial_prompt,
+        forkContext: params.fork_context,
       });
       return {
         content: [
@@ -403,7 +424,8 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       "team lead's). Prefer spreading teammates/workers/subagents across different providers " +
       "unless the user names specific models.\n\n" +
       "The worker starts idle unless you pass initial_prompt, which is only " +
-      "for a task no other agent shares.",
+      "for a task no other agent shares. It starts with an empty context " +
+      "unless you pass fork_context.",
     parameters: asPiToolSchema(
       Type.Object({
         name: Type.String(),
@@ -422,6 +444,9 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
           }),
         ),
         initial_prompt: Type.Optional(Type.String({ description: INITIAL_PROMPT_DESCRIPTION })),
+        fork_context: Type.Optional(
+          Type.Boolean({ default: false, description: FORK_CONTEXT_DESCRIPTION }),
+        ),
       }),
     ) as any,
     async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
@@ -431,6 +456,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         modelRequest: params.model,
         readonlyWorker: true,
         initialPrompt: params.initial_prompt,
+        forkContext: params.fork_context,
       });
       return {
         content: [

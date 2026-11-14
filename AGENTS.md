@@ -74,6 +74,7 @@ pi-teams/
 │   ├── fs-tools.ts                   # hash-guarded read/edit/write overrides
 │   ├── bash-hash.ts                  # appends file_hash lines for bash-written files
 │   ├── lead-tools.ts                 # lead-only tool registrations
+│   ├── fork-session.ts               # forks the lead's session into a worker session file (fork_context)
 │   ├── shared-tools.ts               # shared and worker tool registrations
 │   └── agents-tools.ts               # list_agents and spawn_team_lead registrations
 ├── cli/                              # npm package @eleqtrizit/pi-teams-cli (package.json, README; pi-teams.cjs is built)

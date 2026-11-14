@@ -114,6 +114,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
   - Supports custom model and thinking level (off/minimal/low/medium/high)
   - Can spawn in separate windows for better isolation
   - Optional `initial_prompt` starts the worker on its task right away; for bespoke work only, not a task shared with other agents (also on `spawn_readonly_worker`)
+  - Optional `fork_context` starts the worker from a copy of the lead's conversation, so it reuses what the lead has already discovered; each forked worker pays for the lead's whole context (also on `spawn_readonly_worker`)
   - Follows flavored-model guidance (see Flavored Models below)
 - **`spawn_readonly_worker`** - Launch a read-only worker restricted to `read`, `grep`, `find`, `ls`
   - No `bash`, `write`, or `edit` access: safe for code review, auditing, exploration
