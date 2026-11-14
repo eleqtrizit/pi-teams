@@ -58,7 +58,7 @@ pi-teams version                          CLI and protocol versions
 pi-teams listen [--cwd D] [--client N]    register as a lead; print each inbound message as a JSON line
 pi-teams list --as ID [--online-only] [--json]
 pi-teams send --as ID <recipient> --subject S [--expect-reply] [--summary T] [--body B]   (body from --body or stdin)
-pi-teams spawn --as ID --name N --model provider/model [--readonly] [--thinking L] [--cwd D] [--window]
+pi-teams spawn --as ID --name N --model provider/model [--readonly] [--thinking L] [--cwd D] [--window] [--prompt P | --prompt-stdin]
 pi-teams spawn-lead --folder D [--model provider/model] [--window] [--as ID]
 pi-teams close --as ID (<id|name> | --all)
 pi-teams state --as ID busy|idle          publish run state for list_agents
@@ -113,6 +113,7 @@ Tool registration follows each session's identity: sessions spawned with `PI_AGE
 - **`spawn_teammate`** - Launch agent in terminal pane or separate OS window
   - Supports custom model and thinking level (off/minimal/low/medium/high)
   - Can spawn in separate windows for better isolation
+  - Optional `initial_prompt` starts the worker on its task right away; for bespoke work only, not a task shared with other agents (also on `spawn_readonly_worker`)
   - Follows flavored-model guidance (see Flavored Models below)
 - **`spawn_readonly_worker`** - Launch a read-only worker restricted to `read`, `grep`, `find`, `ls`
   - No `bash`, `write`, or `edit` access: safe for code review, auditing, exploration

@@ -256,6 +256,13 @@ describe("pi-teams CLI (in process)", () => {
       ).toContain("--thinking must be one of");
     });
 
+    it("rejects an empty or doubled prompt", async () => {
+      writeAgentRecord(lead("callerr1"));
+      const spawn = ["spawn", "--as", "callerr1", "--name", "a", "--model", "p/m"];
+      expect((await cli(...spawn, "--prompt", " ")).err).toContain("The prompt is empty");
+      expect((await cli(...spawn, "--prompt", "x", "--prompt-stdin")).err).toContain("not both");
+    });
+
     it("spawn-lead requires a folder", async () => {
       expect((await cli("spawn-lead")).err).toContain("--folder is required");
     });

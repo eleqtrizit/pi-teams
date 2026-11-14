@@ -10,8 +10,8 @@ This session is a **lead** on a pi-teams network. The `mcp__pi-teams__*` tools s
 ## Delegating
 
 1. `get_models` lists the models in pi's settings. Pick a worker model from its `worker` list (coding), or its `swarm` list for read-only research. Spread workers across providers unless told otherwise.
-2. `spawn_teammate` starts a coding worker in a pane next to this session. `spawn_readonly_worker` starts one that can only read, grep, find and ls. Both start **idle**.
-3. Give the worker its task with `send_message(recipient=<name or id>, expectReply=true)`. State the goal, the files involved, and what "done" looks like.
+2. `spawn_teammate` starts a coding worker in a pane next to this session. `spawn_readonly_worker` starts one that can only read, grep, find and ls. Both start **idle** unless you pass `initial_prompt`.
+3. Give the worker its task with `send_message(recipient=<name or id>, expectReply=true)`. State the goal, the files involved, and what "done" looks like. Pass the task as `initial_prompt` on the spawn call instead only when it is bespoke: a task no other agent shares. When several workers get the same task, spawn them all and send it once with `send_message(recipient="all")`.
 4. Say what you are waiting for and **end your turn**. The worker's report wakes you.
 
 ## Waiting

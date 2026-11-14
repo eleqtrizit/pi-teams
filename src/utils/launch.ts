@@ -4,6 +4,7 @@
  * Model resolution stays with the caller, because only a pi session has a
  * model registry.
  */
+import { sendAgentMessage } from "./messaging";
 import { generateAgentId, readAgentRecords, updateAgentRecord } from "./registry";
 import * as paths from "./paths";
 import {
@@ -27,7 +28,15 @@ export interface WorkerLaunchGoals {
   thinking?: "off" | "minimal" | "low" | "medium" | "high";
   separateWindow?: boolean;
   readonlyWorker: boolean;
+  /**
+   * First task for the worker, delivered as a message from the lead once the
+   * worker listens, so it starts working without a separate send_message.
+   */
+  initialPrompt?: string;
 }
+
+/** Subject line of the message that carries a worker's initial prompt. */
+export const INITIAL_PROMPT_SUBJECT = "Your task";
 
 /** A launched worker. */
 export interface LaunchedWorker {
@@ -36,6 +45,8 @@ export interface LaunchedWorker {
   isWindow: boolean;
   model: string;
   listening: boolean;
+  /** Present only when an initial prompt was given: whether it reached the worker. */
+  promptDelivered?: boolean;
 }
 
 /** Inputs for {@link launchWorker}. */
@@ -105,7 +116,29 @@ export async function launchWorker(args: LaunchWorkerArgs): Promise<LaunchedWork
   if (listening) {
     updateAgentRecord(workerId, useSeparateWindow ? { windowId: terminalId } : { paneId: terminalId });
   }
-  return { agentId: workerId, terminalId, isWindow: useSeparateWindow, model, listening };
+  const launched: LaunchedWorker = { agentId: workerId, terminalId, isWindow: useSeparateWindow, model, listening };
+  const initialPrompt = goals.initialPrompt?.trim();
+  if (initialPrompt) {
+    launched.promptDelivered = listening && (await deliverInitialPrompt(args.leadId, workerId, initialPrompt));
+  }
+  return launched;
+}
+
+/**
+ * Send a worker its initial prompt as a reply-expected message from its lead.
+ * A failure is reported, not thrown: the worker is already running, and the
+ * lead can still send the task with send_message.
+ */
+async function deliverInitialPrompt(leadId: string, workerId: string, prompt: string): Promise<boolean> {
+  try {
+    const records = readAgentRecords();
+    const lead = records.find((record) => record.id === leadId);
+    if (!lead) return false;
+    await sendAgentMessage(lead, workerId, INITIAL_PROMPT_SUBJECT, prompt, true, undefined, records);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Inputs for {@link launchLead}. */

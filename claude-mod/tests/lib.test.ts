@@ -94,6 +94,15 @@ test('spawn tools build the CLI flags', () => {
     'spawn-lead', '--as', 'leadaaaa', '--folder', '~/repo', '--model', 'p/m',
   ])
   expect(() => tool('spawn_teammate').build({ name: 'alice' }, 'x')).toThrow(/model/)
+  expect(tool('spawn_teammate').build({ name: 'alice', model: 'p/m' }, 'leadaaaa').stdin).toBeUndefined()
+  expect(tool('spawn_teammate').build({ name: 'alice', model: 'p/m', initial_prompt: 'Fix the parser' }, 'leadaaaa')).toMatchObject({
+    argv: ['spawn', '--as', 'leadaaaa', '--name', 'alice', '--model', 'p/m', '--prompt-stdin'],
+    stdin: 'Fix the parser',
+  })
+  expect(tool('spawn_readonly_worker').build({ name: 'scout', model: 'p/m', initial_prompt: 'Map the adapters' }, 'leadaaaa')).toMatchObject({
+    argv: ['spawn', '--as', 'leadaaaa', '--readonly', '--name', 'scout', '--model', 'p/m', '--prompt-stdin'],
+    stdin: 'Map the adapters',
+  })
 })
 
 test('list, close and models build their commands', () => {

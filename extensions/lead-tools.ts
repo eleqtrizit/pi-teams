@@ -31,6 +31,7 @@ export interface SpawnWorkerGoals {
   thinking?: "off" | "minimal" | "low" | "medium" | "high";
   separateWindow?: boolean;
   readonlyWorker: boolean;
+  initialPrompt?: string;
 }
 
 export interface SpawnedWorker {
@@ -39,6 +40,7 @@ export interface SpawnedWorker {
   isWindow: boolean;
   model: string;
   listening: boolean;
+  promptDelivered?: boolean;
 }
 
 /** Dependencies captured from the extension session state and spawn plumbing. */
@@ -250,11 +252,33 @@ async function handleFlavoredModelsCommand(ctx: ExtensionContext): Promise<void>
   }
 }
 
-function listeningNote(spawned: { listening: boolean }): string {
-  return spawned.listening
-    ? ""
-    : " The worker is not accepting messages yet. Check list_agents before you send it a message.";
+function listeningNote(spawned: { listening: boolean; promptDelivered?: boolean }): string {
+  if (!spawned.listening) {
+    return (
+      " The worker is not accepting messages yet. Check list_agents before you send it a message." +
+      (spawned.promptDelivered === false
+        ? " The initial_prompt was NOT delivered: send the task with send_message once the worker is listening."
+        : "")
+    );
+  }
+  if (spawned.promptDelivered === true) {
+    return " The initial_prompt was delivered and the worker is working on it: do not send the task again. Its reply arrives as a user message.";
+  }
+  if (spawned.promptDelivered === false) {
+    return " The initial_prompt was NOT delivered: send the task with send_message.";
+  }
+  return "";
 }
+
+/** Usage rule for initial_prompt, shared by both worker spawn tools. */
+const INITIAL_PROMPT_DESCRIPTION =
+  "Optional first prompt for the worker. It is delivered as a message from " +
+  "you with expectReply=true as soon as the worker is ready, so the worker " +
+  "starts working immediately and no send_message is needed. Use it ONLY " +
+  "when this worker will do bespoke work: a task that differs from every " +
+  "other agent's. When several workers get the same task, omit it, spawn " +
+  'them all, and send the task once with send_message(recipient="all"). ' +
+  "Make it self-contained: the goal, the files involved, and what done looks like.";
 
 /** Register the tools and command available to a team-lead session. */
 export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
@@ -314,7 +338,9 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       "providers unless the user names specific models. If no worker models " +
       "are configured, spawn the same model as yours (the team lead's).\n\n" +
       "If you pass a model explicitly, it must be fully qualified as " +
-      "provider/model. Use resolve_model first if you only know a model name.",
+      "provider/model. Use resolve_model first if you only know a model name.\n\n" +
+      "The worker starts idle unless you pass initial_prompt, which is only " +
+      "for a task no other agent shares.",
     parameters: asPiToolSchema(
       Type.Object({
         name: Type.String(),
@@ -335,6 +361,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         ),
         thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high"])),
         separate_window: Type.Optional(Type.Boolean({ default: false })),
+        initial_prompt: Type.Optional(Type.String({ description: INITIAL_PROMPT_DESCRIPTION })),
       }),
     ) as any,
     async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
@@ -345,6 +372,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         thinking: params.thinking,
         separateWindow: params.separate_window,
         readonlyWorker: false,
+        initialPrompt: params.initial_prompt,
       });
       return {
         content: [
@@ -358,6 +386,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
           terminalId: spawned.terminalId,
           isWindow: spawned.isWindow,
           listening: spawned.listening,
+          promptDelivered: spawned.promptDelivered,
         },
       };
     },
@@ -372,7 +401,9 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
       "model from the swarm list. If the swarm list is empty, pick from the " +
       "worker list. If that is empty too, spawn the same model as yours (the " +
       "team lead's). Prefer spreading teammates/workers/subagents across different providers " +
-      "unless the user names specific models.",
+      "unless the user names specific models.\n\n" +
+      "The worker starts idle unless you pass initial_prompt, which is only " +
+      "for a task no other agent shares.",
     parameters: asPiToolSchema(
       Type.Object({
         name: Type.String(),
@@ -390,6 +421,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
               "get_models lists. Omit to use the team lead's model.",
           }),
         ),
+        initial_prompt: Type.Optional(Type.String({ description: INITIAL_PROMPT_DESCRIPTION })),
       }),
     ) as any,
     async execute(_toolCallId, params: any, _signal, _onUpdate, ctx) {
@@ -398,6 +430,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
         cwd: params.cwd,
         modelRequest: params.model,
         readonlyWorker: true,
+        initialPrompt: params.initial_prompt,
       });
       return {
         content: [
@@ -410,6 +443,7 @@ export function registerLeadTools(pi: ExtensionAPI, deps: LeadToolDeps): void {
           agentId: spawned.agentId,
           terminalId: spawned.terminalId,
           listening: spawned.listening,
+          promptDelivered: spawned.promptDelivered,
           tools: [...READONLY_WORKER_TOOLS],
         },
       };

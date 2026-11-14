@@ -2,10 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { launchLead, launchWorker } from "./launch";
-import { AgentKind } from "./models";
+import { INITIAL_PROMPT_SUBJECT, launchLead, launchWorker } from "./launch";
+import { AgentKind, type TeamMessage } from "./models";
 import { writeAgentRecord } from "./registry";
 import type { SpawnOptions, TerminalAdapter } from "./terminal-adapter";
+import { startListener, type MessageListener } from "./transport";
 
 /** A terminal that records spawns instead of opening panes. */
 function fakeTerminal(windows = true): TerminalAdapter & { spawned: SpawnOptions[]; windowsSpawned: SpawnOptions[] } {
@@ -126,6 +127,87 @@ describe("launch", () => {
       expect(terminal.windowsSpawned).toHaveLength(0);
       expect(terminal.spawned[0].env.PI_AGENT_TYPE).toBe("readonly-worker");
       expect(terminal.spawned[0].command).toContain("--tools read,grep,find,ls,send_message,close_myself");
+    });
+
+    describe("initial prompt", () => {
+      const lead = { id: "leadaaaa", kind: AgentKind.Lead, cwd: os.tmpdir(), pid: process.pid, startedAt: 1 };
+      let listener: Promise<MessageListener> | undefined;
+
+      afterEach(async () => {
+        await (await listener)?.close();
+        listener = undefined;
+      });
+
+      /** A terminal whose spawned worker registers and listens, like a booted pi session. */
+      function bootingTerminal(received: TeamMessage[]): TerminalAdapter {
+        const terminal = fakeTerminal();
+        terminal.spawn = (o) => {
+          const id = o.env!.PI_AGENT_ID;
+          writeAgentRecord({
+            id,
+            kind: AgentKind.Teammate,
+            cwd: os.tmpdir(),
+            pid: process.pid,
+            startedAt: 2,
+            leadId: o.env!.PI_LEAD_ID,
+            name: o.env!.PI_AGENT_NAME,
+          });
+          listener = startListener(id, (message) => void received.push(message));
+          return "pane-1";
+        };
+        return terminal;
+      }
+
+      it("omits promptDelivered when no prompt is given", async () => {
+        const result = await launchWorker({
+          ...base,
+          terminal: fakeTerminal(),
+          goals: { name: "alice", readonlyWorker: false, initialPrompt: "   " },
+        });
+        expect(result).not.toHaveProperty("promptDelivered");
+      });
+
+      it("delivers the prompt as a reply-expected message from the lead", async () => {
+        writeAgentRecord(lead);
+        const received: TeamMessage[] = [];
+        const result = await launchWorker({
+          ...base,
+          listenTimeoutMs: 5000,
+          terminal: bootingTerminal(received),
+          goals: { name: "alice", readonlyWorker: false, initialPrompt: "Fix the parser" },
+        });
+        expect(result).toMatchObject({ listening: true, promptDelivered: true });
+        expect(received).toHaveLength(1);
+        expect(received[0]).toMatchObject({
+          from: "leadaaaa",
+          to: result.agentId,
+          subject: INITIAL_PROMPT_SUBJECT,
+          text: "Fix the parser",
+          expectReply: true,
+        });
+      });
+
+      it("reports an undelivered prompt when the worker never listens", async () => {
+        writeAgentRecord(lead);
+        const result = await launchWorker({
+          ...base,
+          terminal: fakeTerminal(),
+          goals: { name: "alice", readonlyWorker: false, initialPrompt: "Fix the parser" },
+        });
+        expect(result).toMatchObject({ listening: false, promptDelivered: false });
+      });
+
+      it("reports an undelivered prompt when the lead is not registered", async () => {
+        const received: TeamMessage[] = [];
+        const result = await launchWorker({
+          ...base,
+          listenTimeoutMs: 5000,
+          terminal: bootingTerminal(received),
+          goals: { name: "alice", readonlyWorker: false, initialPrompt: "Fix the parser" },
+        });
+        expect(result).toMatchObject({ listening: true, promptDelivered: false });
+        expect(received).toHaveLength(0);
+      });
     });
   });
 

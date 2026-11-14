@@ -143,6 +143,22 @@ const MODEL = {
   description: 'Fully qualified provider/model. Call get_models first and pick from its lists.',
 }
 const WINDOW = { type: 'boolean', description: 'Open in a separate OS window instead of a pane.' }
+const INITIAL_PROMPT = {
+  type: 'string',
+  description:
+    'Optional first prompt for the worker. It is delivered as a message from you with expectReply=true as soon ' +
+    'as the worker is ready, so it starts working immediately and no send_message is needed. Use it ONLY when ' +
+    'this worker will do bespoke work: a task that differs from every other agent\'s. When several workers get ' +
+    'the same task, omit it, spawn them all, and send the task once with send_message(recipient="all"). ' +
+    'Make it self-contained: the goal, the files involved, and what done looks like. If the result says ' +
+    'promptDelivered is false, send the task with send_message instead.',
+}
+
+/** The `spawn` flag and stdin that carry an optional initial prompt. */
+function promptInput(a: Args): { flags: string[]; stdin?: string } {
+  const prompt = optText(a, 'initial_prompt')
+  return prompt?.trim() ? { flags: ['--prompt-stdin'], stdin: prompt } : { flags: [] }
+}
 
 export const TOOLS: readonly ToolDef[] = [
   {
@@ -214,8 +230,8 @@ export const TOOLS: readonly ToolDef[] = [
     name: 'spawn_teammate',
     description:
       'Spawn a pi worker in a terminal pane (a tmux, iTerm2, zellij, wezterm, herdr or Orca pane next to ' +
-      'this session). It starts idle: give it its task with send_message(expectReply=true). It reports back ' +
-      'with a message that wakes you.',
+      'this session). It starts idle unless you pass initial_prompt (only for a task no other agent shares): ' +
+      'otherwise give it its task with send_message(expectReply=true). It reports back with a message that wakes you.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -224,42 +240,55 @@ export const TOOLS: readonly ToolDef[] = [
         cwd: { type: 'string', description: 'Working directory: this session\'s directory (default) or a subdirectory.' },
         thinking: { type: 'string', enum: ['off', 'minimal', 'low', 'medium', 'high'] },
         separate_window: WINDOW,
+        initial_prompt: INITIAL_PROMPT,
       },
       required: ['name', 'model'],
     },
     needsId: true,
-    build: (a, id) => ({
-      argv: [
-        'spawn', '--as', id, '--name', text(a, 'name'), '--model', text(a, 'model'),
-        ...(optText(a, 'cwd') ? ['--cwd', optText(a, 'cwd') as string] : []),
-        ...(optText(a, 'thinking') ? ['--thinking', optText(a, 'thinking') as string] : []),
-        ...(a.separate_window === true ? ['--window'] : []),
-      ],
-      timeoutMs: SPAWN,
-    }),
+    build: (a, id) => {
+      const prompt = promptInput(a)
+      return {
+        argv: [
+          'spawn', '--as', id, '--name', text(a, 'name'), '--model', text(a, 'model'),
+          ...(optText(a, 'cwd') ? ['--cwd', optText(a, 'cwd') as string] : []),
+          ...(optText(a, 'thinking') ? ['--thinking', optText(a, 'thinking') as string] : []),
+          ...(a.separate_window === true ? ['--window'] : []),
+          ...prompt.flags,
+        ],
+        ...(prompt.stdin !== undefined ? { stdin: prompt.stdin } : {}),
+        timeoutMs: SPAWN,
+      }
+    },
   },
   {
     name: 'spawn_readonly_worker',
     description:
       'Spawn a read-only pi worker that can only read, grep, find and ls files and message you. ' +
-      'Use it for research and investigation. Give it its task with send_message(expectReply=true).',
+      'Use it for research and investigation. Give it its task with send_message(expectReply=true), or pass ' +
+      'initial_prompt when its task is one no other agent shares.',
     inputSchema: {
       type: 'object',
       properties: {
         name: NAME,
         model: MODEL,
         cwd: { type: 'string', description: 'Working directory: this session\'s directory (default) or a subdirectory.' },
+        initial_prompt: INITIAL_PROMPT,
       },
       required: ['name', 'model'],
     },
     needsId: true,
-    build: (a, id) => ({
-      argv: [
-        'spawn', '--as', id, '--readonly', '--name', text(a, 'name'), '--model', text(a, 'model'),
-        ...(optText(a, 'cwd') ? ['--cwd', optText(a, 'cwd') as string] : []),
-      ],
-      timeoutMs: SPAWN,
-    }),
+    build: (a, id) => {
+      const prompt = promptInput(a)
+      return {
+        argv: [
+          'spawn', '--as', id, '--readonly', '--name', text(a, 'name'), '--model', text(a, 'model'),
+          ...(optText(a, 'cwd') ? ['--cwd', optText(a, 'cwd') as string] : []),
+          ...prompt.flags,
+        ],
+        ...(prompt.stdin !== undefined ? { stdin: prompt.stdin } : {}),
+        timeoutMs: SPAWN,
+      }
+    },
   },
   {
     name: 'spawn_team_lead',

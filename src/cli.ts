@@ -58,7 +58,9 @@ Commands:
   send --as ID <recipient> --subject S [--expect-reply] [--summary T] [--body B]
                                    Send a message (body from --body or stdin); recipient: id, worker name, "lead", or "all"
   spawn --as ID --name N --model P/M [--readonly] [--thinking L] [--cwd D] [--window]
-                                   Spawn a worker owned by lead ID
+        [--prompt P | --prompt-stdin]
+                                   Spawn a worker owned by lead ID; the optional prompt (or stdin)
+                                   is its first task, for work no other agent shares
   spawn-lead --folder D [--model P/M] [--window] [--as ID]
                                    Spawn an independent peer lead in an existing folder
   close --as ID (<id|name> | --all)
@@ -245,6 +247,8 @@ async function cmdSpawn(args: string[]): Promise<number> {
       thinking: { type: "string" },
       cwd: { type: "string" },
       window: { type: "boolean" },
+      prompt: { type: "string" },
+      "prompt-stdin": { type: "boolean" },
     },
   });
   const self = requireLead(values.as);
@@ -252,6 +256,13 @@ async function cmdSpawn(args: string[]): Promise<number> {
   const thinking = values.thinking as (typeof THINKING_LEVELS)[number] | undefined;
   if (thinking !== undefined && !THINKING_LEVELS.includes(thinking)) {
     throw new CliError(`--thinking must be one of ${THINKING_LEVELS.join(", ")}.`);
+  }
+  if (values.prompt !== undefined && values["prompt-stdin"]) {
+    throw new CliError("Pass --prompt or --prompt-stdin, not both.");
+  }
+  const initialPrompt = values["prompt-stdin"] ? await readStdin() : values.prompt;
+  if (initialPrompt !== undefined && !initialPrompt.trim()) {
+    throw new CliError("The prompt is empty. Pass text to --prompt or pipe it on stdin with --prompt-stdin.");
   }
   const launched = await launchWorker({
     terminal: getTerminalAdapter(),
@@ -264,6 +275,7 @@ async function cmdSpawn(args: string[]): Promise<number> {
       thinking,
       separateWindow: values.window,
       readonlyWorker: values.readonly === true,
+      initialPrompt,
     },
   });
   emit(launched);
