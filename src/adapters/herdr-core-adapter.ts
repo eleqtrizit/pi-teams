@@ -162,8 +162,10 @@ export class HerdrCoreAdapter implements TerminalAdapter {
    * other adapters. --rm removes it from the core once its program ends.
    * The `herdr.space` label is looked up on every spawn from the space that
    * shows this session's own terminal, never the window's active space, so
-   * workers follow their lead. PI_ variables ride in the command line
-   * because new terminals inherit the core's environment, not the caller's.
+   * workers follow their lead. PI_ variables and PATH ride in the command
+   * line because new terminals inherit the core's environment, not the
+   * caller's: without the caller's PATH a pi installed outside the core's
+   * PATH (Homebrew, nvm) is not found and the terminal ends at once.
    * The worker labels its own tab through setTitle() once it starts.
    *
    * @param options - Spawn configuration
@@ -174,7 +176,7 @@ export class HerdrCoreAdapter implements TerminalAdapter {
     const spaceId = locateTerminal(process.env.HC_TERMINAL_ID ?? "")?.spaceId ?? null;
     const uniqueName = terminalName(options.name, options.env.PI_AGENT_ID ?? "");
     const assignments = Object.entries(options.env)
-      .filter(([k, v]) => k.startsWith("PI_") && v)
+      .filter(([k, v]) => (k.startsWith("PI_") || k === "PATH") && v)
       .map(([k, v]) => `${k}=${shQuote(v as string)}`)
       .join(" ");
     const line = [assignments, `exec ${options.command}`].filter(Boolean).join(" ");

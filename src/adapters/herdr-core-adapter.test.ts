@@ -74,6 +74,14 @@ describe("HerdrCoreAdapter", () => {
       expect(exec).toHaveBeenCalledTimes(2);
     });
 
+    it("carries the caller's PATH so pi resolves outside the core's PATH", () => {
+      exec.mockReturnValueOnce(fail).mockReturnValueOnce(hcRunResult("t13"));
+
+      adapter.spawn({ ...opts, env: { ...opts.env, PATH: "/opt/brew/bin:/usr/bin" } });
+      const argv = exec.mock.calls[1][1] as string[];
+      expect(argv[argv.length - 1]).toBe("PI_AGENT_ID='abcd1234' PATH='/opt/brew/bin:/usr/bin' exec pi --model 'a/b'");
+    });
+
     it("labels with the space showing the lead's terminal, not the active space", () => {
       const ls = ok(JSON.stringify({
         spaces: [

@@ -243,7 +243,7 @@ pi-teams automatically detects and integrates with your terminal environment:
 - With no herdr-app window open, or when the lead has no pane in it, agents still spawn and run hidden in the core
 - Terminals survive a closed window; they end when the lead closes them or pi exits, and are then removed from the core
 - Each agent labels its own tab once it starts
-- PI_ identity vars ride in the command line because new terminals inherit the core's environment
+- PI_ identity vars and `PATH` ride in the command line because new terminals inherit the core's environment
 
 ### WezTerm Auto-Layout
 
