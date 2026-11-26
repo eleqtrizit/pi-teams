@@ -1,6 +1,6 @@
 {
   "name": "@eleqtrizit/pi-teams-cli",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Command-line access to the pi-teams agent network, for clients that are not pi (such as Claude Code).",
   "license": "MIT",
   "repository": {
