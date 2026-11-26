@@ -32,6 +32,24 @@ Then start a new Claude Code session: the `/pi-teams` command shows the connecti
 
 Just tell Claude `Use pi-teams <provider>/<model> to do the work.` or just `Use pi-teams to do the work` if the default model is the one you like.
 
+## Updating
+
+Update the pi extension, then start `pi` once so it records the new version:
+
+```bash
+pi update https://github.com/eleqtrizit/pi-teams
+```
+
+If you use pi-teams from Claude Code, update the CLI and the mod too:
+
+```bash
+npm i -g @eleqtrizit/pi-teams-cli@latest
+claude plugin marketplace update pi-teams
+claude plugin update pi-teams@pi-teams
+```
+
+Run these in a shell, not inside a Claude session. Update the extension and the CLI together: the CLI refuses to run when the extension is newer than it is. Check the result with `pi-teams version`, which prints the CLI version and the extension version it found.
+
 ## Use pi-teams from Claude Code
 
 A Claude Code session can join the same agent network as a lead: it spawns pi workers, messages them and other leads, and is woken when they reply, the way pi leads are. Three pieces, installed separately:
