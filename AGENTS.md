@@ -14,7 +14,7 @@ Pi-teams coordinates multiple pi agents. A team-lead spawns teammates (workers) 
 - Full test suite: `npm test`
 - One test file: `npx vitest run <path>`
 - Build the CLI bundle: `npm run build:cli` (esbuild into `cli/pi-teams.cjs`, which is gitignored)
-- Publish the CLI: `scripts/publish-cli.sh`
+- Publish the CLI: `scripts/publish-cli.sh`. A new version can take up to 10 minutes to show in `npm view @eleqtrizit/pi-teams-cli dist-tags`. After a publish, check once a minute, for up to 10 minutes, before declaring that it did not publish, and do not publish again while waiting.
 - Mod tests: `cd claude-mod && command claude plugin test`
 - A test that spawns workers must unset `HERDR_ENV`, `HERDR_PANE_ID`, and the other multiplexer variables first: herdr has detection priority and opens a real tab.
 
