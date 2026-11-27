@@ -43,7 +43,8 @@ import {
   adoptOrphanedWorkers,
 } from "../src/utils/registry";
 import { isPidAlive } from "../src/utils/pid";
-import { writeVersionFile } from "../src/utils/version";
+import { packageVersion, writeVersionFile } from "../src/utils/version";
+import { checkClaudeMod } from "../src/utils/claudeMod";
 import { assertAgentId } from "../src/utils/paths";
 import { AgentKind, type AgentRecord } from "../src/utils/models";
 
@@ -467,6 +468,17 @@ export default function (pi: ExtensionAPI) {
       writeVersionFile();
     } catch {
       // The version file only guards the CLI; a write failure must not stop the session.
+    }
+    if (isLead && ctx.hasUI) {
+      // Background: a slow `claude plugin update` must not delay the session.
+      void checkClaudeMod(packageVersion())
+        .then((result) => {
+          if (result.action === "updated") ctx.ui.notify(result.message, "info");
+          else if (result.action !== "none") ctx.ui.notify(result.message, "warning");
+        })
+        .catch(() => {
+          // The mod check is a convenience; it never surfaces internal errors.
+        });
     }
     const shouldSkipRegistration = isLead && !ctx.hasUI && !idWasPreassigned;
     if (!shouldSkipRegistration) {

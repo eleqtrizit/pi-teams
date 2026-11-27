@@ -8,6 +8,9 @@ import { afterAll } from "vitest";
 
 const isolatedRegistry = fs.mkdtempSync(path.join(os.tmpdir(), "t"));
 process.env.PI_TEAMS_REGISTRY_DIR = isolatedRegistry;
+// A lead's session_start checks the Claude Code mod and may run `claude plugin
+// update`; point it at an empty config dir so tests never touch the real one.
+process.env.CLAUDE_CONFIG_DIR = path.join(isolatedRegistry, "claude");
 
 // Tests that depend on agent identity stub PI_* explicitly. Remove ambient
 // values (for example a worker pane's own PI_AGENT_ID/PI_AGENT_TYPE) so a

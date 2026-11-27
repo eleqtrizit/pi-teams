@@ -58,6 +58,7 @@ Under `~/.pi/agent/pi-teams/` (mode 0700, files 0600; set `PI_TEAMS_REGISTRY_DIR
 - `s/<id>.sock` — one socket per listening agent (`src/utils/transport.ts`)
 - `state/<id>.json` — run state (`src/utils/runstate.ts`)
 - `version.txt` — the extension version the CLI checks (`src/utils/version.ts`)
+- `claude-mod-update.json`, `claude-mod-update.lock` — last Claude Code mod update attempt and its lock (`src/utils/claudeMod.ts`)
 - `agents.jsonl` — lastSeenAt history (`src/utils/history.ts`), guarded by `agents.jsonl.flock` (`src/utils/filelock.ts`)
 
 ## File hierarchy
@@ -92,6 +93,7 @@ pi-teams/
 │       ├── launch.ts                 # launchWorker and launchLead, shared by the extension and the CLI
 │       ├── agentList.ts              # listVisibleAgents, shared by list_agents and the CLI
 │       ├── version.ts                # package version and the version.txt check
+│       ├── claudeMod.ts              # Claude Code mod version check and auto-update at lead start
 │       ├── teams.ts                  # shared removeAgent removal path
 │       ├── obligations.ts            # ObligationTracker, reminder text, and notices for expectReply
 │       ├── transport.ts              # Unix socket listener and acknowledged send

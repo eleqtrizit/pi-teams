@@ -26,6 +26,8 @@ claude plugin marketplace add eleqtrizit/pi-teams
 claude plugin install pi-teams@pi-teams
 ```
 
+When the mod is installed, an interactive pi lead runs the two `claude plugin` commands itself at startup if the mod is older than the extension, and tells you the result; restart running Claude Code sessions (or run `/reload-plugins`) to load the new mod. Set `PI_TEAMS_CLAUDE_MOD_UPDATE=notify` to only be told, or `off` to skip the check.
+
 Run these in a shell, not inside a Claude session. 
 
 Then start a new Claude Code session: the `/pi-teams` command shows the connection, and Claude can call `list_agents`. Details are in [Use pi-teams from Claude Code](#use-pi-teams-from-claude-code).
