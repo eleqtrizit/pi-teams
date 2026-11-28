@@ -172,6 +172,7 @@ test('a failed version check is told to the model and the listener is not restar
 
   expect(seen.spawned).toHaveLength(1)
   expect(seen.statuses.at(-1)).toContain('version.txt is missing')
+  expect(seen.statuses.at(-1)).toContain('claude plugin update pi-teams@pi-teams')
   const out = await $.tool.call({ tool: 'mcp__pi-teams__list_agents' })
   expect(out).toEqual({ result: expect.stringContaining('Error: /x/version.txt is missing') })
   expect(seen.runs).toEqual([])

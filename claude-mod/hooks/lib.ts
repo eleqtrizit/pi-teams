@@ -11,6 +11,9 @@ export const SEND_TOOL = `mcp__${PLUGIN}__send_message`
 /** Where to get the CLI, shown whenever it cannot run. */
 export const CLI_INSTALL = 'npm i -g @eleqtrizit/pi-teams-cli'
 export const EXTENSION_INSTALL = 'pi install https://github.com/eleqtrizit/pi-teams'
+/** Refreshes the marketplace cache, then updates the mod; the update alone sees a stale cache. */
+export const MOD_UPDATE =
+  'claude plugin marketplace update pi-teams && claude plugin update pi-teams@pi-teams'
 
 /** A message as the CLI's `listen` command prints it. */
 export type TeamMessage = {

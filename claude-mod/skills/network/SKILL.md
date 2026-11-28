@@ -32,4 +32,4 @@ A message marked `Reply expected: yes` needs an answer: call `send_message(recip
 
 ## If a tool says the network is unavailable
 
-The message names the cause. A missing CLI is installed with `npm i -g @eleqtrizit/pi-teams-cli`; a missing or outdated version file means the pi extension must be installed or upgraded (`pi install https://github.com/eleqtrizit/pi-teams`) and pi started once.
+The message names the cause. A missing CLI is installed with `npm i -g @eleqtrizit/pi-teams-cli`; a missing or outdated version file means the pi extension must be installed or upgraded (`pi install https://github.com/eleqtrizit/pi-teams`) and pi started once. On a version mismatch you can also update this mod with `claude plugin marketplace update pi-teams && claude plugin update pi-teams@pi-teams`.

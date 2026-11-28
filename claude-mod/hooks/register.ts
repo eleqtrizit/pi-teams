@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import {
   CLI_INSTALL,
   EXTENSION_INSTALL,
+  MOD_UPDATE,
   PLUGIN,
   TOOLS,
   formatDelivered,
@@ -145,6 +146,7 @@ async function listen($: EngineInterface, cwd: string): Promise<void> {
   const reason = stderr.trim().replace(/^pi-teams: /, '')
   const retryable = exitCode !== EXIT_VERSION && restarts < MAX_RESTARTS
   setupError = reason || `the pi-teams listener stopped (exit ${exitCode}). ${EXTENSION_INSTALL}`
+  if (exitCode === EXIT_VERSION) setupError += ` Or update the mod: ${MOD_UPDATE}`
   if (retryable) {
     restarts += 1
     $.clock.after(2000 * restarts, () => void listen($, cwd))
